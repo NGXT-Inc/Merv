@@ -59,11 +59,11 @@ def create_fastapi_app(
         raise ValueError(
             f"wait secret must be at least {MIN_WAIT_SECRET_BYTES} bytes"
         )
-    authorizer = ProjectAuthorizer(projects=api.projects)
+    authorizer = ProjectAuthorizer(research=api.research)
     # One key, both directions: the gateway signs sandbox.runs wait URLs with
     # exactly what the route below verifies, per composition — never shared.
     gateway = ToolInvocationGateway(
-        tools=api.tools, reviews=api.reviews, sandboxes=api.sandboxes,
+        tools=api.tools, research=api.research, sandboxes=api.sandboxes,
         surface=surface, projects=authorizer, ledger=api.tool_ledger,
         wait_secret=wait_secret)
     authenticator = RequestAuthenticator(
@@ -89,9 +89,9 @@ def create_fastapi_app(
     ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
                           auth_meta=auth.meta() if auth is not None else None)
     routers = (
-        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, projects=api.projects),
+        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, research=api.research),
         projects.build_router(
-            ctx, projects=api.projects, dashboard=api.dashboard,
+            ctx, research=api.research, dashboard=api.dashboard,
             workflow=api.workflow, timeline=api.timeline, sandboxes=api.sandboxes),
         claims.build_router(ctx),
         experiments.build_router(
@@ -107,7 +107,7 @@ def create_fastapi_app(
         litreview.build_router(literature=api.literature),
         artifacts.build_router(artifacts=api.artifacts),
         storage.build_router(storage=api.storage),
-        reviews.build_router(ctx, review_delivery=api.reviews),
+        reviews.build_router(ctx, research=api.research, queue=api.review_queue),
         sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),
         events.build_router(timeline=api.timeline),
         runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
@@ -125,7 +125,7 @@ def create_fastapi_app(
         http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
         allow_tool=lambda _tool: True,
         authorize_scope=mcp_preauth.build_mcp_preauthorizer(
-            authorizer=authorizer, reviews=api.reviews,
+            authorizer=authorizer, research=api.research,
             hosted=surface.use_hosted_tool_policies),
         ledger=api.tool_ledger,
     )

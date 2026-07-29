@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.research_core.graph_refs import GraphRefResolver
+from merv.brain.research_core import Research
 
 
 class _Connection:
@@ -16,11 +17,11 @@ class _Connection:
         self.calls.append((query, arguments))
         _project_id, *refs = arguments
         rows = []
-        if " FROM claims " in query and "claim_1" in refs:
+        if "FROM claims" in query and "claim_1" in refs:
             rows.append(
                 {"id": "claim_1", "statement": "Claim", "status": "active"}
             )
-        if " FROM experiments " in query and "exp_1" in refs:
+        if "FROM experiments" in query and "exp_1" in refs:
             rows.append({"id": "exp_1", "intent": "Test", "status": "running"})
         return _Cursor(rows)
 
@@ -48,7 +49,7 @@ class GraphRefResolverTest(unittest.TestCase):
     def test_resolves_only_research_owned_prefixes(self) -> None:
         store = _Store()
 
-        result = GraphRefResolver(store=store).resolve_index(
+        result = Research(store=store, artifacts=Mock()).resolve_graph_refs(
             project_id="proj_1",
             refs=(
                 "claim_1",
@@ -105,7 +106,7 @@ class GraphRefQueryCountTest(unittest.TestCase):
         self.store = CountingStateStore(
             db_path=Path(self.tmp.name) / "state.sqlite"
         )
-        self.resolver = GraphRefResolver(store=self.store)
+        self.research = Research(store=self.store, artifacts=Mock())
         self._seed()
 
     def tearDown(self) -> None:
@@ -187,7 +188,7 @@ class GraphRefQueryCountTest(unittest.TestCase):
 
     def _resolve(self, refs: tuple[str, ...]):
         self.store.statements.clear()
-        result = self.resolver.resolve_index(project_id="proj_main", refs=refs)
+        result = self.research.resolve_graph_refs(project_id="proj_main", refs=refs)
         selects = [
             statement
             for statement in self.store.statements

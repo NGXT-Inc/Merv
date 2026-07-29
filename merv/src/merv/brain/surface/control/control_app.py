@@ -26,11 +26,17 @@ from ...application.timeline import EventTimelineQuery
 from ...application.reflections import ReflectionCommands
 from ...application.status_guidance import StatusGuidancePolicy
 from ...application.workflow import ProjectDashboardQuery, StatusAndNextQuery
-from ...application.reviews import ReadReviewStatus, StartReviewSession
+from ...application.reviews import (
+    ReadReviewStatus,
+    RequestReview,
+    ReviewQueue,
+    StartReviewSession,
+)
 from ...application.tool_commands import ControlToolOperations
-from ...research_core.facade import ResearchCoreFacade
-from ...research_core.project_context import ProjectContextFactsReader
-from ...research_core.snapshots import ResearchSnapshotReader
+from ...artifacts import Artifacts
+from ...feed import FeedService
+from ...literature import Literature
+from ...research_core import Research, ResearchTargets
 from ..tools.contracts import available_tool_names
 from .control_runtime import ControlActivitySink, ControlToolCallSink
 from ..observability import StructuredLogger
@@ -38,14 +44,15 @@ from ..user_settings import UserHfTokenSettings
 from ...kernel.ports.mgmt_keys import MgmtKeyStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
 from ...object_storage import ObjectStorage
-from .record_core import build_record_core
 from ...sandbox import SandboxBackend, SandboxEngine
 from ...kernel.state import BaseStateStore
 from ...kernel.state.tool_call_ledger import ToolCallLedger
 from ..artifacts import ArtifactTools
+from ..permissions import PermissionService
 from ..tools.tool_facade import ToolDispatcher
 from ..tools.tool_handlers import build_control_tool_handlers
 from ..transport.api.dependencies import HttpDependencies
+from ..web_preview import AllowlistedPaperPreview, NetworkWebPreview
 
 
 class ControlApp:
@@ -80,36 +87,44 @@ class ControlApp:
         # environment.  A normal product build therefore has no tracking
         # service, tools, routes, credentials, or response fields.
         self._tracking = mlflow_tracking
-        core = self._record_core = build_record_core(store=store, blobs=blobs)
-
-        self.research_core = ResearchCoreFacade(
-            core.experiments,
-            reflections=core.reflection_waves,
-            graph_refs=core.graph_refs,
+        self.artifacts = Artifacts(
+            store=store,
+            blobs=blobs,
+            targets=ResearchTargets(),
         )
-        self.reflection_commands = ReflectionCommands(reflections=self.research_core)
+        self.research = Research(store=store, artifacts=self.artifacts)
+        self.feed = FeedService(
+            store=store,
+            blobs=blobs,
+            web_preview=NetworkWebPreview(),
+        )
+        self.literature = Literature(
+            store=store, unfurl=AllowlistedPaperPreview()
+        )
+        self.reflection_commands = ReflectionCommands(
+            reflections=self.research
+        )
         self.produced_objects = storage
-        self.artifacts = core.artifacts
         self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
         self.project_context = ProjectContextQuery(
-            facts=ProjectContextFactsReader(store=store),
+            research=self.research,
             artifacts=self.artifacts,
         )
         self.experiment_context = ExperimentContextQuery(artifacts=self.artifacts)
         self.experiment_exhibits = ExperimentExhibits(
-            research=self.research_core,
+            research=self.research,
             artifacts=self.artifacts,
             tracking=self._tracking,
         )
         self.reaction_registry = EventDispatcher()
         self.experiment_reactions = ExperimentReactions(
-            research=self.research_core,
-            feed=core.feed,
+            research=self.research,
+            feed=self.feed,
             tracking=self._tracking,
         )
         self.experiment_reactions.bind(self.reaction_registry)
         self.transition_experiment = TransitionExperiment(
-            research=self.research_core,
+            research=self.research,
             artifacts=self.artifacts,
             tracking=self._tracking,
             exhibits=self.experiment_exhibits,
@@ -117,44 +132,45 @@ class ControlApp:
             objects=self.produced_objects,
         )
         self.read_review_status = ReadReviewStatus(
-            research=self.research_core,
-            reviews=core.reviews,
+            research=self.research,
             dispatcher=self.reaction_registry,
         )
         self.tracking_context = GetTrackingContext(
-            research=self.research_core, tracking=self._tracking
+            research=self.research, tracking=self._tracking
         )
         self.agent_experiment_query = AgentExperimentQuery(
-            research=self.research_core,
+            research=self.research,
             objects=self.produced_objects,
             tracking=self._tracking,
         )
         self.start_review_session = StartReviewSession(
-            reviews=core.reviews,
-            research=self.research_core,
+            research=self.research,
+            artifacts=self.artifacts,
             experiment_context=self.experiment_context,
             project_context=self.project_context,
             reflections=self.reflection_commands,
         )
+        self.request_review = RequestReview(research=self.research)
+        self.review_queue = ReviewQueue(research=self.research)
         self.experiment_detail_query = ExperimentDetailQuery(
-            research=self.research_core,
+            research=self.research,
             objects=self.produced_objects,
             tracking=self._tracking,
         )
         self.finalize_tracking_run = FinalizeTrackingRun(
-            research=self.research_core,
-            feed=core.feed,
+            research=self.research,
+            feed=self.feed,
             tracking=self._tracking,
             dispatcher=self.reaction_registry,
             objects=self.produced_objects,
         )
         self.experiment_collection_query = ExperimentCollectionQuery(
-            research=self.research_core,
+            research=self.research,
             objects=self.produced_objects,
         )
-        self.create_experiment = CreateExperiment(research=self.research_core)
+        self.create_experiment = CreateExperiment(research=self.research)
         self.control_tool_operations = ControlToolOperations(
-            projects=core.projects,
+            research=self.research,
             experiments=self.experiment_collection_query,
             project_context=self.project_context,
         )
@@ -167,20 +183,15 @@ class ControlApp:
             storage_enabled=storage.enabled,
             # The sandbox module embeds/calls the component-owned values it is handed.
             storage_hint=STORAGE_RULE_OF_THUMB,
-            attachment_check=self.research_core.assert_experiment_in_project,
+            attachment_check=self.research.assert_experiment_in_project,
         )
         self.sandboxes.start()
-        self.research_snapshots = ResearchSnapshotReader(
-            store=store,
-            experiments=core.experiments,
-            reflections=core.reflection_waves,
-        )
         self.next_action_policy = StatusGuidancePolicy(
             storage_enabled=storage.enabled,
             storage_guidance=storage_guidance(enabled=storage.enabled),
         )
         self.workflow = StatusAndNextQuery(
-            snapshots=self.research_snapshots,
+            research=self.research,
             sandboxes=self.sandboxes,
             policy=self.next_action_policy,
             objects=self.produced_objects,
@@ -189,38 +200,38 @@ class ControlApp:
         )
         self.event_timeline = EventTimelineQuery(source=store)
         self.project_dashboard_query = ProjectDashboardQuery(
-            snapshots=self.research_snapshots,
+            research=self.research,
             workflow=self.workflow,
             artifacts=self.artifacts,
-            review_queue=core.reviews.queue,
+            review_queue=self.review_queue,
             recent_events=self.event_timeline.recent,
             health=(lambda: self._tracking.health()) if self._tracking else (lambda: {}),
-            current=core.projects.current,
+            current=self.research.current_project,
         )
         self.mlflow_overview_query = (
             MlflowOverviewQuery(
-                experiments=self.research_core.project_experiment_summaries,
+                experiments=self.research.project_experiment_summaries,
                 tracking=self._tracking,
             )
             if self._tracking is not None
             else None
         )
         self.experiment_figure_query = ExperimentFigureQuery(
-            experiment_state=self.research_core.experiment_state,
-            review_snapshot=core.reviews.snapshot_from_id,
-            open_reviews=core.reviews.open_requests_for_target,
+            experiment_state=self.research.experiment_state,
+            review_snapshot=self.research.review_snapshot,
+            open_reviews=self.research.open_experiment_reviews,
             sandbox_snapshot=self.sandboxes.figure_snapshot,
         )
         self.compute_cost_query = ComputeCostQuery(
             project_spend=self.sandboxes.project_spend,
-            experiments=self.research_core.project_experiment_summaries,
+            experiments=self.research.project_experiment_summaries,
         )
         self.tenant_counters_query = TenantCountersQuery(
             event_count=store.tenant_event_count,
             generation_counters=self.sandboxes.tenant_generation_counters,
         )
         self.logic_graph_query = LogicGraphQuery(
-            research=self.research_core,
+            research=self.research,
             artifacts=self.artifacts,
         )
         self.user_settings = UserHfTokenSettings(store=store)
@@ -231,16 +242,15 @@ class ControlApp:
         self.tools = ToolDispatcher(
             handlers=build_control_tool_handlers(
                 workflow=self.workflow,
-                projects=core.projects,
-                claims=core.claims,
+                research=self.research,
                 create_experiment=self.create_experiment,
                 reflection_tools=self.reflection_commands,
                 artifact_submissions=self.artifact_tools,
                 storage=self._storage,
-                reviews=core.reviews,
+                review_request=self.request_review,
                 review_session=self.start_review_session,
                 sandboxes=self.sandboxes,
-                feed=core.feed,
+                feed=self.feed,
                 experiment_transition=self.transition_experiment,
                 experiment_exhibit=self.experiment_exhibits,
                 tracking_context=self.tracking_context,
@@ -248,20 +258,19 @@ class ControlApp:
                 tracking_finalize=self.finalize_tracking_run,
                 review_status=self.read_review_status,
                 operations=self.control_tool_operations,
-                litreview=core.literature,
+                litreview=self.literature,
                 tracking_enabled=self._tracking is not None,
             ),
-            permissions=core.permissions,
+            permissions=PermissionService(),
             activity=self.activity,
             tool_calls=self.tool_calls,
             ledger=self.tool_ledger,
             tool_names=tool_names,
         )
         self.http = HttpDependencies(
-            projects=core.projects,
-            reviews=core.reviews,
-            artifacts=core.artifacts,
-            feed=core.feed,
+            research=self.research,
+            artifacts=self.artifacts,
+            feed=self.feed,
             sandboxes=self.sandboxes,
             storage=self._storage,
             timeline=self.event_timeline,
@@ -279,7 +288,8 @@ class ControlApp:
             experiment_figure=self.experiment_figure_query,
             tracking_overview=self.mlflow_overview_query,
             tenant_counters=self.tenant_counters_query,
-            literature=core.literature,
+            review_queue=self.review_queue,
+            literature=self.literature,
             user_settings=self.user_settings,
         )
 

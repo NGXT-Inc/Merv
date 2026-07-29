@@ -1,4 +1,4 @@
-"""Authorization at the external tool boundary."""
+"""Authorization and project membership at the external boundary."""
 
 from __future__ import annotations
 

@@ -10,11 +10,12 @@ from typing import Any
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from ..artifacts import Artifact, Artifacts
-from ..research_core.facade import (
+from ..research_core import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
+    Research,
     ResearchSnapshot,
-    ResearchSnapshots,
 )
 from .experiments.presentation import (
     project_fields,
@@ -31,12 +32,20 @@ from .status_guidance import StatusGuidancePolicy
 Record = dict[str, Any]
 RecordQuery = Callable[..., Record]
 
+_RESULT_WORK = EXPERIMENT_WORKFLOW.effect_sources("result_submission")
+_RESULT_REVIEW = EXPERIMENT_WORKFLOW.effect_destinations("result_submission")
+_DESIGN_REVIEW = {
+    state.name
+    for state in EXPERIMENT_WORKFLOW.states
+    if state.review is not None and state.name not in _RESULT_REVIEW
+}
+_READY_TO_RUN = EXPERIMENT_WORKFLOW.effect_sources("start_attempt_clock")
 _EXPERIMENT_PRIORITY = {
-    "running": 0,
-    "experiment_review": 1,
-    "design_review": 2,
-    "ready_to_run": 3,
-    "planned": 4,
+    **{status: 0 for status in _RESULT_WORK},
+    **{status: 1 for status in _RESULT_REVIEW},
+    **{status: 2 for status in _DESIGN_REVIEW},
+    **{status: 3 for status in _READY_TO_RUN},
+    EXPERIMENT_WORKFLOW.initial: 4,
 }
 _PROCESS_PRIORITY = {"running": 0, "provisioning": 1}
 _STATUS_EXPERIMENT_FIELDS = ("id", "name", "intent", "status", "attempt_index")
@@ -59,7 +68,7 @@ _SANDBOX_SUMMARY_FIELDS = (
 class StatusAndNextQuery:
     """Join Research snapshots to Sandbox reads, then apply pure policy."""
 
-    snapshots: ResearchSnapshots
+    research: Research
     sandboxes: SandboxReads
     policy: StatusGuidancePolicy
     objects: ProducedObjectCatalog
@@ -69,7 +78,7 @@ class StatusAndNextQuery:
     def status_and_next(
         self, *, project_id: str | None = None, experiment_id: str | None = None
     ) -> Record:
-        snapshot = self.snapshots.read(
+        snapshot = self.research.snapshot(
             project_id=project_id, experiment_id=experiment_id
         )
         selected = snapshot.selected_experiment
@@ -115,7 +124,7 @@ class StatusAndNextQuery:
     ) -> tuple[Record, Record, list[Record]]:
         experiments = self._enrich(
             project_id=snapshot.project_id,
-            experiments=snapshot.experiment_states,
+            experiments=snapshot.experiments,
         )
         by_id = {str(item["id"]): item for item in experiments}
         selected = (
@@ -293,7 +302,7 @@ class StatusAndNextQuery:
 class ProjectDashboardQuery:
     """One project snapshot backs both the rich Home and compact orientation."""
 
-    snapshots: ResearchSnapshots
+    research: Research
     workflow: StatusAndNextQuery
     artifacts: Artifacts
     review_queue: RecordQuery
@@ -302,9 +311,7 @@ class ProjectDashboardQuery:
     current: RecordQuery
 
     def __call__(self, *, project_id: str) -> Record:
-        snapshot = self.snapshots.read(
-            project_id=project_id, hydrate_all_experiments=True
-        )
+        snapshot = self.research.snapshot(project_id=project_id)
         status, work, experiments = self.workflow.project_models(
             snapshot=snapshot,
             sandboxes=self.workflow.sandboxes.for_project(project_id=project_id),
@@ -357,11 +364,7 @@ class ProjectDashboardQuery:
         project_id = str(project.get("id") or "")
         if not result.get("exists") or not project_id:
             return result
-        snapshot = self.snapshots.read(
-            project_id=project_id,
-            dashboard_facts=True,
-            hydrate_selected_experiment=False,
-        )
+        snapshot = self.research.snapshot(project_id=project_id)
         return {**result, "at_a_glance": self._at_a_glance(snapshot)}
 
     def _at_a_glance(self, snapshot: ResearchSnapshot) -> Record:

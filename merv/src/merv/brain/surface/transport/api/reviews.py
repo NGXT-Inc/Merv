@@ -6,14 +6,15 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Request
 
-from ....research_core.facade import ResearchReviewDelivery
+from ....application.facade import ReviewQueue
+from ....research_core import Research
 from .shared import JsonBody, path_scoped_body
 
 from .context import ApiRouteContext
 
 
 def build_router(
-    ctx: ApiRouteContext, *, review_delivery: ResearchReviewDelivery
+    ctx: ApiRouteContext, *, research: Research, queue: ReviewQueue
 ) -> APIRouter:
     api_router = APIRouter()
 
@@ -25,7 +26,7 @@ def build_router(
         target_id: str | None = None,
     ) -> dict[str, Any]:
         if not target_id:
-            return review_delivery.queue(project_id=project_id)
+            return queue(project_id=project_id)
         return ctx.call_tool(
             request,
             name="review.status",
@@ -53,7 +54,7 @@ def build_router(
         body: JsonBody = Body(default=None),
     ) -> dict[str, Any]:
         payload = body or {}
-        review_delivery.assert_request_in_project(
+        research.assert_review_in_project(
             project_id=project_id,
             review_request_id=payload.get("review_request_id"),
         )
@@ -69,7 +70,7 @@ def build_router(
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
         payload = body or {}
-        review_delivery.assert_session_in_project(
+        research.assert_review_in_project(
             project_id=project_id,
             review_session_id=payload.get("review_session_id"),
         )

@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ..research_core import EXPERIMENT_WORKFLOW
+
 FIGURE_SCHEMA_VERSION = 2
 
 # Artifact roles that feed an attempt vs. ones an attempt produces (legacy
@@ -36,22 +38,41 @@ ARTIFACT_FANOUT_CAP = 6
 # Which artifacts survive the cap, most-load-bearing first.
 _ROLE_PRIORITY = {"plan": 0, "report": 1, "result": 2, "model": 3, "input": 4, "code": 5, "config": 6, "note": 7}
 
+_ACTIVE_ATTEMPT_STATUSES = (
+    EXPERIMENT_WORKFLOW.effect_sources("result_submission")
+    | EXPERIMENT_WORKFLOW.effect_destinations("result_submission")
+)
 _ATTEMPT_STATUS = {
-    "planned": "pending",
-    "design_review": "pending",
-    "ready_to_run": "pending",
-    "running": "active",
-    "experiment_review": "active",
-    "complete": "done",
-    "failed": "failed",
-    "abandoned": "abandoned",
+    state.name: "active" if state.name in _ACTIVE_ATTEMPT_STATUSES else "pending"
+    for state in EXPERIMENT_WORKFLOW.states
 }
+_ATTEMPT_STATUS.update(
+    {
+        EXPERIMENT_WORKFLOW.success_status: "done",
+        **{
+            status: "failed"
+            for status in EXPERIMENT_WORKFLOW.effect_destinations("fail_tracking")
+        },
+        **{
+            status: "abandoned"
+            for status in EXPERIMENT_WORKFLOW.effect_destinations("stop_tracking")
+        },
+    }
+)
 
 _REVIEW_LABELS = {
-    "design_reviewer": "Design review",
-    "experiment_reviewer": "Experiment review",
+    state.review.role: state.review.action_name.replace("_", " ").capitalize()
+    for state in EXPERIMENT_WORKFLOW.states
+    if state.review is not None
+}
+_REVIEW_LABELS.update({
     "human": "Human review",
     "automated_check": "Automated check",
+})
+_RESULT_SUBMISSION_TRANSITIONS = {
+    transition.name
+    for transition in EXPERIMENT_WORKFLOW.transitions
+    if "result_submission" in transition.effects
 }
 
 
@@ -107,7 +128,7 @@ def build_experiment_figure(
     caller's liveness verdict (the sandbox module owns status vocabulary).
     """
     current_attempt = max(1, int(experiment.get("attempt_index") or 1))
-    status = str(experiment.get("status") or "planned")
+    status = str(experiment.get("status") or EXPERIMENT_WORKFLOW.initial)
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -149,14 +170,14 @@ def build_experiment_figure(
             add_edge(f"attempt:{k - 1}", f"attempt:{k}", "revised_to")
 
     # ---- submission attempts: the rounds inside an experiment attempt ----
-    # Only submit_results rounds become nodes. Every forward transition seals a
+    # Only result-submission rounds become nodes. Every forward transition seals a
     # composition, but a plan submission is already drawn by the attempt spine;
     # what has no home on the canvas is the report round, which is exactly the
-    # thing send_back_to_running repeats without bumping the attempt.
+    # thing a review return to running repeats without bumping the attempt.
     submissions = [
         row
         for row in experiment.get("submissions", [])
-        if str(row.get("transition") or "") == "submit_results"
+        if str(row.get("transition") or "") in _RESULT_SUBMISSION_TRANSITIONS
     ]
     submission_nodes: dict[str, str] = {}
     rounds_by_attempt: dict[int, list[dict[str, Any]]] = {}
@@ -305,10 +326,13 @@ def build_experiment_figure(
             # Only a rejection sent back to planning spawns the next attempt.
             # One sent back to running is another round of this same attempt,
             # already drawn by the submission chain.
+            route = EXPERIMENT_WORKFLOW.return_route(
+                str(review.get("return_to") or "")
+            )
             if (
                 verdict == "needs_changes"
                 and attempt < current_attempt
-                and str(review.get("return_to") or "") != "running"
+                and (route is None or route.attempt == "new")
             ):
                 add_edge(node_id, f"attempt:{attempt + 1}", "revised_to")
         tails[root] = (source, source_verdict)

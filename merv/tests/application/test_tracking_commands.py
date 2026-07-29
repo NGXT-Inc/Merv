@@ -17,7 +17,9 @@ from merv.brain.application.experiments.tracking import (
 from merv.brain.application.events import EventDispatcher
 from merv.brain.application.experiments.reactions import ExperimentReactions
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
-from merv.brain.research_core.facade import CommittedTrackingRunRefresh
+from merv.brain.research_core.models import (
+    CommittedExperimentUpdate as CommittedTrackingRunRefresh,
+)
 
 
 PRESENTATION_LOGGER = "merv.brain.application.experiments.tracking_presentation"

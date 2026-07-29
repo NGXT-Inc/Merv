@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ...research_core.facade import ExperimentState, ResearchCore
+from ...research_core import ExperimentState, Research
 from ..ports.storage import ProducedObject, ProducedObjectCatalog
 from .presentation import rich_experiment_state, slim_experiment_state
 
@@ -14,7 +14,7 @@ from .presentation import rich_experiment_state, slim_experiment_state
 class ExperimentCollectionQuery:
     """Batch-compose Research states with produced-object facts."""
 
-    research: ResearchCore
+    research: Research
     objects: ProducedObjectCatalog
 
     def rich(self, *, project_id: str | None = None) -> list[ExperimentState]:

@@ -106,7 +106,7 @@ class GraphResearch:
     def project_logic_graph_selection(self, **_kwargs):
         return {"reflection": None, "graph_artifact": None, "signal": "stale"}
 
-    def resolve_research_graph_refs(self, **kwargs):
+    def resolve_graph_refs(self, **kwargs):
         self.resolved.append(kwargs)
         return {
             ref: {"type": "claim", "resolved": True}
@@ -243,7 +243,7 @@ class ApplicationQueryTest(unittest.TestCase):
 
     def test_logic_graph_query_composes_refs_in_first_seen_order(self) -> None:
         class MixedResearch(GraphResearch):
-            def resolve_research_graph_refs(self, **kwargs):
+            def resolve_graph_refs(self, **kwargs):
                 self.resolved.append(kwargs)
                 return {
                     "claim_1": {"type": "claim", "resolved": True},

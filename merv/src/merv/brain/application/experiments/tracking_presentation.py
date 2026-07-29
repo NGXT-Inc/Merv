@@ -5,10 +5,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ...research_core import EXPERIMENT_WORKFLOW
 from ..ports.tracking import ExperimentTracking
 
 
 LOGGER = logging.getLogger(__name__)
+
+_TRACKING_VISIBLE_STATUSES = frozenset().union(
+    *(
+        EXPERIMENT_WORKFLOW.effect_destinations(effect)
+        for effect in (
+            "start_tracking",
+            "restart_tracking",
+            "finish_tracking",
+            "fail_tracking",
+        )
+    )
+)
 
 _PRESENTATION_REPAIR = (
     "The state change is committed; only the MLflow context block failed to "
@@ -29,9 +42,7 @@ def tracking_warning(*, error: str, repair: str) -> dict[str, str]:
 
 def tracking_visible_for_status(status: object) -> bool:
     """Whether experiment state should carry the tracking context block."""
-    return str(status or "") in (
-        "running", "experiment_review", "complete", "failed"
-    )
+    return str(status or "") in _TRACKING_VISIBLE_STATUSES
 
 
 def tracking_connection(

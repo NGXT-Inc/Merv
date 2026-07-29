@@ -13,7 +13,9 @@ from merv.brain.application.experiments.reactions import (
 from merv.brain.application.experiments.transition import TransitionExperiment
 from merv.brain.application.ports.tracking import TrackingCapabilities
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
-from merv.brain.research_core.transition_types import CommittedExperimentTransition
+from merv.brain.research_core.models import (
+    CommittedExperimentUpdate as CommittedExperimentTransition,
+)
 
 
 REACTIONS_LOGGER = "merv.brain.application.experiments.reactions"
@@ -346,6 +348,8 @@ class RecordingResearch:
                 "delivery_id": delivery_id,
             }
         )
+        if delivery_id is not None and int(delivery_id) in self.ledger:
+            return self.current or self.ledger[int(delivery_id)]
         failure = (
             self.persistence_errors.pop(0)
             if self.persistence_errors
@@ -368,10 +372,41 @@ class RecordingResearch:
         else:
             state = dict(self.committed)
             state["mlflow_run"] = deepcopy(run)
+        if delivery_id is not None:
+            state = deepcopy(state)
+            state.setdefault("mlflow_run", {})["delivery_id"] = int(delivery_id)
         self.current = state
         if delivery_id is not None:
             self.ledger[int(delivery_id)] = state
         return state
+
+    def refresh_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: dict[str, Any],
+    ) -> CommittedExperimentTransition:
+        self.order.append("research.record_tracking")
+        self.persist_calls.append(
+            {
+                "project_id": project_id,
+                "experiment_id": experiment_id,
+                "run": deepcopy(run),
+                "event_type": "experiment.mlflow_run_refreshed",
+                "delivery_id": None,
+            }
+        )
+        if self.persistence_error is not None:
+            raise self.persistence_error
+        state = self._commit(run=run, delivery_id=None)
+        return CommittedExperimentTransition(
+            state=state,
+            event=_event(
+                "refresh_tracking",
+                event_type="experiment.mlflow_run_refreshed",
+            ),
+        )
 
     def tracking_delivery_state(
         self, *, project_id: str, experiment_id: str, delivery_id: int
@@ -784,17 +819,15 @@ class StartAndRetryTransitionTest(unittest.TestCase):
                 project_id=PROJECT_ID,
             )
 
-        self.assertEqual(len(research.persist_calls), 1)
+        self.assertEqual(len(research.persist_calls), 2)
         self.assertEqual(len(tracking.create_calls), 1)
-        self.assertIn("research.tracking_delivery", order)
         # The correlation key is the delivery, not the run id or the message.
         self.assertEqual(research.persist_calls[0]["delivery_id"], 41)
-        # Two reads on the same key: the redelivery pre-check before the first
-        # write, then the lost-acknowledgement re-read before the retry.
-        self.assertEqual(research.delivery_reads, [41, 41])
+        self.assertEqual(research.delivery_reads, [])
+        self.assertEqual(set(research.ledger), {41})
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
         self.assertNotIn("mlflow_warning", result)
-        self.assertIn("is durable after all", "\n".join(logs.output))
+        self.assertIn("Retrying the durable", "\n".join(logs.output))
 
     def test_start_ignores_a_prior_deliverys_identical_run_as_proof(self) -> None:
         # A stale identical run id from an EARLIER delivery is not this
@@ -822,7 +855,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             )
 
         self.assertEqual(len(research.persist_calls), 2)
-        self.assertEqual(research.delivery_reads, [41, 41])
+        self.assertEqual(research.delivery_reads, [])
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
 
     def test_start_ignores_a_prior_deliverys_identical_error_as_proof(self) -> None:
@@ -859,8 +892,18 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             )
 
         self.assertEqual(len(research.persist_calls), 2)
-        self.assertEqual(research.delivery_reads, [41, 41])
-        self.assertIs(research.ledger[41], persisted)
+        self.assertEqual(research.delivery_reads, [])
+        self.assertEqual(
+            {
+                **research.ledger[41],
+                "mlflow_run": {
+                    key: value
+                    for key, value in research.ledger[41]["mlflow_run"].items()
+                    if key != "delivery_id"
+                },
+            },
+            persisted,
+        )
         self.assertEqual(result["mlflow_warning"]["error"], outage)
 
     def test_start_does_not_double_append_when_a_rival_delivery_overwrites(
@@ -878,14 +921,18 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             create_result=_created_run(),
             persistence_errors=[LostAck(RuntimeError("connection reset by peer"))],
         )
-        original_read = research.tracking_delivery_state
+        original_write = research.record_tracking_run
+        calls = 0
 
-        def rival_wins(**kwargs: Any) -> dict[str, Any] | None:
-            research.current = rival  # B's write lands between A's write and read
-            research.ledger[99] = rival
-            return original_read(**kwargs)
+        def rival_wins(**kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                research.current = rival
+                research.ledger[99] = rival
+            return original_write(**kwargs)
 
-        research.tracking_delivery_state = rival_wins  # type: ignore[method-assign]
+        research.record_tracking_run = rival_wins  # type: ignore[method-assign]
 
         with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
             result = use_case.execute(
@@ -894,12 +941,12 @@ class StartAndRetryTransitionTest(unittest.TestCase):
                 project_id=PROJECT_ID,
             )
 
-        self.assertEqual(len(research.persist_calls), 1)
+        self.assertEqual(len(research.persist_calls), 2)
         self.assertEqual(len(tracking.create_calls), 1)
-        self.assertEqual(research.delivery_reads, [41, 41])
+        self.assertEqual(research.delivery_reads, [])
         # The durable truth, not this delivery's intent.
         self.assertEqual(result["mlflow_run"]["run_id"], "run_rival")
-        self.assertIn("Current durable run: run_rival", "\n".join(logs.output))
+        self.assertIn("Retrying the durable", "\n".join(logs.output))
 
     def test_start_redelivery_of_an_error_only_outcome_creates_no_second_run(
         self,
@@ -911,30 +958,30 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         outage = "MLflow run creation failed: tracking control plane down"
         served = _state(
             "running",
-            run={"run_id": None, "status": "", "error": outage},
+            run={
+                "run_id": None,
+                "status": "",
+                "error": outage,
+                "delivery_id": 41,
+            },
             token="served",
         )
         use_case, research, tracking, _feed, _order = self._fixture(
-            committed=_state("running", run=None),
+            committed=served,
             event=_event("retry_running"),
             create_result=_created_run(),
         )
-        research.ledger[41] = served
-        research.current = served
-
-        with self.assertLogs(REACTIONS_LOGGER, level="WARNING") as logs:
-            result = use_case.execute(
-                experiment_id=EXPERIMENT_ID,
-                transition="retry_running",
-                project_id=PROJECT_ID,
-            )
+        result = use_case.execute(
+            experiment_id=EXPERIMENT_ID,
+            transition="retry_running",
+            project_id=PROJECT_ID,
+        )
 
         self.assertEqual(tracking.create_calls, [])
         self.assertEqual(research.persist_calls, [])
-        self.assertEqual(research.delivery_reads, [41])
+        self.assertEqual(research.delivery_reads, [])
         # The redelivery reproduces the answer the first delivery gave.
         self.assertEqual(result["mlflow_warning"]["error"], outage)
-        self.assertIn("already has a durable outcome", "\n".join(logs.output))
 
     def test_start_retries_when_the_ledger_shows_no_durable_write(self) -> None:
         # A ledger with no entry for this delivery means the first write really
@@ -969,7 +1016,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             create_result=_created_run(),
             persistence_errors=[RuntimeError("connection reset"), None],
         )
-        research.ledger_error = RuntimeError("read replica unavailable")
+        research.ledger_error = RuntimeError("unused read path")
 
         with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
             result = use_case.execute(
@@ -980,7 +1027,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
 
         self.assertEqual(len(research.persist_calls), 2)
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
-        self.assertIn("read replica unavailable", "\n".join(logs.output))
+        self.assertNotIn("unused read path", "\n".join(logs.output))
 
     def test_start_adapter_and_double_persistence_failure_keep_both_causes(
         self,
@@ -1562,7 +1609,7 @@ class SubmitResultsExhibitPrerequisiteTest(unittest.TestCase):
             result["metrics_exhibit"],
             {
                 "pinned": True,
-                "path": "experiments/a-characterized-experiment/metrics_exhibit.json",
+                "path": "experiments/A_Characterized_Experiment/metrics_exhibit.json",
                 "verdict": {"runs_found": 1, "result_files": 0},
             },
         )

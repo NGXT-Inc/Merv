@@ -24,7 +24,7 @@ from ...identity import (
 )
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.tool_facade import ToolDispatcher
-from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
+from ....research_core import Research
 from ....sandbox import SandboxEngine
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
@@ -33,8 +33,6 @@ from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
                      open_hosted_operator_denial, operator_denial,
                      operator_membership_recovery)
 from . import oauth, project_keys
-
-
 @dataclass(frozen=True)
 class RequestAuthenticator:
     """Resolve a request principal without coupling the factory to a verifier."""
@@ -91,7 +89,7 @@ class RequestAuthenticator:
 class ProjectAuthorizer:
     """The single project-membership boundary for every HTTP entry path."""
 
-    projects: ResearchProjects
+    research: Research
     _project_path = re.compile(r"^/api/projects/([^/]+)")
     _query_scoped_prefixes = ("/api/activity", "/api/debug/")
     # Operator/tenant diagnostics an mk_ key must never reach (INV-11).
@@ -127,7 +125,9 @@ class ProjectAuthorizer:
         if (
             user_id
             and project_id
-            and not self.projects.is_member(project_id=project_id, user_id=user_id)
+            and not self.research.is_project_member(
+                project_id=project_id, user_id=user_id
+            )
         ):
             raise NotFoundError(f"project not found: {project_id}")
 
@@ -167,7 +167,7 @@ class ProjectAuthorizer:
         gated = project_id and not (owner_key and owner_key.match(path))
         if gated and operator_membership_recovery(request):
             gated = False  # operator re-staffing an orphaned project
-        if gated and not self.projects.is_member(
+        if gated and not self.research.is_project_member(
             project_id=project_id, user_id=self.user_id(request.state.principal)
         ):
             return JSONResponse(
@@ -182,7 +182,7 @@ class ToolInvocationGateway:
     """Apply hosted-tool policy before delegating to application commands."""
 
     tools: ToolDispatcher
-    reviews: ResearchReviewDelivery
+    research: Research
     sandboxes: SandboxEngine
     surface: HttpSurfacePolicy
     projects: ProjectAuthorizer
@@ -286,7 +286,7 @@ class ToolInvocationGateway:
             call_kwargs["telemetry_project_id"] = project_scope
         if policy is not None:
             if policy.telemetry_from_review_request:
-                project_id = self.reviews.request_project_id(
+                project_id = self.research.review_project_id(
                     review_request_id=arguments.get("review_request_id")
                 )
                 self.projects.require_member(project_id=project_id, principal=principal)
@@ -296,7 +296,7 @@ class ToolInvocationGateway:
             if policy.telemetry_from_review_session:
                 # INV-9: the session's own project decides scope, so an mk_ key
                 # cannot ride a foreign session id into another project.
-                project_id = self.reviews.session_project_id(
+                project_id = self.research.review_project_id(
                     review_session_id=arguments.get("review_session_id")
                 )
                 self.projects.require_member(project_id=project_id, principal=principal)

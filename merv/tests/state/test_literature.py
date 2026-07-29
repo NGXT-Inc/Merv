@@ -7,17 +7,17 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import NotFoundError, ValidationError
-from merv.brain.research_core.claims import ClaimService
-from merv.brain.research_core.literature import (
+from merv.brain.literature.literature import (
+    Literature,
     MAX_BODY_BYTES,
     MAX_SECTIONS,
-    LiteratureService,
     normalize_paper_identity,
 )
-from merv.brain.research_core.projects import ProjectService
+from merv.brain.research_core import Research
 
 
 class FakeUnfurl:
@@ -118,13 +118,13 @@ class NormalizeIdentityTest(unittest.TestCase):
             normalize_paper_identity(url="ftp://example.com/p")
 
 
-class LiteratureServiceTest(unittest.TestCase):
+class LiteratureTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
         self.unfurl = FakeUnfurl()
-        self.svc = LiteratureService(store=self.store, unfurl=self.unfurl)
-        self.claims = ClaimService(store=self.store)
+        self.svc = Literature(store=self.store, unfurl=self.unfurl)
+        self.research = Research(store=self.store, artifacts=Mock())
         with closing(self.store.connect()) as conn:
             row = conn.execute("SELECT id FROM projects").fetchone()
             self.project_id = str(row["id"])
@@ -348,7 +348,7 @@ class LiteratureServiceTest(unittest.TestCase):
             self.assertEqual(int(count["n"]), 1)
 
     def test_fetch_failure_registers_failed_then_upgrades(self) -> None:
-        failing = LiteratureService(store=self.store, unfurl=FakeUnfurl(fail=True))
+        failing = Literature(store=self.store, unfurl=FakeUnfurl(fail=True))
         result = failing.cite(
             project_id=self.project_id, arxiv_id="2107.03374", title="Fallback"
         )
@@ -364,7 +364,7 @@ class LiteratureServiceTest(unittest.TestCase):
         self.assertEqual(downgrade["paper"]["title"], "Fetched Title")
 
     def test_links_validate_same_project_targets(self) -> None:
-        claim = self.claims.create(
+        claim = self.research.create_claim(
             statement="Token density drives quality.", project_id=self.project_id
         )
         section = self._add("Token density")
@@ -384,8 +384,10 @@ class LiteratureServiceTest(unittest.TestCase):
         )
         self.assertEqual(again["new_links"], [])
         # A claim from another project reads as not-found.
-        other = ProjectService(store=self.store).create(name="Other project")
-        foreign = self.claims.create(statement="Foreign.", project_id=other["id"])
+        other = self.research.create_project(name="Other project")
+        foreign = self.research.create_claim(
+            statement="Foreign.", project_id=other["id"]
+        )
         with self.assertRaises(NotFoundError):
             self.svc.cite(
                 project_id=self.project_id, arxiv_id="2107.03374",

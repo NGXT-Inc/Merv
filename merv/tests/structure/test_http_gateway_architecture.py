@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from tests.paths import RESEARCH_CORE_ROOT, SURFACE_ROOT
+from tests.paths import SURFACE_ROOT
 
 
 API = SURFACE_ROOT / "transport" / "api"
@@ -81,16 +81,18 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
 
     def test_project_membership_has_one_transport_lookup(self) -> None:
         package_source = "\n".join(
-            path.read_text(encoding="utf-8") for path in API.glob("*.py")
+            path.read_text(encoding="utf-8")
+            for path in API.glob("*.py")
+            if path != GATEWAY
         )
         gateway_source = GATEWAY.read_text(encoding="utf-8")
-        projects_source = (RESEARCH_CORE_ROOT / "projects.py").read_text(
-            encoding="utf-8"
-        )
         self.assertNotIn("is_project_member", package_source)
-        self.assertEqual(gateway_source.count("self.projects.is_member("), 2)
-        self.assertIn("ProjectAuthorizer(projects=api.projects)", APP.read_text())
-        self.assertIn("def is_member(", projects_source)
+        self.assertEqual(
+            gateway_source.count("self.research.is_project_member("), 2
+        )
+        self.assertIn(
+            "ProjectAuthorizer(research=api.research)", APP.read_text()
+        )
 
     def test_gateway_names_the_three_public_boundaries(self) -> None:
         source = GATEWAY.read_text(encoding="utf-8")

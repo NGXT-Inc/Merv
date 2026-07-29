@@ -1,3 +1,4 @@
+# If you update this file, you must consult research_core.md to see whether research_core.md needs to be updated. research_core.md must not exceed 100 lines.
 """Project reflection wave state service.
 
 A reflection wave is the project-level counterpart of an experiment: a gated
@@ -18,54 +19,43 @@ from typing import Any
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_ROLE
 
-from .domain.experiment_names import validate_experiment_name
-from .domain.experiment_policy import (
-    ACTIVE_EXPERIMENT_CAP,
-    active_experiment_cap_would_exceed_message,
-)
-from .domain.graph_lint import graph_problems
-from .domain.gates import RoleRequirement
-from .domain.reflection_artifacts import (
+from .evidence import (
+    ArtifactDocument,
+    artifact_state_record,
+    artifact_submission_recency_key,
     claim_refs,
+    current_slot_artifacts,
     current_reflection_requirement_artifact,
     graph_diff,
     graph_diff_summary,
+    graph_problems,
     parse_change_spec,
+    preferred_artifact,
     reflection_coverage_for,
-    reflection_lens_doc_problems,
     reflection_doc_review_problems,
+    reflection_lens_doc_problems,
+    require_artifact_document,
     validate_reflection_roster,
 )
-from .domain.reflection_policy import (
-    covered_terminal_ids,
-    reflection_signal_state,
+from .experiment_workflow import (
+    EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
 )
-from .domain.artifact_evidence import (
-    ArtifactDocument,
-    artifact_state_record,
-    current_slot_artifacts,
-    artifact_submission_recency_key,
-    preferred_artifact,
-    require_artifact_document,
-)
+from .reflection_workflow import REFLECTION_WORKFLOW
 from ..artifacts import MAX_SUBMITTED_TEXT_BYTES, ArtifactTarget, Artifacts
-from .domain.review_snapshot import review_snapshot_id
-from .domain.reflection_gates import (
-    REFLECTION_GATE_TABLE,
-    REFLECTION_TERMINAL_STATUSES,
-    allowed_reflection_transitions_for,
-)
-from .domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
-from .gate_evaluation import (
+from .policy import (
+    ACTIVE_EXPERIMENT_CAP,
     GateEvaluation,
     GateItem,
     RequirementEvaluation,
+    active_experiment_cap_would_exceed_message,
+    covered_terminal_ids,
     evaluate_artifact_requirement,
+    evaluate_review_gate,
+    reflection_signal_state,
+    validate_experiment_name,
 )
-from ..kernel.ports.reflection_writers import (
-    ReflectionClaimWriter,
-    ReflectionExperimentWriter,
-)
+from .workflow_schema import ArtifactNeed, ReviewReturn
 from ..kernel.state.store import (
     BaseStateStore,
     next_created_seq,
@@ -73,7 +63,6 @@ from ..kernel.state.store import (
     rows_to_dicts,
 )
 from ..kernel.utils import NotFoundError, WorkflowError, new_id, now_iso
-from .review_gate import evaluate_review_gate
 
 
 class ReflectionService:
@@ -81,13 +70,9 @@ class ReflectionService:
         self,
         *,
         store: BaseStateStore,
-        claims: ReflectionClaimWriter,
-        experiment_writer: ReflectionExperimentWriter,
         artifacts: Artifacts,
     ) -> None:
         self.store = store
-        self.claims = claims
-        self.experiment_writer = experiment_writer
         self.artifacts = artifacts
 
     # ---- create ----
@@ -102,13 +87,15 @@ class ReflectionService:
         roster = validate_reflection_roster(lenses=lenses or [])
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            terminal = tuple(sorted(REFLECTION_WORKFLOW.terminal_statuses))
+            placeholders = ", ".join("?" for _ in terminal)
             open_row = conn.execute(
-                """
+                f"""
                 SELECT id, status FROM reflections
-                WHERE project_id = ? AND status NOT IN ('published', 'abandoned')
+                WHERE project_id = ? AND status NOT IN ({placeholders})
                 ORDER BY created_seq DESC LIMIT 1
                 """,
-                (project_id,),
+                (project_id, *terminal),
             ).fetchone()
             if open_row is not None:
                 raise WorkflowError(
@@ -125,12 +112,13 @@ class ReflectionService:
                 INSERT INTO reflections
                   (id, project_id, title, status, attempt_index, revision_context,
                    roster_json, corpus_json, created_at, updated_at, created_seq)
-                VALUES (?, ?, ?, 'reflecting', 1, '', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 1, '', ?, ?, ?, ?, ?)
                 """,
                 (
                     reflection_id,
                     project_id,
                     title.strip(),
+                    REFLECTION_WORKFLOW.initial,
                     json.dumps(roster, sort_keys=True),
                     json.dumps(corpus, sort_keys=True),
                     now,
@@ -151,7 +139,9 @@ class ReflectionService:
                 },
             )
             return self.get_state(
-                reflection_id=reflection_id, conn=conn, include_content=True
+                reflection_id=reflection_id,
+                conn=conn,
+                include_content=True,
             )
 
     def _corpus_snapshot(self, *, conn, project_id: str) -> dict[str, Any]:
@@ -306,12 +296,19 @@ class ReflectionService:
                 data["artifacts"], attempt=data["attempt_index"]
             )
             if include_content:
+                content = self._artifact_content(
+                    corpus=data["corpus"],
+                    current=data["current_attempt_artifacts"],
+                )
                 data["corpus"] = self._hydrate_corpus_content(
-                    conn=conn, corpus=data["corpus"]
+                    conn=conn,
+                    corpus=data["corpus"],
+                    content=content,
                 )
                 data["current_attempt_artifacts"] = (
                     self._hydrate_current_attempt_artifacts(
-                        artifacts=data["current_attempt_artifacts"]
+                        artifacts=data["current_attempt_artifacts"],
+                        content=content,
                     )
                 )
             claim_rows = conn.execute(
@@ -375,37 +372,39 @@ class ReflectionService:
         }
 
     def _hydrate_artifact_content(
-        self, *, artifact: dict[str, Any]
+        self,
+        *,
+        artifact: dict[str, Any],
+        content: dict[str, bytes | None],
     ) -> dict[str, Any]:
         artifact_id = str(
             artifact.get("artifact_id") or artifact.get("id") or ""
         )
-        found = self.artifacts.get(
-            artifact_ids=(artifact_id,),
-            include="content",
-        )
-        content = None
+        data = content.get(artifact_id)
+        text = None
         truncated = False
-        if found and found[0].data is not None:
-            data = found[0].data
+        if data is not None:
             truncated = len(data) > MAX_SUBMITTED_TEXT_BYTES
-            content = data[:MAX_SUBMITTED_TEXT_BYTES].decode(
+            text = data[:MAX_SUBMITTED_TEXT_BYTES].decode(
                 "utf-8", errors="replace"
             )
-            encoded = content.encode("utf-8")
+            encoded = text.encode("utf-8")
             if len(encoded) > MAX_SUBMITTED_TEXT_BYTES:
-                content = encoded[:MAX_SUBMITTED_TEXT_BYTES].decode(
+                text = encoded[:MAX_SUBMITTED_TEXT_BYTES].decode(
                     "utf-8", errors="ignore"
                 )
         return {
             **{key: value for key, value in artifact.items() if key != "tldr"},
-            "content": content,
-            "content_available": content is not None,
+            "content": text,
+            "content_available": text is not None,
             "content_truncated": truncated,
         }
 
     def _hydrate_current_attempt_artifacts(
-        self, *, artifacts: list[dict[str, Any]]
+        self,
+        *,
+        artifacts: list[dict[str, Any]],
+        content: dict[str, bytes | None],
     ) -> list[dict[str, Any]]:
         latest_lens_docs: dict[str, dict[str, Any]] = {}
         for artifact in artifacts:
@@ -431,7 +430,9 @@ class ReflectionService:
             ):
                 continue
             hydrated.append(
-                self._hydrate_artifact_content(artifact=artifact)
+                self._hydrate_artifact_content(
+                    artifact=artifact, content=content
+                )
                 if role
                 in {
                     REFLECTION_LENS_DOC_ROLE,
@@ -444,7 +445,11 @@ class ReflectionService:
         return hydrated
 
     def _hydrate_corpus_content(
-        self, *, conn, corpus: dict[str, Any]
+        self,
+        *,
+        conn,
+        corpus: dict[str, Any],
+        content: dict[str, bytes | None],
     ) -> dict[str, Any]:
         hydrated = dict(corpus)
         hydrated["claims"] = self._backfill_claim_fields(
@@ -458,11 +463,13 @@ class ReflectionService:
                 else {"artifact_id": None, "path": str(raw), "role": REFLECTION_LENS_DOC_ROLE}
             )
             previous_lenses[str(lens_id)] = self._hydrate_artifact_content(
-                artifact=reference
+                artifact=reference, content=content
             )
         hydrated["previous_lens_reflections"] = previous_lenses
         hydrated["previous_published_artifacts"] = {
-            str(role): self._hydrate_artifact_content(artifact=dict(reference))
+            str(role): self._hydrate_artifact_content(
+                artifact=dict(reference), content=content
+            )
             for role, reference in (
                 corpus.get("previous_published_artifacts") or {}
             ).items()
@@ -472,7 +479,9 @@ class ReflectionService:
             {
                 **experiment,
                 "artifacts": [
-                    self._hydrate_artifact_content(artifact=dict(reference))
+                    self._hydrate_artifact_content(
+                        artifact=dict(reference), content=content
+                    )
                     for reference in experiment.get("artifacts") or []
                     if isinstance(reference, dict)
                 ],
@@ -481,6 +490,53 @@ class ReflectionService:
             if isinstance(experiment, dict)
         ]
         return hydrated
+
+    def _artifact_content(
+        self,
+        *,
+        corpus: dict[str, Any],
+        current: list[dict[str, Any]],
+    ) -> dict[str, bytes | None]:
+        references: list[dict[str, Any]] = list(current)
+        references.extend(
+            reference
+            for reference in (
+                corpus.get("previous_lens_reflections") or {}
+            ).values()
+            if isinstance(reference, dict)
+        )
+        references.extend(
+            reference
+            for reference in (
+                corpus.get("previous_published_artifacts") or {}
+            ).values()
+            if isinstance(reference, dict)
+        )
+        for experiment in corpus.get("terminal_experiments") or []:
+            if isinstance(experiment, dict):
+                references.extend(
+                    reference
+                    for reference in experiment.get("artifacts") or []
+                    if isinstance(reference, dict)
+                )
+        artifact_ids = tuple(
+            dict.fromkeys(
+                str(
+                    reference.get("artifact_id")
+                    or reference.get("id")
+                    or ""
+                )
+                for reference in references
+                if reference.get("artifact_id") or reference.get("id")
+            )
+        )
+        return {
+            artifact.id: artifact.data
+            for artifact in self.artifacts.get(
+                artifact_ids=artifact_ids,
+                include="content",
+            )
+        }
 
     def _backfill_claim_fields(
         self, *, conn, claims: list[Any]
@@ -551,8 +607,8 @@ class ReflectionService:
 
         The UI prefers the open wave's graph while the wave is open,
         falling back to the latest published graph when the open wave has not
-        submitted one yet. The transport layer owns response shaping; this
-        service owns the record reads and selection policy.
+        submitted one yet. Research owns this selection; Surface owns its wire
+        presentation.
         """
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -573,13 +629,15 @@ class ReflectionService:
 
     def open_reflection(self, *, conn, project_id: str) -> dict[str, Any] | None:
         """The one non-terminal wave for the project, fully hydrated, or None."""
+        terminal = tuple(sorted(REFLECTION_WORKFLOW.terminal_statuses))
+        placeholders = ", ".join("?" for _ in terminal)
         row = conn.execute(
-            """
+            f"""
             SELECT id FROM reflections
-            WHERE project_id = ? AND status NOT IN ('published', 'abandoned')
+            WHERE project_id = ? AND status NOT IN ({placeholders})
             ORDER BY created_seq DESC LIMIT 1
             """,
-            (project_id,),
+            (project_id, *terminal),
         ).fetchone()
         if row is None:
             return None
@@ -589,10 +647,10 @@ class ReflectionService:
         row = conn.execute(
             """
             SELECT id FROM reflections
-            WHERE project_id = ? AND status = 'published'
+            WHERE project_id = ? AND status = ?
             ORDER BY published_at DESC, created_seq DESC LIMIT 1
             """,
-            (project_id,),
+            (project_id, REFLECTION_WORKFLOW.success_status),
         ).fetchone()
         if row is None:
             return None
@@ -605,8 +663,8 @@ class ReflectionService:
         """This wave's graph, or None — the current attempt only.
 
         A rejection back to reflecting bumps the attempt, so the graph the
-        reviewer rejected belongs to the previous one. Reading the whole
-        history here is what let a rejected graph answer "what is current"."""
+        reviewer rejected belongs to the previous one and cannot appear as
+        current."""
         if reflection is None:
             return None
         return preferred_artifact(
@@ -622,7 +680,7 @@ class ReflectionService:
         current_artifact_id = str(
             (
                 reflection.get("published_graph_version_id")
-                if reflection.get("status") == "published"
+                if reflection.get("status") == REFLECTION_WORKFLOW.success_status
                 else None
             )
             or (current_artifact or {}).get("id")
@@ -689,25 +747,30 @@ class ReflectionService:
         status = str(reflection.get("status") or "")
         current_id = str(reflection.get("id") or "")
         params: tuple[Any, ...]
-        if status == "published":
+        if status == REFLECTION_WORKFLOW.success_status:
             query = """
                 SELECT id, published_graph_version_id
                 FROM reflections
-                WHERE project_id = ? AND status = 'published'
+                WHERE project_id = ? AND status = ?
                   AND id != ? AND created_seq < ?
                 ORDER BY published_at DESC, created_seq DESC
                 LIMIT 1
                 """
-            params = (project_id, current_id, int(reflection.get("created_seq") or 0))
+            params = (
+                project_id,
+                REFLECTION_WORKFLOW.success_status,
+                current_id,
+                int(reflection.get("created_seq") or 0),
+            )
         else:
             query = """
                 SELECT id, published_graph_version_id
                 FROM reflections
-                WHERE project_id = ? AND status = 'published'
+                WHERE project_id = ? AND status = ?
                 ORDER BY published_at DESC, created_seq DESC
                 LIMIT 1
                 """
-            params = (project_id,)
+            params = (project_id, REFLECTION_WORKFLOW.success_status)
         row = conn.execute(query, params).fetchone()
         if row is None:
             return None
@@ -748,18 +811,18 @@ class ReflectionService:
     def _evaluate_gate(self, *, conn, reflection: dict[str, Any]) -> GateEvaluation:
         """Collect reflection facts once for enforcement, state, and guidance."""
         status = str(reflection.get("status") or "")
-        forward = REFLECTION_GATE_TABLE.get(status)
+        workflow_state = REFLECTION_WORKFLOW.state(status)
         requirements: list[RequirementEvaluation] = []
-        if forward is not None and status == "reflecting":
+        if workflow_state is not None and status == REFLECTION_WORKFLOW.initial:
             requirements.append(
                 self._evaluate_roster_gate(
                     conn=conn,
                     reflection=reflection,
-                    requirement=forward.requirements[0],
+                    requirement=workflow_state.requirements[0],
                 )
             )
-        elif forward is not None:
-            for requirement in forward.requirements:
+        elif workflow_state is not None:
+            for requirement in workflow_state.requirements:
                 artifact = current_reflection_requirement_artifact(
                     reflection=reflection, role=requirement.role
                 )
@@ -791,25 +854,19 @@ class ReflectionService:
 
         review = (
             None
-            if forward is None or forward.review is None
+            if workflow_state is None or workflow_state.review is None
             else evaluate_review_gate(
                 conn=conn,
                 target_type="reflection",
                 target=reflection,
-                review=forward.review,
+                review=workflow_state.review,
             )
         )
         return GateEvaluation(
-            subject="reflection wave",
+            workflow=REFLECTION_WORKFLOW,
             status=status,
-            transition=None if forward is None else forward.name,
-            leads_to=None if forward is None else forward.to_status,
-            terminal=status in REFLECTION_TERMINAL_STATUSES,
             requirements=tuple(requirements),
             review=review,
-            legal_transitions=tuple(
-                dict(item) for item in allowed_reflection_transitions_for(status)
-            ),
         )
 
     def _evaluate_roster_gate(
@@ -817,7 +874,7 @@ class ReflectionService:
         *,
         conn,
         reflection: dict[str, Any],
-        requirement: RoleRequirement,
+        requirement: ArtifactNeed,
     ) -> RequirementEvaluation:
         coverage = reflection.get("reflection_coverage") or {}
         by_lens = {
@@ -873,6 +930,7 @@ class ReflectionService:
                 "satisfied": covered and not problem,
                 "status": "invalid" if problem else "present" if covered else "missing",
                 "gate": requirement.gate,
+                "action": requirement.action,
             }
             if covered:
                 item.update(
@@ -923,6 +981,9 @@ class ReflectionService:
             )
             status = reflection["status"]
             next_status = gate.require_transition(transition)
+            step = REFLECTION_WORKFLOW.transition(transition)
+            if step is None:
+                raise WorkflowError(f"unknown reflection transition: {transition}")
             now = now_iso()
             # Same seal as the experiment FSM: freeze this round's lens docs
             # so a re-run of the fan-out cannot delete what was reviewed.
@@ -933,7 +994,7 @@ class ReflectionService:
                 ),
                 transition=transition,
             )
-            if transition == "publish":
+            if "materialize_change_spec" in step.effects:
                 self._materialize_change_spec(conn=conn, reflection=reflection)
                 conn.execute(
                     """
@@ -945,8 +1006,10 @@ class ReflectionService:
                     (
                         next_status,
                         now,
-                        self._current_graph_version_id(
-                            reflection=reflection
+                        (
+                            self._current_graph_version_id(reflection=reflection)
+                            if "pin_project_graph" in step.effects
+                            else None
                         ),
                         now,
                         reflection_id,
@@ -960,13 +1023,15 @@ class ReflectionService:
             self.store.record_event(
                 conn=conn,
                 project_id=reflection["project_id"],
-                event_type="reflection.transitioned",
+                event_type=REFLECTION_WORKFLOW.event_type,
                 target_type="reflection",
                 target_id=reflection_id,
                 payload={"from": status, "to": next_status, "transition": transition},
             )
             return self.get_state(
-                reflection_id=reflection_id, conn=conn, include_content=True
+                reflection_id=reflection_id,
+                conn=conn,
+                include_content=True,
             )
 
     def _run_validator(self, *, conn, reflection: dict[str, Any], name: str) -> None:
@@ -1138,7 +1203,7 @@ class ReflectionService:
             op = str(change["op"])
             key = str(change.get("key") or "").strip()
             if op == "create":
-                claim_id = self.claims.create_from_reflection(
+                claim_id = self._create_claim(
                     conn=conn,
                     project_id=project_id,
                     reflection_id=reflection_id,
@@ -1152,7 +1217,7 @@ class ReflectionService:
                     key_to_claim_id[key] = claim_id
             else:
                 claim_id = str(change["claim_id"]).strip()
-                self.claims.update_from_reflection(
+                self._update_claim(
                     conn=conn,
                     project_id=project_id,
                     reflection_id=reflection_id,
@@ -1207,7 +1272,7 @@ class ReflectionService:
             intent = str(proposal.get("intent") or "").strip()
             claim_ids = [key_to_claim_id.get(ref, ref) for ref in claim_refs(proposal)]
             proposal_key = str(proposal.get("key") or "").strip()
-            experiment_id = self.experiment_writer.create_from_reflection(
+            experiment_id = self._create_experiment(
                 conn=conn,
                 project_id=project_id,
                 reflection_id=reflection_id,
@@ -1225,6 +1290,170 @@ class ReflectionService:
                 """,
                 (reflection_id, experiment_id, proposal_key, now_iso()),
             )
+
+    def _create_claim(
+        self,
+        *,
+        conn,
+        project_id: str,
+        reflection_id: str,
+        statement: str,
+        scope: str,
+        status: str,
+        confidence: str,
+        rationale: str,
+    ) -> str:
+        claim_id = new_id(prefix="claim")
+        statement = statement.strip()
+        conn.execute(
+            """
+            INSERT INTO claims
+              (id, project_id, statement, scope, status, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                claim_id,
+                project_id,
+                statement,
+                scope.strip(),
+                status,
+                confidence,
+                now_iso(),
+            ),
+        )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="claim.created",
+            target_type="claim",
+            target_id=claim_id,
+            payload={
+                "statement": statement,
+                "scope": scope.strip(),
+                "status": status,
+                "confidence": confidence,
+                "source_reflection_id": reflection_id,
+                "rationale": rationale.strip(),
+            },
+        )
+        return claim_id
+
+    def _update_claim(
+        self,
+        *,
+        conn,
+        project_id: str,
+        reflection_id: str,
+        claim_id: str,
+        statement: str | None,
+        scope: str | None,
+        status: str | None,
+        confidence: str | None,
+        rationale: str,
+    ) -> None:
+        row = conn.execute(
+            """
+            SELECT * FROM claims
+            WHERE id = ? AND project_id = ?
+            """,
+            (claim_id, project_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"claim not found: {claim_id}")
+        next_statement = (
+            str(row["statement"]) if statement is None else statement.strip()
+        )
+        next_scope = str(row["scope"]) if scope is None else scope.strip()
+        next_status = str(row["status"]) if status is None else status
+        next_confidence = (
+            str(row["confidence"])
+            if confidence is None
+            else confidence
+        )
+        conn.execute(
+            """
+            UPDATE claims
+            SET statement = ?, scope = ?, status = ?, confidence = ?
+            WHERE id = ?
+            """,
+            (
+                next_statement,
+                next_scope,
+                next_status,
+                next_confidence,
+                claim_id,
+            ),
+        )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="claim.updated",
+            target_type="claim",
+            target_id=claim_id,
+            payload={
+                "statement": next_statement,
+                "scope": next_scope,
+                "status": next_status,
+                "confidence": next_confidence,
+                "source_reflection_id": reflection_id,
+                "rationale": rationale.strip(),
+            },
+        )
+
+    def _create_experiment(
+        self,
+        *,
+        conn,
+        project_id: str,
+        reflection_id: str,
+        name: str,
+        intent: str,
+        claim_ids: list[str],
+        proposal_key: str,
+        parallelism: str,
+    ) -> str:
+        experiment_id = new_id(prefix="exp")
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO experiments
+              (id, project_id, name, intent, status, attempt_index,
+               revision_context, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)
+            """,
+            (
+                experiment_id,
+                project_id,
+                name,
+                intent,
+                EXPERIMENT_WORKFLOW.initial,
+                now,
+                now,
+            ),
+        )
+        for claim_id in claim_ids:
+            conn.execute(
+                """
+                INSERT INTO experiment_claims (experiment_id, claim_id)
+                VALUES (?, ?)
+                """,
+                (experiment_id, claim_id),
+            )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="experiment.created",
+            target_type="experiment",
+            target_id=experiment_id,
+            payload={
+                "name": name,
+                "intent": intent,
+                "source_reflection_id": reflection_id,
+                "proposal_key": proposal_key.strip(),
+                "parallelism": parallelism.strip(),
+            },
+        )
+        return experiment_id
 
     def _current_graph_version_id(
         self, *, reflection: dict[str, Any]
@@ -1255,66 +1484,64 @@ class ReflectionService:
             what=what,
         )
 
-    def target_snapshot_id(self, *, conn, reflection_id: str) -> str:
-        reflection = self.get_state(reflection_id=reflection_id, conn=conn)
-        return review_snapshot_id(target_type="reflection", target=reflection)
-
     # ---- review return routing ----
 
-    def send_back_to_reflecting(
-        self, *, conn, reflection_id: str, revision_context: str
+    def return_from_review(
+        self,
+        *,
+        conn,
+        reflection_id: str,
+        route: ReviewReturn,
+        revision_context: str,
     ) -> None:
-        """Rejection back to the fan-out: the attempt bumps, so every roster
-        lens must submit a fresh reflection before synthesizing again."""
-        row = self._require_in_review(conn=conn, reflection_id=reflection_id)
+        """Apply the workflow-declared destination and attempt policy."""
+
+        row = self._require_review_source(
+            conn=conn,
+            reflection_id=reflection_id,
+            route=route,
+        )
+        attempt_index = int(row["attempt_index"]) + int(route.attempt == "new")
         conn.execute(
             """
             UPDATE reflections
-            SET status = 'reflecting', attempt_index = attempt_index + 1,
+            SET status = ?, attempt_index = ?,
                 revision_context = ?, updated_at = ?
             WHERE id = ?
             """,
-            (revision_context, now_iso(), reflection_id),
+            (
+                route.to_status,
+                attempt_index,
+                revision_context,
+                now_iso(),
+                reflection_id,
+            ),
         )
         self.store.record_event(
             conn=conn,
             project_id=row["project_id"],
-            event_type="reflection.returned_to_reflecting",
+            event_type=route.event_type,
             target_type="reflection",
             target_id=reflection_id,
             payload={"revision_context": revision_context},
         )
 
-    def send_back_to_synthesizing(
-        self, *, conn, reflection_id: str, revision_context: str
-    ) -> None:
-        """Rejection back to reflection-artifact revision only: the reflections stand, so the
-        attempt is NOT bumped — the orchestrator revises the project graph
-        reflection document, and/or change spec and resubmits."""
-        row = self._require_in_review(conn=conn, reflection_id=reflection_id)
-        conn.execute(
-            "UPDATE reflections SET status = 'synthesizing', revision_context = ?, updated_at = ? WHERE id = ?",
-            (revision_context, now_iso(), reflection_id),
-        )
-        self.store.record_event(
-            conn=conn,
-            project_id=row["project_id"],
-            event_type="reflection.returned_to_synthesizing",
-            target_type="reflection",
-            target_id=reflection_id,
-            payload={"revision_context": revision_context},
-        )
-
-    def _require_in_review(self, *, conn, reflection_id: str):
+    def _require_review_source(
+        self,
+        *,
+        conn,
+        reflection_id: str,
+        route: ReviewReturn,
+    ):
         row = conn.execute(
             "SELECT * FROM reflections WHERE id = ?", (reflection_id,)
         ).fetchone()
         if row is None:
             raise NotFoundError(f"reflection not found: {reflection_id}")
-        if row["status"] != "reflection_review":
+        if row["status"] not in REFLECTION_WORKFLOW.review_sources(route):
             raise WorkflowError(
                 f"reflection wave is {row['status']!r}; only a wave under "
-                "reflection review can be sent back"
+                f"review can be sent back to {route.to_status}"
             )
         return row
 

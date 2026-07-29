@@ -11,18 +11,15 @@ from ...application.facade import (
     GetTrackingContext,
     ReadReviewStatus,
     ReflectionCommands,
+    RequestReview,
     StartReviewSession,
     StatusAndNextQuery,
     TransitionExperiment,
 )
 from ...feed import FeedService
+from ...literature import Literature
 from ...object_storage import ObjectStorage
-from ...research_core.facade import (
-    ResearchClaims,
-    ResearchLiterature,
-    ResearchProjects,
-    ResearchReviewDelivery,
-)
+from ...research_core import Research
 from ...sandbox import SandboxEngine
 from ..artifacts import ArtifactTools
 from .contracts import TOOL_MANIFEST, available_tool_names
@@ -32,13 +29,12 @@ from .tool_facade import ToolHandler
 def build_control_tool_handlers(
     *,
     workflow: StatusAndNextQuery,
-    projects: ResearchProjects,
-    claims: ResearchClaims,
+    research: Research,
     create_experiment: CreateExperiment,
     reflection_tools: ReflectionCommands,
     artifact_submissions: ArtifactTools,
     storage: ObjectStorage | None,
-    reviews: ResearchReviewDelivery,
+    review_request: RequestReview,
     review_session: StartReviewSession,
     sandboxes: SandboxEngine,
     feed: FeedService,
@@ -49,7 +45,7 @@ def build_control_tool_handlers(
     tracking_finalize: FinalizeTrackingRun,
     review_status: ReadReviewStatus,
     operations: ControlToolOperations,
-    litreview: ResearchLiterature,
+    litreview: Literature,
     tracking_enabled: bool = False,
 ) -> dict[str, ToolHandler]:
     """Map control-plane tool names to service methods.
@@ -60,8 +56,7 @@ def build_control_tool_handlers(
     owners = {
         "workflow": workflow,
         "operations": operations,
-        "projects": projects,
-        "claims": claims,
+        "research": research,
         "create_experiment": create_experiment,
         "agent_experiment": agent_experiment,
         "experiment_transition": experiment_transition,
@@ -70,7 +65,7 @@ def build_control_tool_handlers(
         "tracking_finalize": tracking_finalize,
         "reflection_tools": reflection_tools,
         "artifact_submissions": artifact_submissions,
-        "reviews": reviews,
+        "review_request": review_request,
         "review_session": review_session,
         "review_status": review_status,
         "sandboxes": sandboxes,

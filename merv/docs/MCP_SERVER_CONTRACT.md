@@ -158,8 +158,9 @@ mark_failed
 abandon
 ```
 
-The declarative table in `src/merv/brain/research_core/domain/workflow_gates.py` drives enforcement,
-`allowed_transitions`, gate checklists, and `workflow.status_and_next`.
+The declaration in `src/merv/brain/research_core/experiment_workflow.py`
+drives enforcement, `allowed_transitions`, gate checklists, review returns, and
+`workflow.status_and_next`.
 
 - `submit_design` requires a pinned `plan` artifact with the required section
   spine.

@@ -242,11 +242,13 @@ class HostedSandboxLookupLedgerTest(unittest.TestCase):
     def _gateway(self, get: Any) -> ToolInvocationGateway:
         return ToolInvocationGateway(
             tools=SimpleNamespace(call_tool=lambda **_kwargs: {"unexpected": True}),
-            reviews=SimpleNamespace(),
+            research=SimpleNamespace(),
             sandboxes=SimpleNamespace(get=get),
             surface=self.surface,
             projects=ProjectAuthorizer(
-                projects=SimpleNamespace(is_member=lambda **_kwargs: True)
+                research=SimpleNamespace(
+                    is_project_member=lambda **_kwargs: True
+                )
             ),
             ledger=self.ledger,
         )

@@ -26,6 +26,7 @@ from merv.brain.application.experiments.tracking import (
     FinalizeTrackingResponse,
     TrackingContextResponse,
 )
+from merv.brain.application.experiments.create import ExperimentCreateArgs
 from merv.brain.application.experiments.presentation import SlimExperimentState
 from merv.brain.application.experiments.transition import (
     TransitionReceipt,
@@ -44,16 +45,9 @@ from merv.brain.application.ports.tracking import (
     TrackingSnapshotRun,
 )
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
-from merv.brain.research_core.facade import (
-    ExperimentCreateArgs,
+from merv.brain.research_core.models import (
     LiteratureSignal,
     ResearchSnapshot,
-)
-from merv.brain.research_core.gate_evaluation import (
-    GateEvaluation,
-    RequirementEvaluation,
-)
-from merv.brain.research_core.transition_types import (
     CommittedExperimentUpdate,
     ExhibitVerdict,
     ExperimentState,
@@ -72,6 +66,8 @@ APPLICATION_DATACLASS_EXCLUSIONS = frozenset(
         "merv.brain.application.experiments.tracking.ExperimentDetailQuery",
         "merv.brain.application.experiments.transition.TransitionExperiment",
         "merv.brain.application.reflections.ReflectionCommands",
+        "merv.brain.application.reviews.RequestReview",
+        "merv.brain.application.reviews.ReviewQueue",
         "merv.brain.application.reviews.ReadReviewStatus",
         "merv.brain.application.reviews.StartReviewSession",
         "merv.brain.application.workflow.ProjectDashboardQuery",
@@ -91,8 +87,7 @@ def _boundary_types() -> dict[str, type]:
         "application/events.py",
         "application/experiments/presentation.py",
         "kernel/events.py",
-        "research_core/gate_evaluation.py",
-        "research_core/transition_types.py",
+        "research_core/models.py",
     }
     for path in sorted(BACKEND_ROOT.rglob("*.py")):
         relative = path.relative_to(BACKEND_ROOT).as_posix()
@@ -273,13 +268,10 @@ SAMPLES: dict[type, object] = {
     },
     StoredEvent: EVENT,
     EventCatalogEntry: EventCatalogEntry(
-        producer="merv.brain.research_core.experiments.ExperimentService.transition_with_event",
+        producer="merv.brain.research_core.Research.transition_experiment",
         event_type="experiment.transitioned",
         payload_version=1,
-        transaction_boundary=(
-            "merv.brain.research_core.experiments.ExperimentService."
-            "transition_with_event"
-        ),
+        transaction_boundary="merv.brain.research_core.Research.transition_experiment",
         reaction_phase="post_commit",
         handler_identity="tracking_start",
         failure="degraded",
@@ -290,7 +282,7 @@ SAMPLES: dict[type, object] = {
     DispatchResult: DispatchResult(
         state={"id": "exp_1"}, outcomes=MappingProxyType({"feed": "noted"})
     ),
-    PersistedRunState: RUN,
+    PersistedRunState: {**RUN, "delivery_id": 7},
     ExperimentCreateArgs: {
         "name": "example",
         "intent": "Test one claim",
@@ -343,53 +335,16 @@ SAMPLES: dict[type, object] = {
     CommittedExperimentUpdate: CommittedExperimentUpdate(
         state={"id": "exp_1", "status": "running"}, event=EVENT
     ),
-    RequirementEvaluation: RequirementEvaluation(
-        role="plan",
-        status="valid",
-        blocker_code="",
-        enforcement_error="",
-        problems=(),
-        items=({"id": "resource:plan", "satisfied": True},),
-    ),
-    GateEvaluation: GateEvaluation(
-        subject="experiment",
-        status="planned",
-        transition="submit_design",
-        leads_to="design_review",
-        terminal=False,
-        requirements=(
-            RequirementEvaluation(
-                "plan", "valid", "", "", (), ({"id": "resource:plan"},)
-            ),
-        ),
-        review=None,
-        legal_transitions=(
-            {"transition": "submit_design", "leads_to": "design_review"},
-        ),
-    ),
     ResearchSnapshot: ResearchSnapshot(
         project_id="proj_1",
         requested_experiment_id="exp_1",
         project={"id": "proj_1"},
         claims=[{"id": "clm_1"}],
-        experiments=[{"id": "exp_1"}],
-        experiment_states=[{"id": "exp_1", "status": "running"}],
-        selected_experiment={"id": "exp_1"},
+        experiments=[{"id": "exp_1", "status": "running"}],
         open_reflection=None,
         latest_published_reflection=None,
         reflection_signal={"needed": False},
-        gate_evaluations={
-            "exp_1": GateEvaluation(
-                "experiment",
-                "running",
-                "submit_results",
-                "experiment_review",
-                False,
-                (),
-                None,
-                ({"transition": "submit_results", "leads_to": "experiment_review"},),
-            )
-        },
+        gate_evaluations={"exp_1": {"ready": True}},
         recent_claims=[{"id": "clm_1"}],
         claim_events_since_reflection=[],
         literature_signal=LiteratureSignal(papers_total=1, papers_unreviewed=0),
@@ -418,17 +373,15 @@ ANNOTATION_DEBT = frozenset(
         ),
         ("merv.brain.application.events.EventReaction.value", "object"),
         ("merv.brain.application.events.DispatchResult.outcomes", "object"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.project", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.claims", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.experiments", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.experiment_states", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.selected_experiment", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.open_reflection", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.latest_published_reflection", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.reflection_signal", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.recent_claims", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.claim_events_since_reflection", "Any"),
-        ("merv.brain.research_core.transition_types.ExhibitVerdict.mlflow", "object"),
+        ("merv.brain.research_core.models.ResearchSnapshot.project", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.claims", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.open_reflection", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.latest_published_reflection", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.reflection_signal", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.gate_evaluations", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.recent_claims", "Any"),
+        ("merv.brain.research_core.models.ResearchSnapshot.claim_events_since_reflection", "Any"),
+        ("merv.brain.research_core.models.ExhibitVerdict.mlflow", "object"),
     }
 )
 

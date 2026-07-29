@@ -98,7 +98,6 @@ The initial layer table is explicit about mixed packages:
 | `kernel/ports/**` | port |
 | `kernel/state/dialects.py` | adapter |
 | `research_core/**` | application |
-| `research_core/domain/**` | domain |
 | `artifacts/**` | application |
 | `artifacts/ports/**` | port |
 | `artifacts/figure_view.py` | domain |
@@ -116,7 +115,7 @@ The initial layer table is explicit about mixed packages:
 | `application/ports/**` | port |
 | `surface/**` | delivery |
 | `surface/web_preview.py` | adapter |
-| `surface/composition/**`, `surface/config.py`, `surface/control/{control_app,record_core}.py` | bootstrap |
+| `surface/composition/**`, `surface/config.py`, `surface/control/control_app.py` | bootstrap |
 | `surface/control/control_runtime.py` | adapter |
 | `surface/tools/tool_handlers.py` | delivery |
 
@@ -773,7 +772,8 @@ The completion pass moved the remaining immediately actionable policy inward:
   application query joins a Kernel event count to Sandbox-owned generation
   accounting for tenant counters;
 - Research and Artifacts own their review/resource vocabulary validation;
-- project membership validation/mutation moved from HTTP into `ProjectService`.
+- project membership validation/mutation moved from HTTP into the concrete
+  `Research` root.
 
 Surface no longer carries an application-layer file override. Delivery uses
 typed injected dependencies, and both the layer and public-entrypoint exception
@@ -866,16 +866,15 @@ cross-module import inventory, and a clean worktree/commit audit close the work.
 ## Workflow/read-side consolidation
 
 Workflow orientation is now an Application read model rather than a
-Research-owned orchestration service. `WorkflowQuery` joins the stable
-`ResearchSnapshots` and `SandboxReads` contracts, while
+Research-owned orchestration service. `StatusAndNextQuery` joins the stable
+`Research.snapshot` and `SandboxReads` contracts, while
 `ProjectDashboardQuery` reuses that same project snapshot for Home and the
-compact project orientation. `ResearchSnapshotReader` hydrates each requested
-experiment at most once per query and gathers reflection/review facts in the
-same Research transaction. Its plural state/gate loader joins batched immutable
-evidence through the `EvidenceReader` port, holding the rich dashboard at 22
-database reads for either one or 25 experiments. `NextActionPolicy` is pure: it
-receives captured records and emits the byte-compatible workflow payload
-without SQL, service calls, or side effects.
+compact project orientation. The concrete `Research` root hydrates experiments,
+reflection/review facts, and gate evaluations in one canonical transaction.
+Its plural state/gate loader joins batched immutable evidence through the
+`Artifacts` root. `StatusGuidancePolicy` is pure: it receives captured records
+and emits the byte-compatible workflow payload without SQL, service calls, or
+side effects.
 
 Other collection ratchets now hold a full Artifact page at six database reads,
 Research graph references at one read per reference type, and project MLflow
@@ -929,6 +928,28 @@ the HTTP factory/gateway pair at 500, and the proxy composition/gateway/shell at
   completed reduction pass closes at **41,624 Brain lines** under the executable
   41,700 ceiling. This avoids rewarding line compression while preventing
   policy from growing back into the delivery facades.
+
+## Research Core consolidation
+
+The next reduction replaced the public `ResearchCoreFacade`, service bag,
+snapshot reader, graph resolver, writer protocols, and twenty-file passive
+`domain/` tree with one concrete package-root `Research`. Projects and claims
+live directly on that root; experiments, reflections, and reviews remain
+private cohesive state machines because their transaction boundaries are real.
+`Research.snapshot` is the one workflow read. Experiment and reflection
+lifecycle, gates, actions, tools, reviewer skills, and rejection routes are
+declared once in `experiment_workflow.py` and `reflection_workflow.py`, using
+the passive values in `workflow_schema.py`. Other pure rules remain grouped in
+`models.py`, `policy.py`, and `evidence.py`.
+Reflection publication now materializes its claim and experiment wave inside
+the owning transaction instead of forwarding through writer ports.
+
+Application formats schema-declared guidance and owns review handoff
+presentation, tracking reactions, and other cross-module joins. Surface owns wire schemas and
+transport authorization. Literature is composed as its own cohesive capability
+rather than being hidden in the Research service bag. Public HTTP/MCP shapes,
+released database rows, review capabilities and snapshots, gate behavior,
+Artifact sealing, event ordering, and tracking idempotency remain unchanged.
 
 ## Non-goals and follow-up queue
 

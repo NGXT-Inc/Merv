@@ -73,7 +73,9 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         )
         for raw_service in ("projects: Any", "claims: Any", "resources: Any", "storage: Any"):
             self.assertNotIn(raw_service, commands)
-        for binding in ("projects=core.projects", "claims=core.claims"):
+        for binding in (
+            "research=self.research",
+        ):
             self.assertIn(binding, composition)
 
 

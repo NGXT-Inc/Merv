@@ -7,8 +7,7 @@ from unittest.mock import Mock, patch
 
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import NotFoundError, ValidationError
-from merv.brain.research_core.experiments import ExperimentService
-from merv.brain.research_core.facade import ResearchCoreFacade
+from merv.brain.research_core import Research
 
 
 class CountingStateStore(StateStore):
@@ -28,10 +27,8 @@ class ExperimentSummaryTest(unittest.TestCase):
         self.store = CountingStateStore(
             db_path=Path(self.tmp.name) / "state.sqlite"
         )
-        self.experiments = ExperimentService(
-            store=self.store, artifacts=Mock()
-        )
-        self.research = ResearchCoreFacade(self.experiments)
+        self.research = Research(store=self.store, artifacts=Mock())
+        self.experiments = self.research._experiments
         self.one_ids = self._seed("proj_one", 1)
         self.many_ids = self._seed("proj_many", 25)
 

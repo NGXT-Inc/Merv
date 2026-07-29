@@ -34,7 +34,7 @@ classification plus file overrides handles mixed packages.
 | Component | Physical code today | Meaning |
 |---|---|---|
 | Kernel | `kernel/**` | shared contracts, state floor, IDs, events, utilities |
-| Research | `research_core/**` | experiment/review/reflection/project authority |
+| Research | `research_core/**`, `literature/**` | project, claim, experiment, review, reflection, and literature authority |
 | Artifacts | `artifacts/**` | submitted artifacts, upload tokens, pinned evidence |
 | Sandbox | `sandbox/**` | lifecycle and provider-driver capability |
 | Feed | `feed/**` | authors, posts, replies, reactions, history, and advisories |
@@ -59,26 +59,23 @@ The exact component import matrix is:
 
 Outside bootstrap, code enters another component only through its declared
 package root, `api.py`, `facade.py`, or `ports/**` entrypoint. A module named
-`core.py` is not automatically public. Research is
-deliberately narrower: it may
-enter Artifacts through `artifacts/ports/**` only, never the Artifacts facade.
-This is the executable form of “one stable public facade”; it prevents a new use
-case or adapter from depending on internal services. The legacy
+`core.py` is not automatically public. Research enters Artifacts through its
+single concrete package-root `Artifacts` capability. This is the executable
+form of “one stable public root”; it prevents a new use case or adapter from
+depending on internal services. The legacy
 public-entrypoint exception ledger is now empty: every cross-component import
 must enter through a declared public entrypoint. Workflow reads use
-`ResearchSnapshots` and `SandboxReads`; Sandbox commands enter through the
+`Research.snapshot` and `SandboxReads`; Sandbox commands enter through the
 package-root `SandboxEngine`.
 An application service deliberately exported from a component package root is
 itself a valid public entrypoint; Surface may type against it directly when no
 independent projection or capability constraint exists. Internal service-module
 imports remain forbidden.
 
-Research reaches immutable artifact evidence only through semantic DTOs on
-`artifacts/ports/EvidenceReader`; it never sees persistence rows, Artifact
-tables, or blob locators. Artifacts resolves association targets through the reverse
-`AssociationTargetResolver` port. Both concrete adapters use read-only store
-connections while the calling command holds the monolith's single-writer lock,
-so the public contracts remain connection-free without weakening consistency.
+Research reaches immutable artifact evidence only through typed operations on
+the concrete `Artifacts` root; it never sees Artifact tables or blob locators.
+Artifacts resolves association targets through the reverse
+`AssociationTargetResolver` port, the one necessary transaction-aware seam.
 
 ## Layer law
 
@@ -88,7 +85,7 @@ The initial layer mapping is deliberately honest about mixed directories:
 |---|---|
 | foundation | `kernel/**` |
 | port | `kernel/ports/**`, `application/ports/**`, `object_storage/provider.py` |
-| domain | `research_core/domain/**`, `sandbox/models.py`, and pure component policy files |
+| domain | pure component policy such as `research_core/{experiment_workflow,reflection_workflow,policy,evidence}.py` and `sandbox/models.py` |
 | application | component roots such as `object_storage/storage.py` and cross-component work under `application/**` |
 | adapter | `mlflow/**`, concrete storage/blob code, `sandbox/adapters/**`, `sandbox/remote/**`, and key custody |
 | delivery | ordinary `surface/**` HTTP/MCP/auth/serialization code |
@@ -195,15 +192,14 @@ assembles workflow orientation and the project dashboard from one bulk Research
 snapshot plus Sandbox reads; `application/queries.py` owns tracking overview,
 experiment figure, hydrated compute costs, and experiment/project/reflection
 logic graphs. Artifacts owns
-submitted artifact-content and figure selection behind `ArtifactsFacade`;
+submitted artifact-content and figure selection behind `Artifacts`;
 Application owns hosted content-response and experiment/figure presentation.
 Surface retains authentication, conditional HTTP caching, local-field
 redaction, MIME/header shaping, and serialization only.
 
-The bulk snapshot is backed by plural Research state/gate reads and the
-connection-free `EvidenceReader.artifacts_for_targets` port, which chunks exact
-IDs in groups of 400. A project dashboard therefore uses 22 database reads for
-both one and 25 experiments. Full Artifact pages use six reads, Research graph
+The bulk snapshot is backed by plural Research state/gate reads and batched
+`Artifacts` target reads. Dashboard query cost therefore remains bounded rather
+than growing once per experiment. Full Artifact pages use six reads, Research graph
 references use at most one read per reference type, and MLflow overview uses at
 most three remote calls. Reflection history is the deliberate exception: its
 frozen response returns every rich historical wave, so it remains linear and
@@ -222,18 +218,34 @@ there is no parallel status-to-review-role map.
 
 Research gate contracts contain semantic roles, evidence status, domain
 enforcement errors, human-readable transition preconditions, blocker codes,
-and legal transitions. They do not choose an executable next action.
-Application owns the tool names, skills, ready actions, templates, and recovery
-wording exposed by `status_and_next`, plus the compatibility projection that
-adds those fields to experiment and reflection checklists at the public
-response boundary. Reflection drift signals likewise contain facts only;
-Application derives their agent hint and post-publish actions.
+legal transitions, semantic next actions, tools, templates, reviewer skills,
+and rejection routes. Application formats that declared guidance, adds
+cross-module operational advice, and preserves the public response shape.
+Reflection drift signals remain facts; Application derives their prose and
+post-publish presentation.
 `StatusAndNextQuery` joins one Research snapshot with Sandbox and
 produced-object facts before applying that pure guidance policy.
 
-Review role/verdict validation is Research domain policy; artifact association
-role/target validation is Artifacts domain policy. Project membership mutation
-is owned by `ProjectService`, not by an HTTP route.
+Review role/verdict validation and project membership invariants are Research
+policy; artifact association role/target validation is Artifacts policy. HTTP
+routes call the concrete `Research` root and do not reach through to a store.
+
+## Research shape
+
+`research_core.Research` is the sole public root. It owns project and claim
+records directly and composes three private, transaction-heavy state machines:
+experiments, reflections, and reviews. One canonical `snapshot` operation
+hydrates workflow facts and gate evaluations without caller-selected shapes.
+The lifecycle sources of truth are `experiment_workflow.py` and
+`reflection_workflow.py`, using the passive vocabulary in `workflow_schema.py`.
+Other pure rules live in `policy.py` and `evidence.py`; `association_targets.py`
+is the reverse Artifacts boundary.
+Literature remains a separate cohesive file because it is an independently
+large document/citation workflow, but it is composed directly rather than
+hidden behind a Research service bag. Application owns cross-module workflow,
+agent guidance, review handoff presentation, and tracking reactions. Surface
+owns HTTP/MCP schemas, authentication, authorization transport, and response
+serialization.
 
 ## Cross-package law
 

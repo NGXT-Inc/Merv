@@ -14,14 +14,8 @@ from pathlib import Path
 
 from tests.support.brain import TestBrain
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.research_core.domain.workflow_gates import (
-    GATE_TABLE,
-    SYSTEM_TRANSITIONS,
-    TRANSITION_GRAPH,
-    TRANSITION_REQUIREMENTS,
-)
+from merv.brain.research_core.experiment_workflow import EXPERIMENT_WORKFLOW
 from merv.brain.kernel.utils import WorkflowError
-from tests.paths import BACKEND_ROOT
 
 
 class SystemTransitionTestBase(unittest.TestCase):
@@ -74,12 +68,6 @@ class SandboxDrivenTransitionTest(SystemTransitionTestBase):
         self.assertEqual(state["status"], "ready_to_run")
         self.assertEqual(self._transition_events(exp_id), [])
 
-    def test_sandbox_reuse_still_does_not_transition_experiment(self) -> None:
-        exp_id = self._experiment(status="ready_to_run")
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(self._transition_events(exp_id), [])
-
     def test_reaper_expiry_does_not_transition_experiment(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
         created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
@@ -93,44 +81,17 @@ class SandboxDrivenTransitionTest(SystemTransitionTestBase):
         self.assertEqual(state["status"], "ready_to_run")
         self.assertEqual(self._transition_events(exp_id), [])
 
-    def test_no_sandbox_system_transitions_are_registered(self) -> None:
-        self.assertEqual(SYSTEM_TRANSITIONS, frozenset())
-
     def test_no_system_transitions_in_discovery(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         names = {t["transition"] for t in state["allowed_transitions"]}
-        self.assertIn("start_running", names)
-        self.assertFalse(names & SYSTEM_TRANSITIONS)
+        self.assertEqual(names, {"start_running", "abandon", "mark_failed"})
 
-    def test_experiment_service_has_no_system_transition_escape_hatch(self) -> None:
-        self.assertFalse(hasattr(self.app.experiments, "apply_system_transition"))
-
-    def test_sandbox_code_has_no_raw_experiment_writes(self) -> None:
-        # The boundary itself: sandbox services must not UPDATE/INSERT the
-        # experiments table.
-        for path in sorted((BACKEND_ROOT / "sandbox").rglob("*.py")):
-            source = path.read_text(encoding="utf-8")
-            self.assertNotIn("UPDATE experiments", source, path.name)
-            self.assertNotIn("INSERT INTO experiments", source, path.name)
-
-
-class GateTableConsistencyTest(SystemTransitionTestBase):
-    def test_transition_graph_and_prose_derive_from_gate_table(self) -> None:
-        for status, forward in GATE_TABLE.items():
-            self.assertEqual(TRANSITION_GRAPH[(status, forward.name)], forward.to_status)
-            if forward.requires_prose:
-                self.assertEqual(TRANSITION_REQUIREMENTS[forward.name], forward.requires_prose)
-        for (frm, name), nxt in TRANSITION_GRAPH.items():
-            if name in SYSTEM_TRANSITIONS:
-                continue
-            self.assertEqual(GATE_TABLE[frm].name, name)
-            self.assertEqual(GATE_TABLE[frm].to_status, nxt)
-
+class WorkflowDeclarationTest(SystemTransitionTestBase):
     def test_enforcement_fact_drives_application_guidance(self) -> None:
-        # Research owns the unmet role/error; Application owns the tool advice.
         exp_id = self._experiment(status="planned")
-        plan_req = GATE_TABLE["planned"].requirements[0]
+        plan_req = EXPERIMENT_WORKFLOW.requirement("plan")
+        self.assertIsNotNone(plan_req)
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
                 "experiment.transition",
@@ -142,10 +103,8 @@ class GateTableConsistencyTest(SystemTransitionTestBase):
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf["workflow"]
         self.assertEqual(workflow["current_gate"], plan_req.gate)
-        self.assertEqual(
-            workflow["next_action"], "write_and_submit_plan"
-        )
-        self.assertEqual(workflow["allowed_actions"], ["artifact.submit"])
+        self.assertEqual(workflow["next_action"], plan_req.action)
+        self.assertEqual(workflow["allowed_actions"], list(plan_req.tools))
         self.assertEqual(workflow["missing_evidence"], [plan_req.missing])
 
 

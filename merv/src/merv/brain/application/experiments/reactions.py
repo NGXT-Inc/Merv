@@ -9,7 +9,13 @@ from typing import Any, cast
 from merv.shared.errors import TrackingPersistenceError
 
 from ...feed import FeedAdvisory
-from ...research_core.facade import ExperimentState, PersistedRunState, ResearchCore
+from ...research_core import (
+    EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
+    ExperimentState,
+    PersistedRunState,
+    Research,
+)
 from ..events import (
     EventCatalogEntry,
     EventContext,
@@ -29,19 +35,13 @@ from .tracking_presentation import tracking_failure_message, tracking_warning
 LOGGER = logging.getLogger(__name__)
 
 
-_FINAL_TRACKING_STATUS = {
-    "submit_results": "FINISHED",
-    "complete": "FINISHED",
-    "abandon": "KILLED",
-    "mark_failed": "FAILED",
-}
 _RUN_FIELDS = (
     "run_id", "run_name", "status", "artifact_uri",
     "created_at", "created_by_plugin", "error",
 )
 
 
-_TRANSITION = "merv.brain.research_core.experiments.ExperimentService.transition_with_event"
+_TRANSITION = "merv.brain.research_core.Research.transition_experiment"
 _REVIEW = "merv.brain.research_core.reviews.ReviewService.submit"
 _REFRESH = "merv.brain.research_core.experiments.ExperimentService.record_mlflow_run"
 
@@ -80,14 +80,25 @@ def _reaction(
 
 EXPERIMENT_REACTION_CATALOG = (
     _reaction(
-        _TRANSITION, "experiment.transitioned", "post_commit", "tracking_start",
+        _TRANSITION,
+        EXPERIMENT_WORKFLOW.event_type,
+        "post_commit",
+        "tracking_start",
         failure="degraded",
         idempotency="requires_adapter_key_for_redelivery",
     ),
     _reaction(
-        _TRANSITION, "experiment.transitioned", "post_commit", "tracking_finalize",
+        _TRANSITION,
+        EXPERIMENT_WORKFLOW.event_type,
+        "post_commit",
+        "tracking_finalize",
     ),
-    _reaction(_TRANSITION, "experiment.transitioned", "post_response", "feed"),
+    _reaction(
+        _TRANSITION,
+        EXPERIMENT_WORKFLOW.event_type,
+        "post_response",
+        "feed",
+    ),
     _reaction(_REVIEW, "review.submitted", "producer_read", "feed"),
     _reaction(_REFRESH, "experiment.mlflow_run_refreshed", "post_response", "feed"),
 )
@@ -97,7 +108,7 @@ EXPERIMENT_REACTION_CATALOG = (
 class ExperimentReactions:
     """Synchronous experiment reactions bound once by application composition."""
 
-    research: ResearchCore
+    research: Research
     feed: FeedAdvisory
     tracking: ExperimentTracking | None
 
@@ -115,12 +126,14 @@ class ExperimentReactions:
         self, context: EventContext[ExperimentState]
     ) -> EventReaction[ExperimentState]:
         transition = str(context.event.payload.get("transition") or "")
-        if transition not in ("start_running", "retry_running"):
+        step = EXPERIMENT_WORKFLOW.transition(transition)
+        effects = () if step is None else step.effects
+        if not {"start_tracking", "restart_tracking"} & set(effects):
             return EventReaction(state=context.state)
         try:
             state, attempted = self._ensure_tracking_run(
                 state=context.state,
-                replace_terminal=transition == "retry_running",
+                replace_terminal="restart_tracking" in effects,
                 delivery_id=context.event.id,
             )
         except TrackingPersistenceError:
@@ -141,9 +154,19 @@ class ExperimentReactions:
         self, context: EventContext[ExperimentState]
     ) -> EventReaction[ExperimentState]:
         state = context.state
-        if requested := _FINAL_TRACKING_STATUS.get(
-            str(context.event.payload.get("transition") or "")
-        ):
+        transition = str(context.event.payload.get("transition") or "")
+        step = EXPERIMENT_WORKFLOW.transition(transition)
+        effects = () if step is None else step.effects
+        requested = (
+            "FINISHED"
+            if "finish_tracking" in effects
+            else "KILLED"
+            if "stop_tracking" in effects
+            else "FAILED"
+            if "fail_tracking" in effects
+            else ""
+        )
+        if requested:
             state = self._finalize_tracking_run(state=state, status=requested)
         return EventReaction(state=state)
 
@@ -157,6 +180,8 @@ class ExperimentReactions:
         if not (capabilities.logging and capabilities.control):
             return state, False
         existing = state.get("mlflow_run") or {}
+        if existing.get("delivery_id") == delivery_id:
+            return state, True
         persisted_status = str(existing.get("status") or "").upper()
         if existing.get("run_id") and (
             not replace_terminal
@@ -165,20 +190,6 @@ class ExperimentReactions:
             return state, False
         experiment_id = str(state.get("id") or "")
         project_id = str(state.get("project_id") or "")
-        # Redelivery of an already-served event: the guard above only catches
-        # the run-id shape, so an error-only outcome would otherwise create a
-        # second MLflow run before the writer's barrier discarded the write.
-        # Reporting the durable outcome again reproduces the original answer.
-        if (served := self._landed_tracking_run(
-            project_id=project_id, experiment_id=experiment_id,
-            delivery_id=delivery_id,
-        )) is not None:
-            LOGGER.warning(
-                "Redelivered MLflow tracking event for experiment %s (delivery "
-                "%s) already has a durable outcome; not creating a second run.",
-                experiment_id, delivery_id,
-            )
-            return served, True
         attempt_index = int(state.get("attempt_index") or 1)
         created: CreateRunResult
         try:
@@ -227,27 +238,10 @@ class ExperimentReactions:
                 "Retrying the durable MLflow tracking outcome for experiment %s: %s",
                 experiment_id, _message(first),
             )
-        # A failed write can still have committed (a lost acknowledgement), and
-        # the tracking event is unconstrained: read the ledger for THIS
-        # delivery's key before writing again, so an ambiguous commit stays one
-        # durable record, not two. The retry re-checks the same key inside its
-        # own transaction, so this read is the fast path that also names the
-        # currently durable row — never the barrier that guarantees one append.
-        if (landed := self._landed_tracking_run(
-            project_id=project_id, experiment_id=experiment_id,
-            delivery_id=delivery_id,
-        )) is not None:
-            # Name the row that is actually current: a concurrent delivery may
-            # have superseded this one, and the caller must read the database's
-            # truth rather than this delivery's intent.
-            LOGGER.error(
-                "The failed MLflow tracking write for experiment %s (delivery %s) "
-                "is durable after all; skipping the retry that would duplicate "
-                "it. Current durable run: %s.",
-                experiment_id, delivery_id,
-                str((landed.get("mlflow_run") or {}).get("run_id") or "") or "none",
-            )
-            return landed
+        # Retry the same idempotency key directly. Research checks and records
+        # the delivery in the same transaction as the state/event write, so a
+        # lost acknowledgement cannot duplicate it and needs no read-before-write
+        # dance in Application.
         try:
             return self.research.record_tracking_run(
                 project_id=project_id, experiment_id=experiment_id, run=run,
@@ -268,30 +262,6 @@ class ExperimentReactions:
                 + (f". The outcome it was recording: {adapter_failure}"
                    if adapter_failure else "")
             ) from exc
-
-    def _landed_tracking_run(
-        self, *, project_id: str, experiment_id: str, delivery_id: int
-    ) -> ExperimentState | None:
-        """Return the durable state when THIS delivery's write committed.
-
-        Correlation is the delivery id carried in the append-only event, never
-        the mutable current row: an identical run id or adapter error from an
-        earlier delivery is not proof, and a concurrent delivery overwriting
-        the row is not disproof.
-        """
-        try:
-            return self.research.tracking_delivery_state(
-                project_id=project_id,
-                experiment_id=experiment_id,
-                delivery_id=delivery_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - the retry stays the fallback
-            LOGGER.error(
-                "Could not re-read the MLflow tracking ledger of experiment %s "
-                "before retrying its write: %s",
-                experiment_id, _message(exc),
-            )
-            return None
 
     def _finalize_tracking_run(
         self, *, state: ExperimentState, status: str
@@ -314,12 +284,11 @@ class ExperimentReactions:
         )
         readback = finalized.get("run")
         if isinstance(readback, dict) and str(readback.get("run_id") or "") == run_id:
-            return self.research.record_tracking_run(
+            return self.research.refresh_tracking_run(
                 project_id=str(state.get("project_id") or ""),
                 experiment_id=str(state.get("id") or ""),
                 run=_persisted_run(readback),
-                event_type="experiment.mlflow_run_refreshed",
-            )
+            ).state
         return state
 
     def feed_advisory(
@@ -333,7 +302,7 @@ class ExperimentReactions:
             status = str(context.state.get("status") or "")
             event = (
                 f"experiment_{status}"
-                if status in ("complete", "failed", "abandoned")
+                if status in EXPERIMENT_TERMINAL_STATUSES
                 else None
             )
         if event is None or context.event.target_type != "experiment":

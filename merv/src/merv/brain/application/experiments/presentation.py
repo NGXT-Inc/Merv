@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, cast
 
-from ...research_core.facade import SYNOPSIS_MAX_LEN, ExperimentState
-from ..gate_checklist import present_gate_checklist
+from ...research_core import ExperimentState, SYNOPSIS_MAX_LEN
 from ..ports.storage import ProducedObject
 from .claim_guidance import claim_update_suggestions
 
@@ -156,9 +155,12 @@ def rich_experiment_state(
             if "mlflow" not in str(key).lower()
         }
     )
-    checklist = result.get("gate_checklist")
-    if isinstance(checklist, dict):
-        result["gate_checklist"] = present_gate_checklist(checklist)
+    if isinstance(result.get("mlflow_run"), dict):
+        result["mlflow_run"] = {
+            key: value
+            for key, value in result["mlflow_run"].items()
+            if key != "delivery_id"
+        }
     if "gate_checklist" in result and "claim_update_suggestions" not in result:
         items = list(result.items())
         index = list(result).index("gate_checklist") + 1

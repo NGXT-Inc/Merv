@@ -31,20 +31,6 @@ class TestBrain:
     """
 
     __test__ = False
-    _RECORD_SERVICES = frozenset(
-        {
-            "permissions",
-            "projects",
-            "claims",
-            "experiments",
-            "artifacts",
-            "graph_refs",
-            "reflection_waves",
-            "reviews",
-            "feed",
-            "literature",
-        }
-    )
     _PRIVATE_ALIASES = {
         "store": "_store", "blobs": "_blobs", "storage": "_storage",
         "mlflow_tracking": "_tracking",
@@ -103,6 +89,51 @@ class TestBrain:
             mlflow_tracking=mlflow_tracking,
         )
         self._app = self.server.app
+        research = self._app.research
+
+        def list_projects(
+            *,
+            tenant_id: str | None = None,
+            include_hidden: bool = False,
+            user_id: str = "",
+            project_id: str = "",
+        ) -> dict[str, Any]:
+            return research.reachable_projects(
+                tenant_id=tenant_id,
+                include_hidden=include_hidden,
+                user_id=user_id,
+                key_project_id=project_id,
+            )
+
+        self._test_parts = {
+            "research_core": research,
+            "projects": SimpleNamespace(
+                create=research.create_project,
+                get=research.get_project,
+                update=research.update_project,
+                list_projects=list_projects,
+                current=research.current_project,
+                members=research.project_members,
+                is_member=research.is_project_member,
+                add_member=research.add_project_member,
+                remove_member=research.remove_project_member,
+            ),
+            "claims": SimpleNamespace(
+                create=research.create_claim,
+                update=research.update_claim,
+                list_claims=research.list_claims,
+            ),
+            "experiments": research._experiments,
+            "graph_refs": SimpleNamespace(
+                resolve_index=research.resolve_graph_refs
+            ),
+            "reflection_waves": research._reflections,
+            "reviews": research._reviews,
+            "artifacts": self._app.artifacts,
+            "feed": self._app.feed,
+            "literature": self._app.literature,
+            "permissions": self._app.tools.permissions,
+        }
         self.fastapi_app = self.server.fastapi_app
         self._client = TestClient(self.fastapi_app)
 
@@ -114,8 +145,8 @@ class TestBrain:
     def __getattr__(self, name: str) -> Any:
         if name == "execution_backend":
             return self._app.sandboxes._backend
-        if name in self._RECORD_SERVICES:
-            return getattr(self._app._record_core, name)
+        if name in self._test_parts:
+            return self._test_parts[name]
         if name in self._SANDBOX_TEST_PARTS:
             return getattr(self._app.sandboxes, self._SANDBOX_TEST_PARTS[name])
         return getattr(self._app, self._PRIVATE_ALIASES.get(name, name))

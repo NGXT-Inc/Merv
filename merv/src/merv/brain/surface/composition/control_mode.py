@@ -193,7 +193,7 @@ def build_control_server(
         OAuthService(
             repository=oauth_repository,
             project_keys=project_keys,
-            is_project_member=app.http.projects.is_member,
+            is_project_member=app.research.is_project_member,
         )
         if auth is not None and oauth_resource_uri
         else None

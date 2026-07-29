@@ -1,4 +1,5 @@
-"""Experiment state service."""
+# If you update this file, you must consult research_core.md to see whether research_core.md needs to be updated. research_core.md must not exceed 100 lines.
+"""Experiment state machine and tracking ledger."""
 
 from __future__ import annotations
 
@@ -9,37 +10,29 @@ from typing import Any
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 from merv.shared.markdown_images import markdown_image_links
 
-from .domain.artifacts import plan_sections_missing, report_problems
-from .domain.experiment_policy import (
-    ACTIVE_EXPERIMENT_CAP,
-    active_experiment_cap_reached_message,
-    compose_experiment_intent,
-    normalize_claim_ids,
-)
-from .domain.experiment_names import validate_experiment_name
-from .domain.graph_lint import graph_problems
-from .domain.reflection_policy import (
-    covered_terminal_ids,
-    reflection_create_block_message,
-)
-from .domain.review_snapshot import review_snapshot_id
-from .domain.artifact_evidence import (
+from .evidence import (
     ArtifactDocument,
-    current_slot_artifacts,
-    preferred_artifact,
     artifact_state_record,
+    current_slot_artifacts,
+    graph_problems,
+    plan_sections_missing,
+    preferred_artifact,
+    report_problems,
     require_artifact_document,
     submission_state_record,
 )
-from .domain.workflow_gates import (
-    GATE_TABLE,
-    TERMINAL_STATUSES,
-    allowed_transitions_for,
-)
-from .gate_evaluation import (
+from .experiment_workflow import EXPERIMENT_WORKFLOW
+from .reflection_workflow import REFLECTION_WORKFLOW
+from .policy import (
+    ACTIVE_EXPERIMENT_CAP,
     GateEvaluation,
     RequirementEvaluation,
+    active_experiment_cap_reached_message,
+    covered_terminal_ids,
     evaluate_artifact_requirement,
+    evaluate_review_gate,
+    reflection_create_block_message,
+    validate_experiment_name,
 )
 from ..artifacts import Artifact, ArtifactTarget, Artifacts, Submission
 from ..kernel.events import StoredEvent, freeze_json_object
@@ -47,31 +40,31 @@ from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
 from ..kernel.utils import now_iso
-from .review_gate import evaluate_review_gate
-from .transition_types import (
-    CommittedExperimentTransition,
-    CommittedTrackingRunRefresh,
-)
+from .models import CommittedExperimentUpdate
+from .workflow_schema import ReviewReturn
 
 
 def _query(conn, sql: str, parameters: tuple[Any, ...]) -> list[dict[str, Any]]:
     return rows_to_dicts(rows=conn.execute(sql, parameters).fetchall())
 
 
-# Every event record_mlflow_run can append.
+# Events that a tracking update may append.
 TRACKING_EVENT_TYPES = (
     "experiment.mlflow_run_created",
     "experiment.mlflow_run_unavailable",
     "experiment.mlflow_run_refreshed",
 )
-# The only types a KEYED write can append. `record_mlflow_run` is the sole
-# writer of a delivery id and derives the type itself on that path —
-# `reject_keyed_event_type_override` below makes that an enforced invariant
-# rather than a convention, so the unkeyed `mlflow.finalize_run` refreshes an
-# agent may append without limit can never claim a delivery.
+# A keyed delivery derives one of these types; callers cannot override it and
+# make an ordinary refresh look like the delivery's committed outcome.
 TRACKING_DELIVERY_EVENT_TYPES = (
     "experiment.mlflow_run_created",
     "experiment.mlflow_run_unavailable",
+)
+ATTEMPT_CLOCK_TRANSITION = next(
+    transition.name
+    for state in EXPERIMENT_WORKFLOW.states
+    for transition in state.transitions
+    if "start_attempt_clock" in transition.effects
 )
 
 
@@ -108,40 +101,15 @@ class ExperimentService:
     def create(
         self,
         *,
-        name: str = "",
-        intent: str = "",
+        name: str,
+        intent: str,
         tested_claim_ids: list[str] | str | None = None,
-        claim_id: str | None = None,
-        claim_ids: list[str] | str | None = None,
-        title: str = "",
-        hypothesis: str = "",
-        design: str = "",
-        success_criteria: str = "",
-        risks: str = "",
-        status: str = "planned",
         project_id: str | None = None,
-        **extra: Any,
     ) -> dict[str, Any]:
-        if extra:
-            raise ValidationError(
-                f"unexpected experiment.create fields: {', '.join(sorted(extra))}"
-            )
-        if status and status != "planned":
-            raise ValidationError(
-                "experiment.create only supports status='planned'; use experiment.transition for workflow changes"
-            )
-        intent = compose_experiment_intent(
-            intent=intent,
-            title=title,
-            hypothesis=hypothesis,
-            design=design,
-            success_criteria=success_criteria,
-            risks=risks,
-        )
-        tested_claim_ids = normalize_claim_ids(
-            tested_claim_ids=tested_claim_ids,
-            claim_id=claim_id,
-            claim_ids=claim_ids,
+        tested_claim_ids = (
+            [tested_claim_ids]
+            if isinstance(tested_claim_ids, str)
+            else list(tested_claim_ids or [])
         )
         name = validate_experiment_name(name)
         if not intent.strip():
@@ -176,9 +144,17 @@ class ExperimentService:
                 """
                 INSERT INTO experiments
                   (id, project_id, name, intent, status, attempt_index, revision_context, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'planned', 1, '', ?, ?)
+                VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)
                 """,
-                (experiment_id, project_id, name, intent.strip(), now, now),
+                (
+                    experiment_id,
+                    project_id,
+                    name,
+                    intent.strip(),
+                    EXPERIMENT_WORKFLOW.initial,
+                    now,
+                    now,
+                ),
             )
             for claim_id in tested_claim_ids or []:
                 conn.execute(
@@ -197,7 +173,10 @@ class ExperimentService:
             return state
 
     def _active_experiment_count(self, *, conn, project_id: str) -> int:
-        terminal = ", ".join(f"'{status}'" for status in sorted(TERMINAL_STATUSES))
+        terminal = ", ".join(
+            f"'{status}'"
+            for status in sorted(EXPERIMENT_WORKFLOW.terminal_statuses)
+        )
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS count FROM experiments
@@ -220,13 +199,15 @@ class ExperimentService:
         debt, published_id = self._terminal_experiments_since_last_reflection(
             conn=conn, project_id=project_id
         )
+        terminal = tuple(sorted(REFLECTION_WORKFLOW.terminal_statuses))
+        placeholders = ", ".join("?" for _ in terminal)
         open_wave = conn.execute(
-            """
+            f"""
             SELECT id, status FROM reflections
-            WHERE project_id = ? AND status NOT IN ('published', 'abandoned')
+            WHERE project_id = ? AND status NOT IN ({placeholders})
             ORDER BY created_seq DESC LIMIT 1
             """,
-            (project_id,),
+            (project_id, *terminal),
         ).fetchone()
         message = reflection_create_block_message(
             debt=debt,
@@ -236,57 +217,13 @@ class ExperimentService:
         if message:
             raise WorkflowError(message)
 
-    def create_from_reflection(
-        self,
-        *,
-        conn,
-        project_id: str,
-        reflection_id: str,
-        name: str,
-        intent: str,
-        claim_ids: list[str],
-        proposal_key: str,
-        parallelism: str,
-    ) -> str:
-        name = validate_experiment_name(name)
-        intent = intent.strip()
-        self._reject_active_experiment_cap(conn=conn, project_id=project_id)
-        experiment_id = new_id(prefix="exp")
-        now = now_iso()
-        conn.execute(
-            """
-            INSERT INTO experiments
-              (id, project_id, name, intent, status, attempt_index,
-               revision_context, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'planned', 1, '', ?, ?)
-            """,
-            (experiment_id, project_id, name, intent, now, now),
-        )
-        for claim_id in claim_ids:
-            conn.execute(
-                "INSERT INTO experiment_claims (experiment_id, claim_id) VALUES (?, ?)",
-                (experiment_id, claim_id),
-            )
-        self.store.record_event(
-            conn=conn,
-            project_id=project_id,
-            event_type="experiment.created",
-            target_type="experiment",
-            target_id=experiment_id,
-            payload={
-                "name": name,
-                "intent": intent,
-                "source_reflection_id": reflection_id,
-                "proposal_key": proposal_key.strip(),
-                "parallelism": parallelism.strip(),
-            },
-        )
-        return experiment_id
-
     def _terminal_experiments_since_last_reflection(
         self, *, conn, project_id: str
     ) -> tuple[int, str | None]:
-        terminal = ", ".join(f"'{status}'" for status in sorted(TERMINAL_STATUSES))
+        terminal = ", ".join(
+            f"'{status}'"
+            for status in sorted(EXPERIMENT_WORKFLOW.terminal_statuses)
+        )
         current_terminal = {
             str(row["id"])
             for row in conn.execute(
@@ -300,10 +237,10 @@ class ExperimentService:
         published = conn.execute(
             """
             SELECT id, corpus_json FROM reflections
-            WHERE project_id = ? AND status = 'published'
+            WHERE project_id = ? AND status = ?
             ORDER BY published_at DESC, created_seq DESC LIMIT 1
             """,
-            (project_id,),
+            (project_id, REFLECTION_WORKFLOW.success_status),
         ).fetchone()
         if published is None:
             return len(current_terminal), None
@@ -348,6 +285,16 @@ class ExperimentService:
                 target_ids=(experiment_id,),
                 summarize=True,
             )[experiment_id]
+            delivery = conn.execute(
+                """
+                SELECT delivery_id FROM tracking_deliveries
+                WHERE project_id = ? AND target_type = 'experiment'
+                  AND target_id = ?
+                ORDER BY event_id DESC
+                LIMIT 1
+                """,
+                (data["project_id"], data["id"]),
+            ).fetchone()
             return self._assemble_state_with_gate(
                 conn=conn,
                 experiment=data,
@@ -370,6 +317,11 @@ class ExperimentService:
                     (experiment_id,),
                 ),
                 submissions=history.submissions,
+                tracking_delivery_id=(
+                    None
+                    if delivery is None
+                    else int(delivery["delivery_id"])
+                ),
             )
         finally:
             if owns_conn:
@@ -419,6 +371,29 @@ class ExperimentService:
             target_ids=experiment_ids,
             summarize=True,
         )
+        delivery_ids: dict[str, int] = {}
+        if any(
+            row.get("mlflow_run_id") or row.get("mlflow_run_error")
+            for row in experiment_rows
+        ):
+            for row in conn.execute(
+                """
+                SELECT td.target_id, td.delivery_id
+                FROM tracking_deliveries td
+                JOIN (
+                    SELECT target_id, MAX(event_id) AS event_id
+                    FROM tracking_deliveries
+                    WHERE project_id = ? AND target_type = 'experiment'
+                    GROUP BY target_id
+                ) latest
+                  ON latest.target_id = td.target_id
+                 AND latest.event_id = td.event_id
+                WHERE td.project_id = ?
+                  AND td.target_type = 'experiment'
+                """,
+                (project_id, project_id),
+            ).fetchall():
+                delivery_ids[str(row["target_id"])] = int(row["delivery_id"])
         return [
             self._assemble_state_with_gate(
                 conn=conn,
@@ -427,6 +402,9 @@ class ExperimentService:
                 evidence=history[str(experiment["id"])].artifacts,
                 reviews=reviews.get(str(experiment["id"]), []),
                 submissions=history[str(experiment["id"])].submissions,
+                tracking_delivery_id=delivery_ids.get(
+                    str(experiment["id"])
+                ),
             )
             for experiment in experiment_rows
         ]
@@ -440,6 +418,7 @@ class ExperimentService:
         evidence: tuple[Artifact, ...],
         reviews: list[dict[str, Any]],
         submissions: tuple[Submission, ...],
+        tracking_delivery_id: int | None,
     ) -> tuple[dict[str, Any], GateEvaluation]:
         data = dict(experiment)
         data["tested_claims"] = tested_claims
@@ -453,7 +432,10 @@ class ExperimentService:
         data["submissions"] = [
             submission_state_record(submission) for submission in submissions
         ]
-        data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
+        data["mlflow_run"] = self._mlflow_run_from_row(
+            experiment=data,
+            delivery_id=tracking_delivery_id,
+        )
         for review in reviews:
             review["findings"] = json.loads(review.pop("findings_json", "[]"))
             review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
@@ -471,7 +453,7 @@ class ExperimentService:
             raise NotFoundError(f"experiment not found in project {project_id}: {experiment_id}")
 
     def _mlflow_run_from_row(
-        self, *, experiment: dict[str, Any]
+        self, *, experiment: dict[str, Any], delivery_id: int | None
     ) -> dict[str, Any] | None:
         run_id = str(experiment.get("mlflow_run_id") or "")
         error = str(experiment.get("mlflow_run_error") or "")
@@ -487,6 +469,8 @@ class ExperimentService:
         }
         if error:
             result["error"] = error
+        if delivery_id is not None:
+            result["delivery_id"] = delivery_id
         return result
 
     def record_mlflow_run(
@@ -498,7 +482,7 @@ class ExperimentService:
         event_type: str | None = None,
         return_event: bool = False,
         delivery_id: int | None = None,
-    ) -> dict[str, Any] | CommittedTrackingRunRefresh:
+    ) -> dict[str, Any] | CommittedExperimentUpdate:
         """``delivery_id`` names the committed event this tracking outcome
         belongs to. A keyed write records it in ``tracking_deliveries`` in the
         SAME transaction as the append, so the row's existence is exact proof
@@ -514,8 +498,8 @@ class ExperimentService:
 
         def result(
             state: dict[str, Any], event: StoredEvent
-        ) -> dict[str, Any] | CommittedTrackingRunRefresh:
-            return CommittedTrackingRunRefresh(state, event) if return_event else state
+        ) -> dict[str, Any] | CommittedExperimentUpdate:
+            return CommittedExperimentUpdate(state, event) if return_event else state
 
         delivery = (
             {} if delivery_id is None else {"delivery_id": int(delivery_id)}
@@ -680,20 +664,11 @@ class ExperimentService:
     def _delivery_event(
         self, *, conn, project_id: str, experiment_id: str, delivery_id: int
     ) -> StoredEvent | None:
-        """This delivery's committed tracking event, when the ledger holds it.
+        """Return the event committed for this exact tracking delivery.
 
-        Two point reads and no search: one lookup on `tracking_deliveries`'
-        UNIQUE key, then the named `events` row by primary key. Cost is flat in
-        the target's keyed history, which matters because this runs inside
-        EVERY keyed write's transaction and nothing caps that history — a
-        `retry_running` loop during an MLflow outage appends an
-        `mlflow_run_unavailable` per attempt — so a lookup that grew with it
-        would make the cumulative write cost quadratic (the reason the
-        payload-decoding scan it replaces was wrong even while correct).
-        Nothing is bounded away and nothing is decided by decoding: a false
-        miss here appends a duplicate and creates a second MLflow run, so the
-        key is exact and total. Only the one named event's payload is decoded,
-        to return the event as it was stored.
+        The unique delivery key points directly to one event. Both rows commit
+        together, so this constant-cost lookup is the idempotency proof; mutable
+        experiment fields cannot safely prove which delivery wrote them.
         """
         keyed = conn.execute(
             """
@@ -751,7 +726,7 @@ class ExperimentService:
     def _evaluate_gate(self, *, conn, experiment: dict[str, Any]) -> GateEvaluation:
         """Collect current facts once for enforcement, state, and guidance."""
         status = str(experiment.get("status") or "")
-        forward = GATE_TABLE.get(status)
+        workflow_state = EXPERIMENT_WORKFLOW.state(status)
         artifacts = experiment.get("current_attempt_artifacts") or []
         present_roles = {
             str(art.get("role"))
@@ -759,7 +734,9 @@ class ExperimentService:
             if art.get("role")
         }
         requirements: list[RequirementEvaluation] = []
-        for requirement in () if forward is None else forward.requirements:
+        for requirement in (
+            () if workflow_state is None else workflow_state.requirements
+        ):
             present = requirement.role in present_roles
             problems: tuple[str, ...] = ()
             if present and requirement.validator:
@@ -779,32 +756,20 @@ class ExperimentService:
 
         review = (
             None
-            if forward is None or forward.review is None
+            if workflow_state is None or workflow_state.review is None
             else evaluate_review_gate(
                 conn=conn,
                 target_type="experiment",
                 target=experiment,
-                review=forward.review,
+                review=workflow_state.review,
             )
         )
         return GateEvaluation(
-            subject="experiment",
+            workflow=EXPERIMENT_WORKFLOW,
             status=status,
-            transition=None if forward is None else forward.name,
-            leads_to=None if forward is None else forward.to_status,
-            terminal=status in TERMINAL_STATUSES,
             requirements=tuple(requirements),
             review=review,
-            legal_transitions=tuple(
-                dict(item) for item in allowed_transitions_for(status)
-            ),
         )
-
-    def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
-        with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            states = self.list_states_with_gates(conn=conn, project_id=project_id)
-            return {"experiments": [state for state, _gate in states]}
 
     def list_experiment_summaries(
         self, *, project_id: str | None = None
@@ -823,22 +788,6 @@ class ExperimentService:
             ).fetchall()
             return rows_to_dicts(rows=rows)
 
-    def transition(
-        self,
-        *,
-        experiment_id: str,
-        transition: str,
-        evidence: dict[str, Any] | None = None,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        committed = self.transition_with_event(
-            experiment_id=experiment_id,
-            transition=transition,
-            evidence=evidence,
-            project_id=project_id,
-        )
-        return committed.state
-
     def transition_with_event(
         self,
         *,
@@ -846,7 +795,7 @@ class ExperimentService:
         transition: str,
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
-    ) -> CommittedExperimentTransition:
+    ) -> CommittedExperimentUpdate:
         """Transition atomically and expose its exact event after commit."""
 
         with self.store.transaction() as conn:
@@ -856,6 +805,9 @@ class ExperimentService:
             )
             status = experiment["status"]
             next_status = gate.require_transition(transition)
+            step = EXPERIMENT_WORKFLOW.transition(transition)
+            if step is None:
+                raise WorkflowError(f"unknown experiment transition: {transition}")
             now = now_iso()
             # Seal the live composition as a submission attempt. After the gate
             # (a refused transition seals nothing) and on this same connection
@@ -870,7 +822,7 @@ class ExperimentService:
                 ),
                 transition=transition,
             )
-            if transition == "complete":
+            if "record_conclusion" in step.effects:
                 conn.execute(
                     "UPDATE experiments SET status = ?, conclusion = ?, updated_at = ? WHERE id = ?",
                     (
@@ -880,7 +832,7 @@ class ExperimentService:
                         experiment_id,
                     ),
                 )
-            elif transition == "retry_running":
+            elif "record_retry_context" in step.effects:
                 revision_context = self._retry_running_context(
                     evidence=evidence,
                     previous=str(experiment.get("revision_context") or ""),
@@ -897,7 +849,7 @@ class ExperimentService:
             event = self.store.record_event(
                 conn=conn,
                 project_id=experiment["project_id"],
-                event_type="experiment.transitioned",
+                event_type=EXPERIMENT_WORKFLOW.event_type,
                 target_type="experiment",
                 target_id=experiment_id,
                 payload={
@@ -908,7 +860,7 @@ class ExperimentService:
                 },
             )
             state = self.get_state(experiment_id=experiment_id, conn=conn)
-            return CommittedExperimentTransition(state=state, event=event)
+            return CommittedExperimentUpdate(state=state, event=event)
 
     def _conclusion_from_evidence(self, evidence: dict[str, Any] | None) -> str:
         """Derive the durable conclusion text persisted when an experiment
@@ -942,80 +894,67 @@ class ExperimentService:
         context = " ".join(parts)
         return f"{previous}\n\n{context}".strip() if previous else context
 
-    def send_back_to_planned(
-        self, *, conn, experiment_id: str, revision_context: str
+    def return_from_review(
+        self,
+        *,
+        conn,
+        experiment_id: str,
+        route: ReviewReturn,
+        revision_context: str,
     ) -> None:
-        row = conn.execute(
-            "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
-        ).fetchone()
-        if row is None:
-            raise NotFoundError(f"experiment not found: {experiment_id}")
-        if row["status"] not in {"design_review", "experiment_review"}:
-            raise WorkflowError(
-                f"experiment is {row['status']!r}; only an experiment under "
-                "review can be sent back to planned"
-            )
-        now = now_iso()
-        # Run identity is per-attempt: clear the persisted MLflow run so the
-        # revised attempt's start_running mints a fresh one instead of telling
-        # the agent to resume the previous attempt's (usually finalized) run.
-        conn.execute(
-            """
-            UPDATE experiments
-            SET status = 'planned', attempt_index = attempt_index + 1,
-                revision_context = ?, updated_at = ?,
-                mlflow_run_id = '', mlflow_run_name = '', mlflow_run_status = '',
-                mlflow_run_artifact_uri = '', mlflow_run_created_at = NULL,
-                mlflow_run_error = ''
-            WHERE id = ?
-            """,
-            (revision_context, now, experiment_id),
-        )
-        self.store.record_event(
-            conn=conn,
-            project_id=row["project_id"],
-            event_type="experiment.returned_to_planned",
-            target_type="experiment",
-            target_id=experiment_id,
-            payload={
-                "revision_context": revision_context,
-                "previous_mlflow_run_id": str(row["mlflow_run_id"] or ""),
-            },
-        )
+        """Apply the workflow-declared destination and attempt policy."""
 
-    def send_back_to_running(
-        self, *, conn, experiment_id: str, revision_context: str
-    ) -> None:
-        """Reject an executed attempt back to execution: the approved plan and
-        its attempt-scoped artifacts stay valid, so attempt_index is NOT bumped
-        — only execution and/or the conclusion must be redone before results
-        are resubmitted."""
         row = conn.execute(
             "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
         ).fetchone()
         if row is None:
             raise NotFoundError(f"experiment not found: {experiment_id}")
-        if row["status"] != "experiment_review":
+        sources = EXPERIMENT_WORKFLOW.review_sources(route)
+        if row["status"] not in sources:
             raise WorkflowError(
                 f"experiment is {row['status']!r}; only an experiment under "
-                "experiment_review can be sent back to running"
+                f"review can be sent back to {route.to_status}"
             )
         now = now_iso()
-        conn.execute(
-            "UPDATE experiments SET status = 'running', revision_context = ?, updated_at = ? WHERE id = ?",
-            (revision_context, now, experiment_id),
-        )
+        previous_run_id = str(row["mlflow_run_id"] or "")
+        if route.attempt == "new":
+            # Run identity is per-attempt. A revised plan must not inherit the
+            # previous attempt's usually-finalized tracking run.
+            conn.execute(
+                """
+                UPDATE experiments
+                SET status = ?, attempt_index = attempt_index + 1,
+                    revision_context = ?, updated_at = ?,
+                    mlflow_run_id = '', mlflow_run_name = '',
+                    mlflow_run_status = '', mlflow_run_artifact_uri = '',
+                    mlflow_run_created_at = NULL, mlflow_run_error = ''
+                WHERE id = ?
+                """,
+                (route.to_status, revision_context, now, experiment_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE experiments
+                SET status = ?, revision_context = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (route.to_status, revision_context, now, experiment_id),
+            )
+        payload = {"revision_context": revision_context}
+        if route.attempt == "new":
+            payload["previous_mlflow_run_id"] = previous_run_id
         self.store.record_event(
             conn=conn,
             project_id=row["project_id"],
-            event_type="experiment.returned_to_running",
+            event_type=route.event_type,
             target_type="experiment",
             target_id=experiment_id,
-            payload={"revision_context": revision_context},
+            payload=payload,
         )
 
     def _run_validator(self, *, experiment: dict[str, Any], name: str) -> None:
-        """Dispatch a gate-table validator name to its deep-lint implementation."""
+        """Dispatch a workflow validator name to its deep-lint implementation."""
         if name == "plan":
             self._validate_plan_sections(experiment=experiment)
         elif name == "report":
@@ -1083,8 +1022,7 @@ class ExperimentService:
         passes the report lint — including every relative figure link having
         submitted figure content (captured when the report was associated),
         and a reference to the system metrics exhibit when one is pinned for
-        this attempt (quantitative attempts; the tool layer generates and pins
-        it before the transition gate runs)."""
+        this attempt (Application pins it before the transition gate runs)."""
         document = self._submitted_document(
             experiment=experiment,
             role="report",
@@ -1141,25 +1079,25 @@ class ExperimentService:
     def attempt_started_running_at(self, *, experiment_id: str) -> str | None:
         """When the current attempt entered running — the metrics-exhibit
         window start. Derived from the transition event stream: each attempt
-        passes through start_running exactly once (retry_running and
-        send_back_to_running keep the experiment running), so the latest
-        start_running event belongs to the current attempt."""
+        passes through its clock-start transition exactly once; retries and
+        review returns to running keep the same attempt, so the latest matching
+        event belongs to the current attempt."""
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 """
                 SELECT payload_json, created_at FROM events
                 WHERE target_type = 'experiment' AND target_id = ?
-                  AND type = 'experiment.transitioned'
+                  AND type = ?
                 ORDER BY id DESC
                 """,
-                (experiment_id,),
+                (experiment_id, EXPERIMENT_WORKFLOW.event_type),
             ).fetchall()
         for row in rows:
             try:
                 payload = json.loads(str(row["payload_json"] or "{}"))
             except json.JSONDecodeError:
                 continue
-            if payload.get("transition") == "start_running":
+            if payload.get("transition") == ATTEMPT_CLOCK_TRANSITION:
                 return str(row["created_at"])
         return None
 
@@ -1170,9 +1108,7 @@ class ExperimentService:
         verdict: dict[str, Any],
         project_id: str | None = None,
     ) -> None:
-        """Persist the exhibit generation verdict to the event stream — the
-        claim-validity instrumentation row (runs found, result files, pinned)
-        for the gates-vs-no-gates benchmark."""
+        """Record the exhibit outcome (runs, result files, and pin status)."""
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             self.store.record_event(
@@ -1183,7 +1119,3 @@ class ExperimentService:
                 target_id=experiment_id,
                 payload=verdict,
             )
-
-    def target_snapshot_id(self, *, conn, experiment_id: str) -> str:
-        experiment = self.get_state(experiment_id=experiment_id, conn=conn)
-        return review_snapshot_id(target_type="experiment", target=experiment)

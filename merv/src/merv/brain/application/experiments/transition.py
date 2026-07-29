@@ -9,14 +9,16 @@ from merv.shared.artifact_roles import EXHIBIT_ROLE
 
 from ...artifacts import ArtifactTarget, Artifacts
 from ...kernel.events import StoredEvent
-from ...research_core.facade import (
+from ...research_core import (
+    EXPERIMENT_WORKFLOW,
     ExperimentState,
     PersistedRunState,
-    ResearchCore,
+    Research,
 )
 from ..events import EventDispatcher
 from ..ports.storage import ProducedObjectCatalog
 from ..ports.tracking import ExperimentTracking, TrackingContextPayload
+from .create import experiment_folder
 from .exhibits import ExhibitBuilder, should_pin_exhibit
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, exhibit_bytes
 from .presentation import SlimExperimentState, slim_experiment_state
@@ -54,7 +56,7 @@ class TransitionReceipt(TypedDict, total=False):
 class TransitionExperiment:
     """Coordinate one transition without exposing component internals."""
 
-    research: ResearchCore
+    research: Research
     artifacts: Artifacts
     tracking: ExperimentTracking | None
     exhibits: ExhibitBuilder
@@ -69,9 +71,6 @@ class TransitionExperiment:
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
     ) -> TransitionReceipt:
-        before = self.research.experiment_state(
-            experiment_id=experiment_id, project_id=project_id
-        )
         response, event = self._execute(
             experiment_id=experiment_id, transition=transition, evidence=evidence,
             project_id=project_id, include_tracking_credentials=True,
@@ -79,7 +78,7 @@ class TransitionExperiment:
         receipt = TransitionReceipt(
             experiment_id=experiment_id,
             transition=transition,
-            from_status=str(before.get("status") or ""),
+            from_status=str(event.payload.get("from") or ""),
             to_status=str(response.get("status") or ""),
             # Keep the conventional status key as a concise acknowledgement,
             # not as a second experiment-state projection.
@@ -130,11 +129,13 @@ class TransitionExperiment:
         project_id: str | None,
         include_tracking_credentials: bool,
     ) -> tuple[TransitionResponse, StoredEvent]:
+        step = EXPERIMENT_WORKFLOW.transition(transition)
+        effects = () if step is None else step.effects
         before = (
             self.research.experiment_state(
                 experiment_id=experiment_id, project_id=project_id
             )
-            if transition == "submit_results" or not project_id
+            if "prepare_metrics_exhibit" in effects or not project_id
             else None
         )
         resolved_project_id = str((before or {}).get("project_id") or project_id or "")
@@ -143,9 +144,11 @@ class TransitionExperiment:
         )[experiment_id]
         exhibit = None
         if (
-            transition == "submit_results"
+            "prepare_metrics_exhibit" in effects
             and before is not None
-            and str(before.get("status")) == "running"
+            and str(before.get("status")) in EXPERIMENT_WORKFLOW.effect_sources(
+                "prepare_metrics_exhibit"
+            )
         ):
             exhibit = self._finalize_exhibit(state=before)
 
@@ -184,11 +187,11 @@ class TransitionExperiment:
                 response["mlflow_warning"] = cast(dict[str, str], warning)
             elif presentation_warning is not None:
                 response["mlflow_warning"] = presentation_warning
-        if transition in ("start_running", "retry_running"):
+        if "show_metrics_exhibit" in effects:
             response["metrics_exhibit"] = self._exhibit_expectation(
                 experiment_id=experiment_id, state=response
             )
-        elif transition == "submit_results" and exhibit is not None:
+        elif "prepare_metrics_exhibit" in effects and exhibit is not None:
             response["metrics_exhibit"] = {
                 "pinned": True,
                 "path": self._exhibit_path(experiment_id=experiment_id, state=response),
@@ -236,11 +239,10 @@ class TransitionExperiment:
     def _exhibit_path(
         self, *, experiment_id: str, state: dict[str, Any]
     ) -> str:
-        return self.research.exhibit_path(
+        return experiment_folder(
             experiment_id=experiment_id,
             name=str(state.get("name") or ""),
-            filename=METRICS_EXHIBIT_FILENAME,
-        )
+        ) + METRICS_EXHIBIT_FILENAME
 
     def _exhibit_expectation(
         self, *, experiment_id: str, state: dict[str, Any]

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.research_core.domain.artifact_evidence import (
+from merv.brain.research_core.evidence import (
     current_slot_artifacts,
     historical_latest_artifacts,
     sealed_submission_artifacts,

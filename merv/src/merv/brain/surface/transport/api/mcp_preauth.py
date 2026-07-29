@@ -14,6 +14,7 @@ from typing import Any, Callable, Protocol
 
 from fastapi import Request
 
+from ....research_core import Research
 from ...identity import LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
@@ -26,14 +27,8 @@ class ProjectScopeAuthorizer(Protocol):
     def key_project_id(self, principal: Any) -> str: ...
 
 
-class ReviewScopeResolver(Protocol):
-    def request_project_id(self, *, review_request_id: Any) -> str: ...
-
-    def session_project_id(self, *, review_session_id: Any) -> str: ...
-
-
 def build_mcp_preauthorizer(
-    *, authorizer: ProjectScopeAuthorizer, reviews: ReviewScopeResolver, hosted: bool
+    *, authorizer: ProjectScopeAuthorizer, research: Research, hosted: bool
 ) -> Preauthorizer:
     """Bind the project authorizer + review resolver into a ScopeAuthorizer."""
 
@@ -58,14 +53,14 @@ def build_mcp_preauthorizer(
             return
         if policy.telemetry_from_review_request:
             authorizer.require_member(
-                project_id=reviews.request_project_id(
+                project_id=research.review_project_id(
                     review_request_id=arguments.get("review_request_id")),
                 principal=principal)
         if policy.telemetry_from_review_session:
             # INV-9: the session's own project decides scope, so an mk_ key
             # cannot ride a foreign session id into another project.
             authorizer.require_member(
-                project_id=reviews.session_project_id(
+                project_id=research.review_project_id(
                     review_session_id=arguments.get("review_session_id")),
                 principal=principal)
 

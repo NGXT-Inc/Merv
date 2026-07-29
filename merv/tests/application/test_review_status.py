@@ -90,10 +90,10 @@ def _use_case(
 ) -> tuple[ReadReviewStatus, EventDispatcher]:
     registry = EventDispatcher()
     ExperimentReactions(research=research, feed=feed, tracking=None).bind(registry)
+    research.review_status = reviews.status
+    research.latest_submitted_review_event = reviews.latest_submitted_event
     return (
-        ReadReviewStatus(
-            research=research, reviews=reviews, dispatcher=registry
-        ),
+        ReadReviewStatus(research=research, dispatcher=registry),
         registry,
     )
 

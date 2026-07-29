@@ -7,9 +7,8 @@ from typing import Any
 
 from merv.shared.content_summaries import content_tldr
 
-from ..research_core.facade import ResearchCore
+from ..research_core import REFLECTION_WORKFLOW, Research
 from .experiments.presentation import slim_review_rows
-from .gate_checklist import present_gate_checklist
 from .reflection_guidance import post_publish_guidance, present_reflection_signal
 
 Record = dict[str, Any]
@@ -19,7 +18,7 @@ Record = dict[str, Any]
 class ReflectionCommands:
     """Delegate reflection policy to Research and present its semantic checklist."""
 
-    reflections: ResearchCore
+    reflections: Research
 
     def create(
         self,
@@ -40,7 +39,11 @@ class ReflectionCommands:
     ) -> Record:
         return present_agent_reflection_state(
             self.reflections.reflection_state(
-                project_id=project_id, reflection_id=reflection_id
+                project_id=project_id,
+                reflection_id=reflection_id,
+                # Research hydrates once in a batch; presentation decides
+                # whether the caller gets exact content or compact TLDRs.
+                include_content=True,
             ),
             include_content=include_content,
         )
@@ -67,17 +70,13 @@ class ReflectionCommands:
 def present_reflection_state(state: Record) -> Record:
     result = dict(state)
     materialized = result.get("materialized_experiments")
-    if result.get("status") == "published" and materialized:
+    if result.get("status") == REFLECTION_WORKFLOW.success_status and materialized:
         items = list(result.items())
         index = list(result).index("materialized_experiments") + 1
         items.insert(index, ("post_publish_guidance", post_publish_guidance(
             materialized_experiments=materialized
         )))
         result = dict(items)
-    checklist = result.get("gate_checklist")
-    if not isinstance(checklist, dict):
-        return result
-    result["gate_checklist"] = present_gate_checklist(checklist)
     return result
 
 

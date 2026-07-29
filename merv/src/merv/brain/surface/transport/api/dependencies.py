@@ -16,18 +16,16 @@ from ....application.facade import (
     LogicGraphQuery,
     MlflowOverviewQuery,
     ProjectDashboardQuery,
+    ReviewQueue,
     StatusAndNextQuery,
     TenantCountersQuery,
 )
 from ....artifacts import Artifacts
+from ....literature import Literature
 from ....object_storage import ObjectStorage
 from ...user_settings import UserHfTokenSettings
 from ....feed import FeedService
-from ....research_core.facade import (
-    ResearchLiterature,
-    ResearchProjects,
-    ResearchReviewDelivery,
-)
+from ....research_core import Research
 from ....sandbox import SandboxEngine
 from ...observability import StructuredLogger
 from ...tools.tool_facade import ToolDispatcher
@@ -59,8 +57,7 @@ class AuthorizeProject(Protocol):
 class HttpDependencies:
     """Bootstrap-built public contracts; routers receive only their own fields."""
 
-    projects: ResearchProjects
-    reviews: ResearchReviewDelivery
+    research: Research
     artifacts: Artifacts
     feed: FeedService
     sandboxes: SandboxEngine
@@ -80,5 +77,6 @@ class HttpDependencies:
     experiment_figure: ExperimentFigureQuery
     tracking_overview: MlflowOverviewQuery | None
     tenant_counters: TenantCountersQuery
-    literature: ResearchLiterature
+    review_queue: ReviewQueue
+    literature: Literature
     user_settings: UserHfTokenSettings

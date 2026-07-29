@@ -8,7 +8,7 @@ from typing import Any
 
 def reflection_create_block_reason(*, signal: Mapping[str, Any]) -> str:
     count = signal.get("new_terminal_since_publish", 0)
-    threshold = signal.get("block_new_terminal_threshold", 5)
+    threshold = signal["block_new_terminal_threshold"]
     open_id = signal.get("open_reflection_id")
     if open_id:
         return (

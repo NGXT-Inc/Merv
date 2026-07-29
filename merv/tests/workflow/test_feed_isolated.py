@@ -18,7 +18,7 @@ from merv.brain.kernel.ports.web_preview import WebPreviewError
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 from merv.brain.object_storage.blobs import LocalDirBlobStore
-from merv.brain.research_core.projects import ProjectService
+from merv.brain.research_core import Research
 from merv.brain.surface import web_preview
 from merv.brain.surface.transport.feed_http import register_feed_routes
 
@@ -80,7 +80,9 @@ class _AlterFailingStore:
 @pytest.fixture()
 def feed(tmp_path: Path) -> tuple[FeedService, str, _CountingStore]:
     store = _CountingStore(db_path=tmp_path / "state.sqlite3")
-    project = ProjectService(store=store).create(name="Feed tests")
+    project = Research(
+        store=store, artifacts=unittest.mock.Mock()
+    ).create_project(name="Feed tests")
     service = FeedService(
         store=store,
         blobs=LocalDirBlobStore(root=tmp_path / "blobs"),
@@ -335,7 +337,9 @@ def test_http_contract_and_media_headers_are_preserved(feed) -> None:
 
 def test_schema_installer_converges_legacy_posts_idempotently(tmp_path: Path) -> None:
     store = StateStore(db_path=tmp_path / "legacy.sqlite3")
-    project_id = ProjectService(store=store).create(name="Legacy Feed")["id"]
+    project_id = Research(
+        store=store, artifacts=unittest.mock.Mock()
+    ).create_project(name="Legacy Feed")["id"]
     with store.transaction() as connection:
         connection.execute(
             """

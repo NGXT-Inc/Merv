@@ -657,12 +657,11 @@ class McpStreamablePreflightTest(unittest.TestCase):
                 if project_id == "p_foreign":
                     raise NotFoundError(f"project not found: {project_id}")
 
-        reviews = SimpleNamespace(
-            request_project_id=lambda review_request_id: "p_foreign",
-            session_project_id=lambda review_session_id: "p_foreign",
+        research = SimpleNamespace(
+            review_project_id=lambda **_kwargs: "p_foreign",
         )
         preauthorize = build_mcp_preauthorizer(
-            authorizer=_Authorizer(), reviews=reviews, hosted=True
+            authorizer=_Authorizer(), research=research, hosted=True
         )
 
         app = FastAPI()

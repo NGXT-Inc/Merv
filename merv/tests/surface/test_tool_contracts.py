@@ -196,14 +196,13 @@ def _handler_targets() -> dict[str, Any]:
     target = _HandlerTarget()
     return {
         "workflow": target,
-        "projects": target,
-        "claims": target,
+        "research": target,
         "create_experiment": target,
         "agent_experiment": target,
         "reflection_tools": target,
         "artifact_submissions": target,
         "storage": target,
-        "reviews": target,
+        "review_request": target,
         "review_session": target,
         "sandboxes": target,
         "feed": target,

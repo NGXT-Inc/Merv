@@ -20,7 +20,12 @@ from .queries import (
 )
 from .reflections import ReflectionCommands
 from .project_context import ProjectContextQuery
-from .reviews import ReadReviewStatus, StartReviewSession
+from .reviews import (
+    ReadReviewStatus,
+    RequestReview,
+    ReviewQueue,
+    StartReviewSession,
+)
 from .timeline import EventTimelineQuery
 from .workflow import ProjectDashboardQuery, StatusAndNextQuery
 from .tool_commands import ControlToolOperations
@@ -30,6 +35,7 @@ __all__ = (
     "EventTimelineQuery", "ExperimentCollectionQuery", "ExperimentContextQuery", "ExperimentDetailQuery",
     "ExperimentExhibits", "ExperimentFigureQuery", "FinalizeTrackingRun", "GetTrackingContext",
     "LogicGraphQuery", "MlflowOverviewQuery", "ProjectDashboardQuery",
-    "ProjectContextQuery", "ReadReviewStatus", "ReflectionCommands", "StartReviewSession", "StatusAndNextQuery",
+    "ProjectContextQuery", "ReadReviewStatus", "ReflectionCommands", "RequestReview",
+    "ReviewQueue", "StartReviewSession", "StatusAndNextQuery",
     "TenantCountersQuery", "TransitionExperiment",
 )

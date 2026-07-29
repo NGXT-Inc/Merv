@@ -572,7 +572,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 -- report of a rejected round retrievable as a first-class artifact instead of
 -- an unreachable blob. `experiments.attempt_index` stays the authoritative
 -- plan-level counter, so the byte-stable review snapshot never moves; a
--- submission is the round WITHIN one attempt, which send_back_to_running
+-- submission is the round WITHIN one attempt, which a return to running
 -- deliberately does not bump. created_seq is the total order the composition
 -- query depends on — a submission's contents are every row sealed at or
 -- before it, latest-per-slot, which picks up carried-over files for free.

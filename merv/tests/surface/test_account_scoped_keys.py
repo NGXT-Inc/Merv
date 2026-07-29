@@ -44,13 +44,10 @@ JWT = Principal(tenant_id="local", client_id="jwt:session", user_id=USER_A)
 class _Projects:
     """Membership stub: every deny-rule under test short-circuits before this."""
 
-    def is_member(self, *, project_id: str, user_id: str) -> bool:
+    def is_project_member(self, *, project_id: str, user_id: str) -> bool:
         return True
 
-    def request_project_id(self, *, review_request_id: Any) -> str:
-        return ""
-
-    def session_project_id(self, *, review_session_id: Any) -> str:
+    def review_project_id(self, **_kwargs: Any) -> str:
         return ""
 
 
@@ -69,7 +66,7 @@ class OperatorDiagnosticsShapeTest(unittest.TestCase):
     """INV-11: no external key reaches operator diagnostics, bound or not."""
 
     def setUp(self) -> None:
-        self.authorizer = ProjectAuthorizer(projects=_Projects())
+        self.authorizer = ProjectAuthorizer(research=_Projects())
 
     def _denial(self, path: str, principal: Principal, query: str = ""):
         return self.authorizer.http_denial(_request(path, principal, query))
@@ -102,8 +99,8 @@ class ProjectCreateShapeTest(unittest.TestCase):
     def setUp(self) -> None:
         projects = _Projects()
         self.preauthorize = build_mcp_preauthorizer(
-            authorizer=ProjectAuthorizer(projects=projects),
-            reviews=projects,
+            authorizer=ProjectAuthorizer(research=projects),
+            research=projects,
             hosted=True,
         )
 

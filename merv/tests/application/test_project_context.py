@@ -9,7 +9,7 @@ from unittest.mock import Mock
 from merv.brain.application.project_context import ProjectContextQuery
 from merv.brain.artifacts import Artifact
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.research_core.project_context import ProjectContextFactsReader
+from merv.brain.research_core import Research
 from tests.support.brain import TestBrain
 
 
@@ -47,12 +47,12 @@ def artifact(
 
 class ProjectContextQueryTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.facts = Mock()
+        self.research = Mock()
         self.artifacts = Mock()
         self.query = ProjectContextQuery(
-            facts=self.facts, artifacts=self.artifacts
+            research=self.research, artifacts=self.artifacts
         )
-        self.facts.read.return_value = {
+        self.research.project_context_facts.return_value = {
             "project": {
                 "id": "proj_1",
                 "name": "Project",
@@ -282,11 +282,11 @@ class ProjectContextQueryTest(unittest.TestCase):
             self.assertTrue(forbidden.isdisjoint(experiment))
 
 
-class ProjectContextFactsReaderTest(unittest.TestCase):
+class ProjectContextFactsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
-        self.reader = ProjectContextFactsReader(store=self.store)
+        self.research = Research(store=self.store, artifacts=Mock())
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -345,7 +345,7 @@ class ProjectContextFactsReaderTest(unittest.TestCase):
                 """
             )
 
-        result = self.reader.read(project_id="proj_context")
+        result = self.research.project_context_facts(project_id="proj_context")
 
         self.assertCountEqual(
             [claim["status"] for claim in result["claims"]],

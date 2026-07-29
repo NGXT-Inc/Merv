@@ -44,6 +44,7 @@ MODULES = (
 PACKAGE_COMPONENTS = {
     "kernel": KERNEL,
     "research_core": RESEARCH_CORE,
+    "literature": RESEARCH_CORE,
     "artifacts": ARTIFACTS,
     "object_storage": OBJECT_STORAGE,
     "sandbox": SANDBOX,
@@ -116,7 +117,7 @@ PACKAGE_LAYERS = {
     "kernel": FOUNDATION,
     "kernel/ports": PORT,
     "research_core": APPLICATION_LAYER,
-    "research_core/domain": DOMAIN,
+    "literature": APPLICATION_LAYER,
     "artifacts": APPLICATION_LAYER,
     "feed": APPLICATION_LAYER,
     "sandbox": APPLICATION_LAYER,
@@ -143,7 +144,6 @@ FILE_LAYERS = {
     "surface/config.py": BOOTSTRAP,
     "surface/transport/http_server.py": BOOTSTRAP,
     "surface/control/control_app.py": BOOTSTRAP,
-    "surface/control/record_core.py": BOOTSTRAP,
     "surface/control/control_runtime.py": ADAPTER,
     "surface/project_keys.py": APPLICATION_LAYER,
     "surface/project_key_store.py": ADAPTER,
@@ -435,6 +435,10 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
             or target_component == KERNEL
             or _layer(importer) == BOOTSTRAP
         ):
+            continue
+        if target in {
+            f"{package}/__init__.py" for package in PUBLIC_COMPONENT_ROOTS
+        }:
             continue
         relative_target = target.removeprefix(f"{target_component}/")
         if target_component == ARTIFACTS:
@@ -862,7 +866,7 @@ class ModuleBoundaryTest(unittest.TestCase):
         literals follow the same edges as imports — a module may only name its
         own tables, kernel tables, and tables of modules it may import.
         Supersedes the phase-4a sandbox-only lint. Cross-module reads belong
-        behind composition-injected callables (see control/record_core.py)."""
+        behind the owning component's public root."""
         offenders: list[str] = []
         for path in _backend_files():
             rel = path.relative_to(BACKEND_ROOT).as_posix()

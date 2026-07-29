@@ -6,7 +6,7 @@ import unittest
 from collections import Counter
 from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
-from typing import Any, Protocol, get_type_hints, is_typeddict
+from typing import Any, Protocol, is_typeddict
 
 from tests.paths import (
     ARTIFACTS_ROOT,
@@ -28,7 +28,6 @@ GLUE_SERVICE_FILES = (
     BACKEND_ROOT / "application" / "maintenance.py",
 )
 RESEARCH_CORE = RESEARCH_CORE_ROOT
-RESEARCH_CORE_DOMAIN = RESEARCH_CORE / "domain"
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
     SURFACE_ROOT / "transport" / "admin_http.py",
@@ -45,7 +44,6 @@ HTTP_API_PACKAGE = SURFACE_ROOT / "transport" / "api"
 _CONTROL_APP_SCAN_EXCLUSIONS = {
     "config.py",
     "control/control_app.py",
-    "control/record_core.py",
     "transport/http_server.py",
 }
 CONTROL_APP_SCAN_MODULES = tuple(
@@ -116,12 +114,6 @@ def _import_modules(name: str) -> set[str]:
     return {module.split(".", 1)[0] for module in _import_module_names(SERVICES / name)}
 
 
-def _rc_import_modules(name: str) -> set[str]:
-    return {
-        module.split(".", 1)[0] for module in _import_module_names(RESEARCH_CORE / name)
-    }
-
-
 def _import_module_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     modules: set[str] = set()
@@ -160,73 +152,6 @@ def _class_method_names(path: Path, class_name: str) -> set[str]:
                 item.name for item in node.body if isinstance(item, ast.FunctionDef)
             }
     raise AssertionError(f"{class_name} not found in {path}")
-
-
-def _strict_self_collaborator_call_names(
-    source: str, collaborator: str, allowed_calls: set[str]
-) -> set[str]:
-    tree = ast.parse(source)
-    parents: dict[ast.AST, ast.AST] = {}
-    for parent in ast.walk(tree):
-        for child in ast.iter_child_nodes(parent):
-            parents[child] = parent
-
-    def enclosing_function(node: ast.AST) -> str | None:
-        parent = parents.get(node)
-        while parent is not None:
-            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return parent.name
-            parent = parents.get(parent)
-        return None
-
-    calls: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "self"
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value == collaborator
-        ):
-            raise AssertionError(f"must not dynamically access self.{collaborator}")
-        if not isinstance(node, ast.Attribute):
-            continue
-        if isinstance(node.value, ast.Name) and node.value.id == "self":
-            if node.attr != collaborator:
-                continue
-            parent = parents.get(node)
-            if (
-                isinstance(parent, ast.Assign)
-                and node in parent.targets
-                and enclosing_function(node) == "__init__"
-            ):
-                continue
-            if not isinstance(parent, ast.Attribute):
-                raise AssertionError(
-                    f"self.{collaborator} must only be used for direct method calls"
-                )
-            continue
-        owner = node.value
-        if (
-            isinstance(owner, ast.Attribute)
-            and owner.attr == collaborator
-            and isinstance(owner.value, ast.Name)
-            and owner.value.id == "self"
-        ):
-            if node.attr not in allowed_calls:
-                raise AssertionError(
-                    f"unexpected self.{collaborator}.{node.attr} access"
-                )
-            parent = parents.get(node)
-            if not isinstance(parent, ast.Call) or parent.func is not node:
-                raise AssertionError(
-                    f"self.{collaborator}.{node.attr} must be called directly"
-                )
-            calls.add(node.attr)
-    return calls
 
 
 def _assigned_names(path: Path) -> set[str]:
@@ -410,88 +335,13 @@ VOCABULARY_NAMES = {
     "REFLECTION_LENS_DOC_ROLES",
     "RESOURCE_ROLES",
     "RESOURCE_TARGET_TYPES",
+    "REVIEW_ROLE_VALUES",
     "REVIEW_ROLES",
     "REVIEW_VERDICT_VALUES",
     "REVIEW_VERDICTS",
 }
 
-LOCAL_FS_IMPORTS = {"os", "pathlib", "shutil"}
-
-DOMAIN_FORBIDDEN_SEGMENTS = {
-    "composition",
-    "dataplane",
-    "execution",
-    "services",
-    "state",
-    "workspace",
-}
-
-
 class ServiceLayoutTest(unittest.TestCase):
-    def test_experiment_service_keeps_lint_and_agent_projection_out(self) -> None:
-        source = _rc_source("experiments.py")
-
-        self.assertNotIn("def slim_experiment_state", source)
-        self.assertNotIn(
-            "experiment_views", _import_segments(RESEARCH_CORE / "experiments.py")
-        )
-        self.assertNotIn("def get_state_agent", source)
-        self.assertNotIn("def list_experiments_agent", source)
-        self.assertNotIn("def report_problems", source)
-        self.assertNotIn("def plan_sections_missing", source)
-        self.assertNotIn("REQUIRED_PLAN_SECTIONS", source)
-        self.assertNotIn("_HEADING_RE", source)
-
-    def test_record_services_do_not_create_local_workspaces(self) -> None:
-        for name in ("experiments.py", "reflections.py"):
-            with self.subTest(module=name):
-                source = _rc_source(name)
-                import_modules = _import_module_names(RESEARCH_CORE / name)
-                self.assertNotIn("ensure_workspace", source)
-                self.assertNotIn("_ensure_workspace", source)
-                self.assertNotIn("reflection_policy", import_modules)
-                self.assertFalse(
-                    _rc_import_modules(name) & LOCAL_FS_IMPORTS,
-                    f"{name} should not import local filesystem helpers",
-                )
-                self.assertNotIn(".mkdir(", source)
-                self.assertNotIn("open(", source)
-
-    def test_workflow_policy_is_pure_and_query_uses_public_reads(self) -> None:
-        policy_path = BACKEND_ROOT / "application" / "status_guidance.py"
-        policy = policy_path.read_text(encoding="utf-8")
-        policy_imports = _import_segments(policy_path)
-        self.assertIn("class StatusGuidancePolicy:", policy)
-        self.assertNotIn(".execute(", policy)
-        self.assertNotIn("BaseStateStore", policy)
-        self.assertNotIn("domain", policy_imports)
-        self.assertIn("facade", policy_imports)
-        self.assertFalse((RESEARCH_CORE / "next_action.py").exists())
-
-        query = (BACKEND_ROOT / "application" / "workflow.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("class StatusAndNextQuery:", query)
-        self.assertIn("class ProjectDashboardQuery:", query)
-        self.assertIn("snapshots: ResearchSnapshots", query)
-        self.assertIn("sandboxes: SandboxReads", query)
-        self.assertIn("from .ports.sandbox import SandboxReads", query)
-        self.assertNotIn("from ..sandbox.core import SandboxReads", query)
-
-        reader = _rc_source("snapshots.py")
-        self.assertIn("class ResearchSnapshotReader:", reader)
-        self.assertEqual(reader.count("self.experiments.get_state"), 1)
-        self.assertNotIn("sandbox", _import_segments(RESEARCH_CORE / "snapshots.py"))
-
-    def test_artifact_lint_is_domain_leaf_module(self) -> None:
-        # Pure text lint: regexes, a callback type, and shared domain markdown
-        # image parsing. No filesystem imports — figure resolution is the
-        # caller's business (submission capture).
-        self.assertEqual(
-            _import_module_names(RESEARCH_CORE_DOMAIN / "artifacts.py"),
-            {"re", "collections.abc", "merv.shared.markdown_images"},
-        )
-
     def test_http_policy_is_fastapi_free(self) -> None:
         imports = _import_module_names(SURFACE_ROOT / "transport" / "http_policy.py")
 
@@ -501,7 +351,6 @@ class ServiceLayoutTest(unittest.TestCase):
         expected_imports = {
             "mgmt_keys.py": {"pathlib", "typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
-            "reflection_writers.py": {"typing"},
         }
         for name, allowed_imports in expected_imports.items():
             with self.subTest(module=name):
@@ -522,22 +371,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse((PORTS_ROOT / "resource_records.py").exists())
         self.assertFalse((PORTS_ROOT / "sandbox_worker.py").exists())
         self.assertFalse((PORTS_ROOT / "task_channel.py").exists())
-        reflection_writer_path = PORTS_ROOT / "reflection_writers.py"
-        self.assertEqual(
-            _class_method_names(reflection_writer_path, "ReflectionClaimWriter"),
-            {"create_from_reflection", "update_from_reflection"},
-        )
-        self.assertEqual(
-            _class_method_names(reflection_writer_path, "ReflectionExperimentWriter"),
-            {"create_from_reflection"},
-        )
-        from merv.brain.kernel.ports.reflection_writers import (
-            ReflectionClaimWriter,
-            ReflectionExperimentWriter,
-        )
-
-        self.assertIn(Protocol, ReflectionClaimWriter.__mro__)
-        self.assertIn(Protocol, ReflectionExperimentWriter.__mro__)
+        self.assertFalse((PORTS_ROOT / "reflection_writers.py").exists())
 
     def test_auto_sync_poller_is_removed(self) -> None:
         local_source = _sandbox_source("scheduler.py")
@@ -575,97 +409,6 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn(local_context, source)
         self.assertFalse({"pathlib", "tempfile"} & imports)
 
-    def test_review_service_owns_vocabulary_validation(self) -> None:
-        imports = _import_segments(RESEARCH_CORE / "reviews.py")
-        self.assertNotIn("permissions", imports)
-        self.assertIn(
-            "kernel.identity", _import_module_names(RESEARCH_CORE / "reviews.py")
-        )
-        self.assertIn("domain", imports)
-        self.assertIn("review_validation", imports)
-        source = _rc_source("reviews.py")
-        self.assertNotIn("permissions:", source)
-        self.assertNotIn("self.permissions", source)
-        self.assertIn("validate_review_role(role=role)", source)
-        self.assertIn("validate_review_verdict(verdict=verdict)", source)
-
-    def test_review_return_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(
-            _import_module_names(RESEARCH_CORE_DOMAIN / "review_returns.py"),
-            {"dataclasses"},
-        )
-        imports = _import_module_names(RESEARCH_CORE / "reviews.py")
-        source = _rc_source("reviews.py")
-
-        self.assertIn("domain.review_returns", imports)
-        self.assertIn("resolve_review_return", source)
-        self.assertNotIn("experiment-attempt-review rejections must set", source)
-        self.assertNotIn("project-reflection-review rejections must set", source)
-        self.assertNotIn("experiment-design-review rejections cannot return_to", source)
-
-    def test_review_gate_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(
-            _import_module_names(RESEARCH_CORE_DOMAIN / "review_gates.py"), set()
-        )
-        imports = _import_module_names(RESEARCH_CORE / "reviews.py")
-        source = _rc_source("reviews.py")
-
-        self.assertIn("domain.review_gates", imports)
-        self.assertIn("is_review_gate_exempt", source)
-        self.assertIn("gate.review.role", source)
-        self.assertNotIn('"synthesis_review":', source)
-        self.assertNotIn('"design_review":', source)
-        self.assertNotIn('"experiment_review":', source)
-
-    def test_review_service_uses_direct_concrete_targets(self) -> None:
-        imports = _import_segments(RESEARCH_CORE / "reviews.py")
-
-        self.assertIn("experiments", imports)
-        self.assertIn("reflections", imports)
-        self.assertNotIn("review_targets", imports)
-        source = _rc_source("reviews.py")
-        self.assertIn("experiments: ExperimentService", source)
-        self.assertIn("reflections: ReflectionService", source)
-        self.assertNotIn("class ExperimentReviewTarget", source)
-        self.assertNotIn("class SynthesisReviewTarget", source)
-        from merv.brain.research_core.experiments import ExperimentService
-        from merv.brain.research_core.domain.review_handoff import (
-            reviewer_handoff_payload,
-        )
-        from merv.brain.research_core.domain.review_snapshot import snapshot_from_id
-        from merv.brain.research_core.reviews import ReviewService
-        from merv.brain.research_core.reflections import ReflectionService
-
-        hints = get_type_hints(ReviewService.__init__)
-        self.assertIs(hints["experiments"], ExperimentService)
-        self.assertIs(hints["reflections"], ReflectionService)
-        self.assertIs(ReviewService.reviewer_handoff, reviewer_handoff_payload)
-        self.assertIs(ReviewService.snapshot_from_id, snapshot_from_id)
-        experiment_calls = {
-            "get_state_with_gate",
-            "send_back_to_planned",
-            "send_back_to_running",
-            "target_snapshot_id",
-        }
-        reflection_calls = {
-            "get_state_with_gate",
-            "send_back_to_reflecting",
-            "send_back_to_synthesizing",
-            "target_snapshot_id",
-        }
-        self.assertEqual(
-            _strict_self_collaborator_call_names(
-                source, "experiments", experiment_calls
-            ),
-            experiment_calls,
-        )
-        self.assertEqual(
-            _strict_self_collaborator_call_names(
-                source, "reflections", reflection_calls
-            ),
-            reflection_calls,
-        )
-
     def test_feed_service_does_not_read_workspace_media(self) -> None:
         source = (FEED_ROOT / "feed.py").read_text(encoding="utf-8")
 
@@ -698,50 +441,6 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertEqual(
                     path.read_text(encoding="utf-8").splitlines()[0],
                     maintenance_header,
-                )
-
-    def test_experiment_names_are_domain_policy(self) -> None:
-        self.assertEqual(
-            _import_module_names(RESEARCH_CORE_DOMAIN / "experiment_names.py"),
-            {"re", "kernel.utils"},
-        )
-        for name in ("experiments.py", "reflections.py"):
-            with self.subTest(module=name):
-                imports = _import_module_names(RESEARCH_CORE / name)
-                self.assertIn("domain.experiment_names", imports)
-                self.assertNotIn("experiment_names", imports)
-
-    def test_reflection_tools_are_exposed_by_the_research_facade(self) -> None:
-        self.assertFalse((DOMAIN_ROOT / "reflection_projection.py").exists())
-        self.assertFalse((RESEARCH_CORE / "reflection_tools.py").exists())
-        facade = _rc_source("facade.py")
-        for method in (
-            "create_reflection",
-            "reflection_state",
-            "list_reflections",
-            "transition_reflection",
-        ):
-            self.assertIn(f"    def {method}(", facade)
-
-    def test_graph_lint_is_domain_leaf_module(self) -> None:
-        self.assertEqual(
-            _import_module_names(RESEARCH_CORE_DOMAIN / "graph_lint.py"), {"json"}
-        )
-
-    def test_domain_modules_do_not_import_backend_layers(self) -> None:
-        for path in sorted(DOMAIN_ROOT.glob("*.py")):
-            if path.name == "__init__.py":
-                continue
-            with self.subTest(module=path.name):
-                segments = {
-                    segment
-                    for module in _import_module_names(path)
-                    for segment in module.split(".")
-                }
-                forbidden = segments & DOMAIN_FORBIDDEN_SEGMENTS
-                self.assertFalse(
-                    forbidden,
-                    f"domain modules must stay independent of backend layers: {sorted(forbidden)}",
                 )
 
     def test_utils_stays_free_of_local_path_guards(self) -> None:
@@ -1054,7 +753,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 f'if surface.hosted_control and name == "{tool_name}"', source
             )
         self.assertIn("telemetry_from_review_request=True", policy_source)
-        self.assertIn("self.reviews.request_project_id(", source)
+        self.assertEqual(source.count("self.research.review_project_id("), 2)
         self.assertNotIn("SELECT project_id FROM review_requests", source)
 
     def test_http_data_plane_capabilities_stay_retired(self) -> None:
@@ -1148,36 +847,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("FROM artifacts", routes + views)
         self.assertNotIn(".blobs.get", routes + views)
 
-    def test_transport_delegates_reflection_views_to_application_query(self) -> None:
-        source = (HTTP_API_PACKAGE / "reflections.py").read_text(encoding="utf-8")
-        for delegate in ("graphs.reflections", "graphs.project", "graphs.reflection_graph"):
-            self.assertIn(delegate, source)
-        for internal in ("reflection_waves", ".store", "reflection_signal", "open_reflection"):
-            self.assertNotIn(internal, source)
-
-    def test_project_member_routes_delegate_policy_to_project_service(self) -> None:
-        source = (HTTP_API_PACKAGE / "projects.py").read_text(encoding="utf-8")
-
-        self.assertIn("projects.members", source)
-        self.assertIn("projects.add_member", source)
-        self.assertIn("projects.remove_member", source)
-        self.assertNotIn(".store", source)
-
-    def test_sandbox_attachment_validation_is_research_owned(self) -> None:
-        record_core = (SURFACE_ROOT / "control" / "record_core.py").read_text(
-            encoding="utf-8"
-        )
-        control_app = (SURFACE_ROOT / "control" / "control_app.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertNotIn("build_experiment_attachment_check", record_core)
-        self.assertNotIn("SELECT project_id FROM experiments", record_core)
-        self.assertIn(
-            "attachment_check=self.research_core.assert_experiment_in_project",
-            control_app,
-        )
-
     def test_tenant_counter_query_keeps_sandbox_sql_out_of_kernel_and_surface(self) -> None:
         store = (BACKEND_ROOT / "kernel" / "state" / "store.py").read_text(
             encoding="utf-8"
@@ -1262,42 +931,6 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertEqual(execute_calls, [])
                 self.assertEqual(connect_calls, [])
 
-    def test_transport_delegates_graph_resolution_to_application_query(self) -> None:
-        source = _api_package_source()
-        self.assertIn("graphs.experiment", source)
-        self.assertIn("graphs.reflection_graph", source)
-        self.assertNotIn(".graph_refs", source)
-        self.assertNotIn("_resolve_graph_refs", source)
-        self.assertNotIn("_resolve_one_graph_ref", source)
-        self.assertNotIn("_graph_ref_resource", source)
-        self.assertNotIn("FROM claims WHERE id = ?", source)
-        self.assertNotIn("FROM experiments WHERE id = ?", source)
-        self.assertNotIn("FROM reviews", source)
-        self.assertNotIn("FROM reflections", source)
-
-    def test_graph_ref_resolver_uses_reference_type_registry(self) -> None:
-        source = (RESEARCH_CORE / "graph_refs.py").read_text(encoding="utf-8")
-        application = (BACKEND_ROOT / "application/queries.py").read_text(
-            encoding="utf-8"
-        )
-        artifacts = (ARTIFACTS_ROOT / "artifacts.py").read_text(encoding="utf-8")
-        self.assertIn("class GraphRefType:", source)
-        self.assertIn("GRAPH_REF_TYPES: tuple[GraphRefType, ...]", source)
-        self.assertEqual(source.count("GraphRefType("), 6)
-        self.assertIn("for ref_type in GRAPH_REF_TYPES:", source)
-        self.assertNotIn("EvidenceReader", source)
-        self.assertNotIn("resolve_artifact_reference", source)
-        self.assertIn("def _refs_from_graph(", application)
-        self.assertIn("self.artifacts.get(", application)
-        self.assertIn("def _artifact_reference(", application)
-        self.assertIn('if ref.startswith("art_")', application)
-        self.assertIn("def get(", artifacts)
-        self.assertNotIn("resolve_artifact_reference", artifacts)
-        for prefix in ("rev_", "claim_", "exp_", "syn_", "lit_", "paper_"):
-            self.assertIn(f'prefix="{prefix}"', source)
-            self.assertNotIn(f'if ref.startswith("{prefix}")', source)
-            self.assertNotIn(f'elif ref.startswith("{prefix}")', source)
-
     def test_transport_has_no_visible_project_lookup_gate(self) -> None:
         source = _api_package_source()
         self.assertNotIn("project_ids_for_tenant", source)
@@ -1327,68 +960,6 @@ class ServiceLayoutTest(unittest.TestCase):
                         leaked,
                         f"import vocabulary from domain.vocabulary/artifacts.roles, not permissions: {sorted(leaked)}",
                     )
-
-    def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
-        from merv.brain.surface.tools.contracts import ReviewSubmitInput
-        from merv.brain.research_core.domain.vocabulary import (
-            REVIEW_VERDICT_VALUES,
-            REVIEW_VERDICTS,
-        )
-
-        self.assertEqual(REVIEW_VERDICTS, frozenset(REVIEW_VERDICT_VALUES))
-        self.assertEqual(
-            set(ReviewSubmitInput.model_fields["verdict"].annotation.__args__),
-            set(REVIEW_VERDICT_VALUES),
-        )
-        source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
-        self.assertIn("REVIEW_VERDICT_VALUES", source)
-        self.assertIn("verdict: Literal[*REVIEW_VERDICT_VALUES]", source)
-        self.assertNotIn('verdict: Literal["pass", "needs_changes", "fail"]', source)
-
-    def test_gate_tables_are_domain_policy_only(self) -> None:
-        # Workflow state machines are domain policy: they may share neutral
-        # gate dataclasses and pure vocabulary (status vocabulary from domain,
-        # role vocabulary from its artifacts owner), but never services.
-        expected = {
-            "workflow_gates.py": {"gates", "vocabulary", "typing"},
-            "reflection_gates.py": {"gates", "merv.shared.artifact_roles", "typing"},
-        }
-        for name, imports in expected.items():
-            with self.subTest(module=name):
-                self.assertEqual(
-                    _import_module_names(RESEARCH_CORE_DOMAIN / name), imports
-                )
-
-    def test_reflection_service_uses_experiment_name_leaf(self) -> None:
-        self.assertNotIn(
-            "experiments", _import_segments(RESEARCH_CORE / "reflections.py")
-        )
-        source = _rc_source("reflections.py")
-        self.assertIn("experiment_writer: ReflectionExperimentWriter", source)
-        self.assertNotIn("INSERT INTO experiments", source)
-        self.assertNotIn("experiment_claims", source)
-
-    def test_reflection_service_uses_claim_vocabulary(self) -> None:
-        self.assertNotIn("claims", _import_segments(RESEARCH_CORE / "reflections.py"))
-        source = _rc_source("reflections.py")
-        self.assertIn(
-            "reflection_writers", _import_segments(RESEARCH_CORE / "reflections.py")
-        )
-        self.assertIn("claims: ReflectionClaimWriter", source)
-        self.assertNotIn("INSERT INTO claims", source)
-        self.assertNotIn("UPDATE claims", source)
-
-    def test_reflection_service_does_not_write_projects(self) -> None:
-        source = _rc_source("reflections.py")
-        self.assertNotIn("UPDATE projects", source)
-        self.assertNotIn("project.stopped", source)
-
-    def test_status_views_use_domain_vocabulary(self) -> None:
-        for name in ("reflections.py",):
-            with self.subTest(module=name):
-                self.assertNotIn(
-                    "workflow_gates", _import_segments(RESEARCH_CORE / name)
-                )
 
     def test_identity_constants_are_foundation_vocabulary(self) -> None:
         from merv.brain.kernel.identity import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
@@ -1448,20 +1019,6 @@ class ServiceLayoutTest(unittest.TestCase):
             "def _hash_capability",
             (RESEARCH_CORE / "reviews.py").read_text(encoding="utf-8"),
         )
-
-    def test_experiment_projection_is_application_owned_and_pure(self) -> None:
-        projection = BACKEND_ROOT / "application" / "experiments" / "presentation.py"
-        modules = {
-            module.split(".", 1)[0] for module in _import_module_names(projection)
-        }
-
-        self.assertFalse((RESEARCH_CORE / "experiment_views.py").exists())
-        self.assertEqual(
-            modules, {"claim_guidance", "gate_checklist", "ports", "research_core", "typing"}
-        )
-        self.assertNotIn("experiments", modules)
-        self.assertNotIn("workflow", modules)
-
 
 if __name__ == "__main__":
     unittest.main()

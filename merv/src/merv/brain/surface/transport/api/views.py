@@ -6,6 +6,7 @@ from typing import Any
 
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import NotFoundError
+from ....research_core import EXPERIMENT_WORKFLOW
 from ....sandbox import SandboxEngine
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 
@@ -140,7 +141,9 @@ def experiment_view_model(exp: dict[str, Any]) -> dict[str, Any]:
         },
         "learned": {
             "summary": "",
-            "is_concluded": exp.get("status") == "complete",
+            "is_concluded": (
+                exp.get("status") == EXPERIMENT_WORKFLOW.success_status
+            ),
             "completion_blockers": [],
             "headline_metrics": {},
             "headline_metric_details": [],

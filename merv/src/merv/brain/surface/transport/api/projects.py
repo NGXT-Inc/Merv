@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response
 
 from ....application.facade import EventTimelineQuery, ProjectDashboardQuery, StatusAndNextQuery
-from ....research_core.facade import ResearchProjects
+from ....research_core import Research
 from ....sandbox import SandboxEngine
 from .shared import (
     JsonBody, conditional_json_from_signal, path_scoped_body,
@@ -23,7 +23,7 @@ from .views import present
 def build_router(
     ctx: ApiRouteContext,
     *,
-    projects: ResearchProjects,
+    research: Research,
     dashboard: ProjectDashboardQuery,
     workflow: StatusAndNextQuery,
     timeline: EventTimelineQuery,
@@ -57,7 +57,7 @@ def build_router(
 
     @api_router.get("/api/projects/{project_id}/members")
     def list_members(project_id: str) -> dict[str, Any]:
-        return projects.members(project_id=project_id)
+        return research.project_members(project_id=project_id)
 
     @api_router.post("/api/projects/{project_id}/members", status_code=201)
     def add_member(
@@ -65,7 +65,7 @@ def build_router(
     ) -> dict[str, Any]:
         # Any human MEMBER may share the project (the membership gate already ran).
         require_membership_author(request)
-        return projects.add_member(
+        return research.add_project_member(
             project_id=project_id, user_id=str((body or {}).get("user_id") or "")
         )
 
@@ -74,7 +74,9 @@ def build_router(
         project_id: str, user_id: str, request: Request
     ) -> dict[str, Any]:
         require_membership_author(request)
-        return projects.remove_member(project_id=project_id, user_id=user_id)
+        return research.remove_project_member(
+            project_id=project_id, user_id=user_id
+        )
 
     @api_router.get("/api/projects/{project_id}")
     def get_project(project_id: str, request: Request) -> dict[str, Any]:

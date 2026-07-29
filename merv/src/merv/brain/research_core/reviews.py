@@ -1,3 +1,4 @@
+# If you update this file, you must consult research_core.md to see whether research_core.md needs to be updated. research_core.md must not exceed 100 lines.
 """Review request, session, and submission logic."""
 
 from __future__ import annotations
@@ -6,8 +7,6 @@ from contextlib import closing
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-
-from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
 from ..artifacts import Artifacts
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
@@ -22,17 +21,18 @@ from ..kernel.utils import (
     now_iso,
     parse_iso,
 )
-from .domain.review_gates import (
+from .policy import (
     is_review_gate_exempt,
-)
-from .domain.review_handoff import reviewer_handoff_payload
-from .domain.review_returns import (
-    resolve_review_return,
+    review_snapshot_id,
     revision_context_for_review_return,
+    snapshot_from_id,
+    validate_review_role,
+    validate_review_verdict,
+    validate_synopsis,
 )
-from .domain.review_snapshot import review_snapshot_id, snapshot_from_id
-from .domain.review_validation import validate_review_role, validate_review_verdict
-from .domain.synopsis import validate_synopsis
+from .experiment_workflow import EXPERIMENT_WORKFLOW
+from .reflection_workflow import REFLECTION_WORKFLOW
+from .workflow_schema import resolve_review_return
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from .experiments import ExperimentService
 from .reflections import ReflectionService
@@ -77,14 +77,12 @@ class ReviewService:
             raise ValidationError("review targets must be 'experiment' or 'reflection'")
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            if target_type == "experiment":
-                target, gate = self.experiments.get_state_with_gate(
-                    experiment_id=target_id, project_id=project_id, conn=conn
-                )
-            else:
-                target, gate = self.reflections.get_state_with_gate(
-                    reflection_id=target_id, project_id=project_id, conn=conn
-                )
+            target, gate = self._target_with_gate(
+                conn=conn,
+                target_type=target_type,
+                target_id=target_id,
+                project_id=project_id,
+            )
             self._validate_role_matches_gate(
                 target_type=target_type,
                 expected=None if gate.review is None else gate.review.role,
@@ -112,8 +110,7 @@ class ReviewService:
                 )
             request_id = new_id(prefix="rr")
             # The plaintext capability is minted here, returned ONCE to the
-            # caller, and never stored — only its sha256 lands in the row (cloud
-            # plan Phase 7). review.start resolves by hashing the presented token.
+            # caller, and never stored; only its SHA-256 digest lands in the row.
             capability = mint_secret(prefix="rp_", nbytes=24)
             expires_at = format_iso(datetime.now(UTC) + timedelta(hours=1))
             snapshot_id = review_snapshot_id(target_type=target_type, target=target)
@@ -158,15 +155,8 @@ class ReviewService:
                 "reviewer_capability": capability,
                 "role": role,
                 "target_snapshot_id": snapshot_id,
-                "target_snapshot": self.snapshot_from_id(snapshot_id=snapshot_id),
+                "target_snapshot": snapshot_from_id(snapshot_id=snapshot_id),
                 "expires_at": expires_at,
-                "reviewer_handoff": self.reviewer_handoff(
-                    role=role,
-                    target_type=target_type,
-                    target_id=target_id,
-                    review_request_id=request_id,
-                    reviewer_capability=capability,
-                ),
             }
 
     def start(
@@ -178,8 +168,7 @@ class ReviewService:
         caller_session_id: str = "",
         tenant_id: str | None = None,
     ) -> dict[str, Any]:
-        # ``tenant_id`` is reserved for the future user-auth layer. None means
-        # the current private/local surface and skips tenant scoping.
+        # A supplied tenant scopes the capability; None preserves local mode.
         caller_session_id = caller_session_id.strip()
         if not caller_session_id:
             raise ValidationError(
@@ -265,61 +254,7 @@ class ReviewService:
                 "target_snapshot_id": req["target_snapshot_id"],
                 "target_snapshot": snapshot,
                 "independence": independence,
-                "read_scope": [
-                    "claim",
-                    "experiment",
-                    "reflection",
-                    "artifact",
-                    "review",
-                ],
-                # The reviewer grades the SUBMITTED artifacts — the bytes
-                # pinned at submit — not whatever the working tree holds
-                # now. Hydrated here so a reviewer never has to trust disk.
-                "submitted_artifacts": self._submitted_artifacts(snapshot=snapshot),
             }
-
-    def _submitted_artifacts(self, *, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-        """Hydrate exactly the artifact ids this review pinned.
-
-        By id, never by (role, path): a wave's five lens documents may share
-        both and differ only by lens_id, so a role/path key would show the
-        reviewer one document where five were submitted. The snapshot is the
-        pinned round — start() has already refused a target that moved."""
-        visible = tuple(
-            str(res.get("artifact_id") or "")
-            for res in snapshot.get("artifacts", [])
-            if str(res.get("role") or "") in GATED_ROLES
-            or res.get("role") == EXHIBIT_ROLE
-        )
-        found = self.artifacts.get(
-            artifact_ids=visible,
-            include="content",
-        )
-        artifacts: list[dict[str, Any]] = []
-        for item in sorted(found, key=lambda artifact: artifact.order):
-            if item.status != "complete":
-                continue
-            content = (
-                None
-                if item.data is None
-                else item.data.decode("utf-8", errors="replace")
-            )
-            entry: dict[str, Any] = {
-                "role": item.role,
-                "lens_id": item.lens_id,
-                "path": item.path,
-                "artifact_id": item.id,
-                "submission_id": item.submission_id,
-                "submitted_at": item.updated_at or item.created_at,
-                "content": content,
-            }
-            if content is None:
-                entry["note"] = (
-                    "submitted content unavailable; ask the producer to resubmit "
-                    "it with artifact.submit"
-                )
-            artifacts.append(entry)
-        return artifacts
 
     def submit(
         self,
@@ -368,15 +303,27 @@ class ReviewService:
                     "target changed after this review started; the verdict no "
                     "longer applies — request a fresh review"
                 )
+            workflow = (
+                EXPERIMENT_WORKFLOW
+                if req["target_type"] == "experiment"
+                else REFLECTION_WORKFLOW
+                if req["target_type"] == "reflection"
+                else None
+            )
+            if workflow is None:
+                raise ValidationError(
+                    f"unknown review target type: {req['target_type']}"
+                )
             try:
-                return_to = resolve_review_return(
-                    target_type=req["target_type"],
+                route = resolve_review_return(
+                    workflow=workflow,
                     role=req["role"],
                     verdict=verdict,
                     return_to=return_to,
                 )
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
+            return_to = "" if route is None else route.to_status
             snapshot = snapshot_from_id(snapshot_id=str(req["target_snapshot_id"]))
             attempt_index = int(snapshot.get("attempt_index") or 0)
             target_history = self.artifacts.history(
@@ -449,40 +396,30 @@ class ReviewService:
                 },
             )
             if verdict in {"needs_changes", "fail"}:
+                if route is None:
+                    raise RuntimeError("rejected review has no return route")
                 revision_context = revision_context_for_review_return(
                     target_type=req["target_type"],
                     role=req["role"],
                     verdict=verdict,
                     notes=notes,
                     findings=findings or [],
-                    return_to=return_to,
+                    route=route,
                 )
                 if req["target_type"] == "experiment":
-                    if return_to == "running":
-                        self.experiments.send_back_to_running(
-                            conn=conn,
-                            experiment_id=req["target_id"],
-                            revision_context=revision_context,
-                        )
-                    else:
-                        self.experiments.send_back_to_planned(
-                            conn=conn,
-                            experiment_id=req["target_id"],
-                            revision_context=revision_context,
-                        )
+                    self.experiments.return_from_review(
+                        conn=conn,
+                        experiment_id=req["target_id"],
+                        route=route,
+                        revision_context=revision_context,
+                    )
                 elif req["target_type"] == "reflection":
-                    if return_to == "reflecting":
-                        self.reflections.send_back_to_reflecting(
-                            conn=conn,
-                            reflection_id=req["target_id"],
-                            revision_context=revision_context,
-                        )
-                    else:
-                        self.reflections.send_back_to_synthesizing(
-                            conn=conn,
-                            reflection_id=req["target_id"],
-                            revision_context=revision_context,
-                        )
+                    self.reflections.return_from_review(
+                        conn=conn,
+                        reflection_id=req["target_id"],
+                        route=route,
+                        revision_context=revision_context,
+                    )
             review = conn.execute(
                 "SELECT * FROM reviews WHERE id = ?", (review_id,)
             ).fetchone()
@@ -656,19 +593,13 @@ class ReviewService:
 
     def _with_snapshot(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        data["target_snapshot"] = self.snapshot_from_id(
+        data["target_snapshot"] = snapshot_from_id(
             snapshot_id=data.get("target_snapshot_id", "")
         )
-        if "status" in data and "expires_at" in data:
-            data["recovery"] = self._request_recovery(request=data)
         return data
 
-    reviewer_handoff = staticmethod(reviewer_handoff_payload)
-    snapshot_from_id = staticmethod(snapshot_from_id)
-
     def _validate_request_open(self, *, req, capability: str) -> None:
-        # Constant-time compare of the presented token's hash against the stored
-        # hash (cloud plan Phase 7): the plaintext capability never sits at rest.
+        # Compare digests in constant time; plaintext capabilities never rest.
         presented = hash_secret(capability)
         if not secret_digest_matches(
             stored_digest=req["capability_hash"], presented_digest=presented
@@ -693,50 +624,40 @@ class ReviewService:
             raise PermissionDeniedError(f"active gate requires {expected}, not {role}")
 
     def _target_snapshot_id(self, *, conn, target_type: str, target_id: str) -> str:
+        target, _gate = self._target_with_gate(
+            conn=conn,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        return review_snapshot_id(target_type=target_type, target=target)
+
+    def _target_with_gate(
+        self,
+        *,
+        conn,
+        target_type: str,
+        target_id: str,
+        project_id: str | None = None,
+    ):
         if target_type == "experiment":
-            return self.experiments.target_snapshot_id(
-                conn=conn, experiment_id=target_id
+            return self.experiments.get_state_with_gate(
+                experiment_id=target_id,
+                project_id=project_id,
+                conn=conn,
             )
         if target_type == "reflection":
-            return self.reflections.target_snapshot_id(
-                conn=conn, reflection_id=target_id
+            return self.reflections.get_state_with_gate(
+                reflection_id=target_id,
+                project_id=project_id,
+                conn=conn,
             )
-        return f"{target_type}:{target_id}"
-
-    def _request_recovery(self, *, request: dict[str, Any]) -> dict[str, Any]:
-        status = str(request.get("status") or "")
-        expires = parse_iso(str(request.get("expires_at") or ""))
-        expired = expires is None or datetime.now(UTC) > expires
-        open_status = status in {"requested", "started"}
-        can_refresh = open_status
-        reason = (
-            "capability lost or expired; request a fresh reviewer capability "
-            "for the same target and role (this revokes the open request — "
-            "the old capability can no longer start or submit)"
-            if can_refresh
-            else "review request is closed; inspect submitted reviews instead"
-        )
-        recovery: dict[str, Any] = {
-            "capability_returned_once": True,
-            "capability_available": False,
-            "expired": expired,
-            "can_request_fresh_capability": can_refresh,
-            "reason": reason,
-        }
-        if can_refresh:
-            recovery["tool"] = "review.request"
-            recovery["arguments"] = {
-                "target_type": request.get("target_type"),
-                "target_id": request.get("target_id"),
-                "role": request.get("role"),
-            }
-        return recovery
+        raise ValidationError(f"unknown review target type: {target_type}")
 
     def _hydrate_review(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
         data["findings"] = json.loads(data.pop("findings_json", "[]"))
         data["evidence"] = json.loads(data.pop("evidence_json", "{}"))
-        data["target_snapshot"] = self.snapshot_from_id(
+        data["target_snapshot"] = snapshot_from_id(
             snapshot_id=data.get("target_snapshot_id", "")
         )
         return data

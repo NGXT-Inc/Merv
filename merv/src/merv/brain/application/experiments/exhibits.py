@@ -7,7 +7,8 @@ from typing import Protocol
 
 from ...artifacts import Artifact, Artifacts
 from ...kernel.utils import WorkflowError
-from ...research_core.facade import ExperimentState, ResearchCore
+from ...research_core import EXPERIMENT_WORKFLOW, ExperimentState, Research
+from .create import experiment_folder
 from ..ports.tracking import ExperimentTracking, tracking_experiment_name
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, build_metrics_exhibit
 
@@ -22,7 +23,7 @@ class ExperimentExhibits:
     def __init__(
         self,
         *,
-        research: ResearchCore,
+        research: Research,
         artifacts: Artifacts,
         tracking: ExperimentTracking | None,
     ) -> None:
@@ -73,18 +74,19 @@ class ExperimentExhibits:
         state = self.research.experiment_state(
             experiment_id=experiment_id, project_id=project_id
         )
-        if str(state.get("status")) != "running":
+        if str(state.get("status")) not in EXPERIMENT_WORKFLOW.effect_sources(
+            "result_submission"
+        ):
             raise WorkflowError(
                 "experiment.exhibit previews a running experiment; this one is "
                 f"{state.get('status')!r}. After submit_results, read the pinned "
                 "exhibit artifact instead (artifact.find)."
             )
         exhibit = self.generate(state=state)
-        path = self.research.exhibit_path(
+        path = experiment_folder(
             experiment_id=str(state.get("id") or experiment_id),
             name=str(state.get("name") or ""),
-            filename=METRICS_EXHIBIT_FILENAME,
-        )
+        ) + METRICS_EXHIBIT_FILENAME
         return {
             "project_id": str(state.get("project_id") or ""),
             "experiment_id": experiment_id,

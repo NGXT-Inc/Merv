@@ -180,7 +180,7 @@ internals, so the privacy boundary stays enforceable rather than conventional.
 ## Workflow architecture
 
 Experiment transitions are declared once in
-`src/merv/brain/research_core/domain/workflow_gates.py`:
+`src/merv/brain/research_core/experiment_workflow.py`:
 
 ```text
 planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
@@ -190,15 +190,15 @@ planned -> design_review -> ready_to_run -> running -> experiment_review -> comp
 to `running` when the plan still stands, or to `planned` with a new attempt when
 the design is flawed.
 
-The same gate table drives:
+The same workflow declaration drives:
 
 - enforcement in `ExperimentService`;
-- next-action guidance in the pure `NextActionPolicy`, fed by the
-  application-owned `WorkflowQuery`;
+- semantic next-action guidance formatted by the Application workflow query;
+- review rejection destinations and attempt behavior;
 - transition discovery and gate checklists returned to agents and the UI.
 
 Reflection transitions are declared in
-`src/merv/brain/research_core/domain/reflection_gates.py`:
+`src/merv/brain/research_core/reflection_workflow.py`:
 
 ```text
 reflecting -> synthesizing -> reflection_review -> published
@@ -224,10 +224,10 @@ Three storage layers have distinct purposes:
 3. **Heavy-object storage** keeps large datasets, checkpoints, archives, and
    other valuable files that should not live in git.
 
-Artifacts owns artifact identities, upload tokens, figure
-membership, and byte retrieval. Research receives those immutable facts through
-the public `EvidenceReader` port, then applies experiment/reflection gate and
-review policy. Research never queries Artifact tables or reads blobs directly.
+Artifacts owns artifact identities, upload tokens, figure membership, and byte
+retrieval. Research uses the concrete `Artifacts` root to read and seal that
+evidence, then applies experiment/reflection gate and review policy. Research
+never queries Artifact tables or reads blob providers directly.
 
 Nothing on a sandbox is durable by default. Before release or expiry, agents
 must pull compact evidence into the repo or upload heavy files to durable

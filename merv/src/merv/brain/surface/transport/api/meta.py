@@ -8,21 +8,23 @@ from fastapi import APIRouter, Query, Request
 
 from .... import __version__
 from ....kernel.version import meta
-from ....research_core.facade import ResearchProjects
+from ....research_core import Research
 
 from .context import ApiRouteContext
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 from .views import activity_view, tool_call_detail as select_tool_call_detail
 
 
-def _caller_project_ids(projects: ResearchProjects, request: Request) -> set[str] | None:
+def _caller_project_ids(
+    research: Research, request: Request
+) -> set[str] | None:
     """The authenticated caller's project memberships, or None for the local
     principal (unscoped/global — unchanged local behavior). Diagnostics scope to
     this set so a member cannot read another project's calls (INV-11 FIX 1)."""
     user_id = str(getattr(getattr(request.state, "principal", None), "user_id", "") or "")
     if not user_id:
         return None
-    return {str(project["id"]) for project in projects.list_projects(user_id=user_id)["projects"]}
+    return research.project_ids_for_user(user_id=user_id)
 
 
 def build_router(
@@ -30,7 +32,7 @@ def build_router(
     *,
     activity_log: ActivityTelemetry,
     tool_calls: ToolCallTelemetry,
-    projects: ResearchProjects,
+    research: Research,
 ) -> APIRouter:
     api_router = APIRouter()
     surface = ctx.surface
@@ -85,7 +87,7 @@ def build_router(
             limit=limit,
             source=source,
             project_id=project_id,
-            project_ids=_caller_project_ids(projects, request),
+            project_ids=_caller_project_ids(research, request),
         )
 
     # /api/debug/* expose tool-call internals. Hosted control is currently a
@@ -109,7 +111,7 @@ def build_router(
             status=status,
             tool=tool,
             project_id=project_id,
-            project_ids=_caller_project_ids(projects, request),
+            project_ids=_caller_project_ids(research, request),
             limit=limit, sort=sort, order=order,
         )
 
@@ -120,7 +122,7 @@ def build_router(
         return select_tool_call_detail(
             tool_calls,
             call_id=call_id,
-            project_ids=_caller_project_ids(projects, request),
+            project_ids=_caller_project_ids(research, request),
         )
 
     @api_router.post("/api/debug/tool-calls/clear")

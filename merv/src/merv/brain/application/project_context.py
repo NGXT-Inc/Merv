@@ -3,36 +3,38 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 from merv.shared.content_summaries import content_tldr
 
 from ..artifacts import Artifact, Artifacts
-from ..research_core.facade import preferred_artifact
+from ..research_core import EXPERIMENT_WORKFLOW, Research, preferred_artifact
 
 
 Record = dict[str, Any]
 
+_EXPERIMENT_PATH = EXPERIMENT_WORKFLOW.forward_path(
+    EXPERIMENT_WORKFLOW.initial
+)
+_EXECUTION_STATUS = next(
+    iter(EXPERIMENT_WORKFLOW.effect_sources("result_submission"))
+)
 _PLAN_SUMMARY_STATUSES = frozenset(
-    {"planned", "design_review", "ready_to_run", "running"}
+    _EXPERIMENT_PATH[: _EXPERIMENT_PATH.index(_EXECUTION_STATUS) + 1]
 )
 _PROJECT_REFLECTION_ROLES = ("reflection_doc", PROJECT_GRAPH_ROLE)
-
-
-class ProjectContextFacts(Protocol):
-    def read(self, *, project_id: str | None = None) -> Record: ...
 
 
 class ProjectContextQuery:
     """Compose one macro packet without hydrating rich child state."""
 
-    def __init__(self, *, facts: ProjectContextFacts, artifacts: Artifacts) -> None:
-        self.facts = facts
+    def __init__(self, *, research: Research, artifacts: Artifacts) -> None:
+        self.research = research
         self.artifacts = artifacts
 
     def build(self, *, project_id: str | None = None) -> Record:
-        facts = self.facts.read(project_id=project_id)
+        facts = self.research.project_context_facts(project_id=project_id)
         project = facts["project"]
         resolved_project_id = str(project.get("id") or project_id or "") or None
         experiments = facts["experiments"]

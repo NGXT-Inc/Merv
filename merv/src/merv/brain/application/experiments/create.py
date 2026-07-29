@@ -3,24 +3,97 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Unpack
+from typing import TypedDict, Unpack
 
-from ...research_core.facade import ExperimentCreateArgs, ExperimentState, ResearchCore, experiment_folder_rel
+from ...kernel.utils import ValidationError, safe_experiment_dirname
+from ...research_core import EXPERIMENT_WORKFLOW, ExperimentState, Research
 from .presentation import rich_experiment_state
+
+
+class ExperimentCreateArgs(TypedDict, total=False):
+    """Public compatibility fields translated before Research sees them."""
+
+    name: str
+    intent: str
+    tested_claim_ids: list[str] | str | None
+    claim_id: str | None
+    claim_ids: list[str] | str | None
+    title: str
+    hypothesis: str
+    design: str
+    success_criteria: str
+    risks: str
+    status: str
+    project_id: str | None
+
+
+def experiment_folder(*, experiment_id: str, name: str = "") -> str:
+    folder = safe_experiment_dirname(name.strip() or experiment_id)
+    return f"experiments/{folder}/"
 
 
 @dataclass(slots=True)
 class CreateExperiment:
     """Create through Research, then add the necessarily empty object view."""
 
-    research: ResearchCore
+    research: Research
 
     def create(
         self, **kwargs: Unpack[ExperimentCreateArgs]
     ) -> ExperimentState:
-        state = self.research.create_experiment(**kwargs)
-        state["folder"] = experiment_folder_rel(
-            experiment_id=str(state.get("id") or ""), name=str(state.get("name") or "")
+        initial = EXPERIMENT_WORKFLOW.initial
+        status = str(kwargs.pop("status", initial) or initial)
+        if status != initial:
+            raise ValidationError(
+                f"experiment.create only supports status={initial!r}; use "
+                "experiment.transition for workflow changes"
+            )
+        legacy_intent = [
+            str(kwargs.pop(field, "") or "").strip()
+            for field in (
+                "title",
+                "hypothesis",
+                "design",
+                "success_criteria",
+                "risks",
+            )
+        ]
+        intent = str(kwargs.pop("intent", "") or "").strip()
+        if not intent:
+            intent = next(
+                (value for value in legacy_intent if value),
+                "",
+            )
+        claim_values: list[str] = []
+        for value in (
+            kwargs.pop("tested_claim_ids", None),
+            kwargs.pop("claim_id", None),
+            kwargs.pop("claim_ids", None),
+        ):
+            if isinstance(value, str):
+                claim_values.append(value)
+            elif value:
+                claim_values.extend(value)
+        claim_ids: list[str] = []
+        for claim_id in claim_values:
+            if not isinstance(claim_id, str) or not claim_id.strip():
+                raise ValidationError("claim ids must be non-empty strings")
+            if claim_id not in claim_ids:
+                claim_ids.append(claim_id)
+        state = self.research.create_experiment(
+            name=str(kwargs.pop("name", "") or ""),
+            intent=intent,
+            tested_claim_ids=claim_ids,
+            project_id=kwargs.pop("project_id", None),
+        )
+        if kwargs:
+            raise ValidationError(
+                "unexpected experiment.create fields: "
+                + ", ".join(sorted(kwargs))
+            )
+        state["folder"] = experiment_folder(
+            experiment_id=str(state.get("id") or ""),
+            name=str(state.get("name") or ""),
         )
         state["folder_guidance"] = (
             f"Use {state['folder']} as the experiment's one local folder. "
@@ -34,4 +107,8 @@ class CreateExperiment:
         )
         return rich_experiment_state(state, storage_objects=())
 
-__all__ = ["CreateExperiment"]
+__all__ = [
+    "CreateExperiment",
+    "ExperimentCreateArgs",
+    "experiment_folder",
+]

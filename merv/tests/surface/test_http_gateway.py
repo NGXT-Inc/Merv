@@ -63,7 +63,7 @@ class HttpGatewayTest(unittest.TestCase):
             return project_id == "proj-a" and user_id == USER.user_id
 
         self.projects = ProjectAuthorizer(
-            projects=SimpleNamespace(is_member=member_lookup)
+            research=SimpleNamespace(is_project_member=member_lookup)
         )
         self.surface = HttpSurfacePolicy.for_surface(
             restrict_cors=True, hosted_control=True
@@ -74,8 +74,8 @@ class HttpGatewayTest(unittest.TestCase):
     ) -> ToolInvocationGateway:
         return ToolInvocationGateway(
             tools=backend or _Backend(),
-            reviews=SimpleNamespace(
-                request_project_id=lambda **_kwargs: review_project_id
+            research=SimpleNamespace(
+                review_project_id=lambda **_kwargs: review_project_id
             ),
             sandboxes=SimpleNamespace(get=lambda **_kwargs: {"ok": True}),
             surface=self.surface,
@@ -228,12 +228,12 @@ class KeySandboxControlPathTest(unittest.TestCase):
             return project_id == "proj-a" and user_id == "user-a"
 
         self.projects = ProjectAuthorizer(
-            projects=SimpleNamespace(is_member=member_lookup)
+            research=SimpleNamespace(is_project_member=member_lookup)
         )
         self.sandboxes = _Sandboxes()
         self.gateway = ToolInvocationGateway(
             tools=_sandbox_dispatch(self.sandboxes),
-            reviews=SimpleNamespace(request_project_id=lambda **_k: "proj-a"),
+            research=SimpleNamespace(review_project_id=lambda **_k: "proj-a"),
             sandboxes=self.sandboxes,
             surface=HttpSurfacePolicy.for_surface(
                 restrict_cors=True, hosted_control=True

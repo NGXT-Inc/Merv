@@ -10,10 +10,7 @@ from merv.brain.application.events import (
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 
 
-_TRANSITION_PRODUCER = (
-    "merv.brain.research_core.experiments.ExperimentService."
-    "transition_with_event"
-)
+_TRANSITION_PRODUCER = "merv.brain.research_core.Research.transition_experiment"
 
 
 def _event(*, event_type: str = "experiment.transitioned") -> StoredEvent:

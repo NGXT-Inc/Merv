@@ -6,19 +6,29 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..kernel.utils import ValidationError
-from ..research_core.facade import ResearchProjects
+from ..research_core import Research
 from .experiments.queries import ExperimentCollectionQuery
 from .project_context import ProjectContextQuery
 
 
 @dataclass(kw_only=True, slots=True)
 class ControlToolOperations:
-    projects: ResearchProjects
+    research: Research
     experiments: ExperimentCollectionQuery
     project_context: ProjectContextQuery
 
     def experiment_list(self, *, project_id: str | None = None) -> dict[str, Any]:
         return self.experiments.agent(project_id=project_id)
+
+    def project_list(
+        self,
+        *,
+        user_id: str = "",
+        project_id: str = "",
+    ) -> dict[str, Any]:
+        return self._reachable(
+            user_id=user_id, key_project_id=project_id
+        )
 
     def project(
         self,
@@ -50,7 +60,7 @@ class ControlToolOperations:
                     ),
                     **reachable,
                 }
-            project = self.projects.get(project_id=key_project_id)
+            project = self.research.get_project(project_id=key_project_id)
             return {
                 "exists": True,
                 "project": {
@@ -60,7 +70,7 @@ class ControlToolOperations:
                 },
             }
         if action == "create":
-            return self.projects.create(
+            return self.research.create_project(
                 name=name, summary=summary, tenant_id=tenant_id, user_id=user_id
             )
         if action == "overview":
@@ -86,8 +96,9 @@ class ControlToolOperations:
         projects are omitted, matching the UI picker -- they stay reachable by
         id, so this is a decluttered view rather than the authorization edge.
         """
-        listed = self.projects.list_projects(
-            user_id=user_id, project_id=key_project_id
+        listed = self.research.reachable_projects(
+            user_id=user_id,
+            key_project_id=key_project_id,
         )["projects"]
         return {
             "projects": [

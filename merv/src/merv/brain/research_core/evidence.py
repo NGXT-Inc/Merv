@@ -1,34 +1,34 @@
-"""Reflection-wave artifact lints shared by the transition gates and the
-shared markdown-image helper.
+# If you update this file, you must consult research_core.md to see whether research_core.md needs to be updated. research_core.md must not exceed 100 lines.
+"""Artifact evidence selection and pure document-envelope validation.
 
-Structure lives here so the two surfaces cannot drift. DB-backed checks
-(claim existence, taken experiment names, active-experiment caps) are
-injected as optional callbacks: the gate passes them, the preflight runs
-structure-only.
+Research workflows deliberately keep these checks pure. Database-backed
+questions are passed as narrow callbacks only where a change spec needs them.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLE
 from merv.shared.markdown_images import markdown_image_links
 
-from .artifacts import required_markdown_sections_missing
-from .artifact_evidence import (
-    artifact_submission_recency_key,
-    preferred_artifact,
+from .reflection_workflow import (
+    CORE_LENSES,
+    CORE_LENS_IDS,
+    ROSTER_SIZE,
 )
-from .experiment_names import validate_experiment_name
-from .experiment_policy import (
+from .policy import (
     ACTIVE_EXPERIMENT_CAP,
+    CLAIM_CONFIDENCES,
+    CLAIM_STATUSES,
     active_experiment_cap_would_exceed_message,
+    validate_experiment_name,
 )
-from .reflection_gates import CORE_LENSES, CORE_LENS_IDS, ROSTER_SIZE
-from .vocabulary import CLAIM_CONFIDENCES, CLAIM_STATUSES
-from ...kernel.utils import ValidationError, WorkflowError
+from ..kernel.utils import ValidationError, WorkflowError
 
 CHANGE_SPEC_SCHEMA_VERSION = 1
 MAX_REFLECTION_DOC_BYTES = 16_000
@@ -44,6 +44,357 @@ REQUIRED_REFLECTION_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
 _CHANGE_SPEC_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _MD_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _LENS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+REQUIRED_PLAN_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Summary", "summary"),
+    ("Objective & hypothesis", "objective"),
+    ("Evaluation", "evaluation"),
+)
+REQUIRED_REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Summary", "summary"),
+    ("Results", "results"),
+    ("Deviations from plan", "deviations"),
+    ("Conclusion", "conclusion"),
+)
+MAX_REPORT_BYTES = 16_000
+GRAPH_SCHEMA_VERSION = 1
+MAX_GRAPH_NODES = 16
+MAX_GRAPH_BYTES = 16_000
+
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDocument:
+    text: str
+    artifact_id: str
+    path: str
+    role: str
+    figure_links: tuple[str, ...]
+
+
+def require_artifact_document(
+    artifact: Any | None,
+    *,
+    artifact_id: str,
+    what: str,
+) -> ArtifactDocument:
+    if not artifact_id:
+        raise WorkflowError(
+            f"{what} has no submitted artifact — submit it with artifact.submit"
+        )
+    if artifact is None or artifact.status != "complete":
+        raise WorkflowError(f"{what}: artifact not found: {artifact_id}")
+    if artifact.data is None:
+        raise WorkflowError(
+            f"{what} ({artifact.path}) has no submitted content — resubmit it "
+            "with artifact.submit"
+        )
+    try:
+        text = artifact.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(
+            f"{what} ({artifact.path}) is not valid UTF-8 text"
+        ) from exc
+    return ArtifactDocument(
+        text=text,
+        artifact_id=artifact_id,
+        path=artifact.path,
+        role=artifact.role,
+        figure_links=artifact.figures,
+    )
+
+
+def artifact_submission_recency_key(
+    artifact: dict[str, Any],
+) -> tuple[int, str, str, str]:
+    return (
+        int(artifact.get("submitted_order") or 0),
+        str(artifact.get("updated_at") or artifact.get("created_at") or ""),
+        str(artifact.get("id") or artifact.get("artifact_id") or ""),
+        str(artifact.get("path") or ""),
+    )
+
+
+def artifact_slot_key(artifact: dict[str, Any]) -> tuple[str, str, str]:
+    """Mirror the Artifacts replacement key within one target and attempt."""
+    return (
+        str(artifact.get("role") or ""),
+        str(artifact.get("lens_id") or ""),
+        str(artifact.get("path") or ""),
+    )
+
+
+def latest_per_slot(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for artifact in artifacts:
+        key = artifact_slot_key(artifact)
+        held = best.get(key)
+        if held is None or artifact_submission_recency_key(
+            artifact
+        ) > artifact_submission_recency_key(held):
+            best[key] = artifact
+    keep = {id(artifact) for artifact in best.values()}
+    return [artifact for artifact in artifacts if id(artifact) in keep]
+
+
+def current_slot_artifacts(
+    artifacts: list[dict[str, Any]], *, attempt: Any
+) -> list[dict[str, Any]]:
+    return latest_per_slot(
+        [
+            artifact
+            for artifact in artifacts
+            if artifact.get("attempt_index") == attempt
+        ]
+    )
+
+
+def sealed_submission_artifacts(
+    artifacts: list[dict[str, Any]], *, submission_id: str
+) -> list[dict[str, Any]]:
+    if not submission_id:
+        return []
+    return [
+        artifact
+        for artifact in artifacts
+        if str(artifact.get("submission_id") or "") == submission_id
+    ]
+
+
+def historical_latest_artifacts(
+    artifacts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return latest_per_slot(artifacts)
+
+
+def artifact_state_record(evidence: Any) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "project_id": evidence.project_id,
+        "path": evidence.path,
+        "title": evidence.title,
+        "lens_id": evidence.lens_id,
+        "size_bytes": evidence.size_bytes,
+        "content_type": evidence.content_type,
+        "created_by": evidence.created_by,
+        "created_at": evidence.created_at,
+        "updated_at": evidence.updated_at,
+        "role": evidence.role,
+        "attempt_index": evidence.attempt_index,
+        "submitted_order": evidence.order,
+        "tldr": evidence.tldr,
+        "submission_id": evidence.submission_id,
+    }
+
+
+def submission_state_record(submission: Any) -> dict[str, Any]:
+    return {
+        "id": submission.id,
+        "attempt_index": submission.attempt_index,
+        "transition": submission.transition,
+        "created_at": submission.created_at,
+        "created_seq": submission.order,
+    }
+
+
+def preferred_artifact(
+    *,
+    artifacts: list[dict[str, Any]],
+    roles: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Pick the newest artifact in the highest-precedence requested role."""
+    rank = {role: index for index, role in enumerate(roles)}
+    candidates = [
+        artifact
+        for artifact in artifacts
+        if str(artifact.get("role") or "") in rank
+    ]
+    if not candidates:
+        return None
+    best_rank = min(rank[str(artifact.get("role") or "")] for artifact in candidates)
+    return max(
+        (
+            artifact
+            for artifact in candidates
+            if rank[str(artifact.get("role") or "")] == best_rank
+        ),
+        key=artifact_submission_recency_key,
+    )
+
+
+def required_markdown_sections_missing(
+    text: str, required: tuple[tuple[str, str], ...]
+) -> list[str]:
+    """Return required headings that are missing or have an empty body."""
+    text = _HTML_COMMENT_RE.sub("", text)
+    headings = [
+        (
+            match.start(),
+            len(match.group(1)),
+            _normalize_heading(match.group(2)),
+            match.end(),
+        )
+        for match in _HEADING_RE.finditer(text)
+    ]
+    missing: list[str] = []
+    for canonical, key in required:
+        index = next(
+            (i for i, heading in enumerate(headings) if heading[2].startswith(key)),
+            None,
+        )
+        if index is None:
+            missing.append(canonical)
+            continue
+        level, body_start = headings[index][1], headings[index][3]
+        body_end = len(text)
+        for next_start, next_level, _, _ in headings[index + 1 :]:
+            if next_level <= level:
+                body_end = next_start
+                break
+        if not text[body_start:body_end].strip():
+            missing.append(canonical)
+    return missing
+
+
+def _normalize_heading(text: str) -> str:
+    return re.sub(
+        r"[^a-z0-9]+", " ", text.replace("&", " and ").lower()
+    ).strip()
+
+
+def plan_sections_missing(plan_text: str) -> list[str]:
+    return required_markdown_sections_missing(plan_text, REQUIRED_PLAN_SECTIONS)
+
+
+def report_sections_missing(report_text: str) -> list[str]:
+    return required_markdown_sections_missing(report_text, REQUIRED_REPORT_SECTIONS)
+
+
+def report_figure_links(report_text: str) -> list[str]:
+    return markdown_image_links(report_text)
+
+
+def report_problems(
+    report_text: str,
+    *,
+    figure_problem: Callable[[str], str | None] | None = None,
+    exhibit_path: str | None = None,
+) -> list[str]:
+    problems: list[str] = []
+    missing = report_sections_missing(report_text)
+    if missing:
+        problems.append("missing required sections: " + ", ".join(missing))
+    if exhibit_path:
+        basename = exhibit_path.rsplit("/", 1)[-1]
+        if basename not in _HTML_COMMENT_RE.sub("", report_text):
+            problems.append(
+                "the report must reference the system metrics exhibit "
+                f"({exhibit_path}): it is the authoritative record of this "
+                "attempt's runs and result files — write the Results section "
+                "around it and cite it by name"
+            )
+    size = len(report_text.encode("utf-8"))
+    if size > MAX_REPORT_BYTES:
+        problems.append(
+            f"report is {size} bytes; keep it under {MAX_REPORT_BYTES} — move raw "
+            "numbers and logs into result artifacts and link them instead"
+        )
+    if figure_problem is not None:
+        for target in report_figure_links(report_text):
+            problem = figure_problem(target)
+            if problem:
+                problems.append(problem)
+    return problems
+
+
+def graph_problems(graph_text: str) -> list[str]:
+    problems: list[str] = []
+    size = len(graph_text.encode("utf-8"))
+    if size > MAX_GRAPH_BYTES:
+        problems.append(
+            f"graph file is {size} bytes; the maximum is {MAX_GRAPH_BYTES} — reduce it"
+        )
+    try:
+        data = json.loads(graph_text)
+    except json.JSONDecodeError as exc:
+        return [*problems, f"graph is not valid JSON: {exc}"]
+    if not isinstance(data, dict):
+        return [
+            *problems,
+            "graph must be a JSON object with 'nodes' and optional 'edges'",
+        ]
+    if data.get("version") != GRAPH_SCHEMA_VERSION:
+        problems.append(f"graph 'version' must be {GRAPH_SCHEMA_VERSION}")
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return [*problems, "graph 'nodes' must be a non-empty list"]
+    if len(nodes) > MAX_GRAPH_NODES:
+        problems.append(
+            f"graph has {len(nodes)} nodes; the maximum is {MAX_GRAPH_NODES} — reduce the graph"
+        )
+    known_ids: set[str] = set()
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            problems.append(f"nodes[{index}] must be an object")
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            problems.append(f"nodes[{index}] needs a non-empty string 'id'")
+            continue
+        if node_id in known_ids:
+            problems.append(f"duplicate node id: {node_id}")
+            continue
+        known_ids.add(node_id)
+        label = node.get("label")
+        if not isinstance(label, str) or not label.strip():
+            problems.append(f"node '{node_id}' needs a non-empty string 'label'")
+    edges = data.get("edges") or []
+    if not isinstance(edges, list):
+        return [*problems, "graph 'edges' must be a list"]
+    valid_edges: list[tuple[str, str]] = []
+    for index, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            problems.append(f"edges[{index}] must be an object")
+            continue
+        start, end = edge.get("from"), edge.get("to")
+        if start not in known_ids or end not in known_ids:
+            problems.append(
+                f"edges[{index}] must reference existing node ids in 'from' and 'to'"
+            )
+        elif start == end:
+            problems.append(f"edges[{index}] is a self-loop on '{start}'")
+        else:
+            valid_edges.append((str(start), str(end)))
+    cycle = _cycle_problem(node_ids=known_ids, edges=valid_edges)
+    if cycle:
+        problems.append(cycle)
+    return problems
+
+
+def _cycle_problem(*, node_ids: set[str], edges: list[tuple[str, str]]) -> str | None:
+    outgoing: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
+    indegree: dict[str, int] = {node_id: 0 for node_id in node_ids}
+    for start, end in edges:
+        outgoing[start].append(end)
+        indegree[end] += 1
+    queue = [node_id for node_id in node_ids if indegree[node_id] == 0]
+    visited: set[str] = set()
+    while queue:
+        node_id = queue.pop()
+        visited.add(node_id)
+        for next_id in outgoing[node_id]:
+            indegree[next_id] -= 1
+            if indegree[next_id] == 0:
+                queue.append(next_id)
+    cycle = sorted(node_ids - visited)
+    if cycle:
+        return (
+            "graph contains a cycle (must be a DAG); nodes on the cycle: "
+            + ", ".join(cycle)
+        )
+    return None
 
 
 def reflection_lens_doc_problems(text: str) -> list[str]:

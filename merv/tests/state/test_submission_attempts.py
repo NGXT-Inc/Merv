@@ -1,6 +1,6 @@
 """Submission attempts: the round inside an experiment attempt.
 
-send_back_to_running deliberately does not bump attempt_index, so before this
+A review return to running deliberately does not bump attempt_index, so before this
 existed every report round was indistinguishable and each resubmission hard-
 deleted the previous round's report. These tests pin the two halves of the fix:
 a forward transition seals the live composition, and a sealed row is immune
@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 from merv.brain.artifacts import ArtifactTarget
-from merv.brain.research_core.domain.artifact_evidence import latest_per_slot
+from merv.brain.research_core.evidence import latest_per_slot
 from tests.support.brain import TestBrain
 
 VALID_PLAN = (

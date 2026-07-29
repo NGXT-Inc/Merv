@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 
-from ....research_core.facade import ResearchLiterature
+from ....literature import Literature
 from .shared import conditional_json
 
 
-def build_router(*, literature: ResearchLiterature) -> APIRouter:
+def build_router(*, literature: Literature) -> APIRouter:
     api_router = APIRouter()
 
     @api_router.get("/api/projects/{project_id}/litreview")

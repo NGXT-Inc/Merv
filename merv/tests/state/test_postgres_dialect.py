@@ -54,7 +54,7 @@ from merv.brain.kernel.state.store import (
 from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.research_core.experiments import ExperimentService
 from merv.brain.research_core.association_targets import AssociationTargets
-from merv.brain.research_core.facade import ResearchCoreFacade
+from merv.brain.research_core import Research
 from tests.fakes import FakeBlobStore
 from tests.sandbox.test_sandbox_event_contract import (
     SandboxStorageEventContractScenarios,
@@ -1081,7 +1081,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             project_id=project_id, name="tracking-refresh", intent="postgres"
         )
 
-        committed = ResearchCoreFacade(experiments).refresh_tracking_run(
+        committed = Research(store=self.store, artifacts=artifacts).refresh_tracking_run(
             project_id=project_id,
             experiment_id=created["id"],
             run={"run_id": "run_pg", "status": "FINISHED"},

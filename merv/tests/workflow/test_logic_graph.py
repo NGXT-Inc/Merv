@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from merv.brain.research_core.domain.graph_lint import (
+from merv.brain.research_core.evidence import (
     GRAPH_SCHEMA_VERSION,
     MAX_GRAPH_BYTES,
     MAX_GRAPH_NODES,

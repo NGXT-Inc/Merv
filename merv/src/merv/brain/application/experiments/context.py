@@ -8,8 +8,9 @@ from typing import Any
 from merv.shared.content_summaries import content_tldr
 
 from ...artifacts import Artifacts
-from ...research_core.facade import (
+from ...research_core import (
     EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
     ExperimentState,
     preferred_artifact,
 )
@@ -17,8 +18,26 @@ from ...research_core.facade import (
 
 Record = dict[str, Any]
 
+_INITIAL_STATE = EXPERIMENT_WORKFLOW.state(EXPERIMENT_WORKFLOW.initial)
+_DESIGN_REVIEW_STATE = (
+    None
+    if _INITIAL_STATE is None
+    else EXPERIMENT_WORKFLOW.state(_INITIAL_STATE.forward.to_status)
+)
+_RESULTS_REVIEW_STATE = EXPERIMENT_WORKFLOW.state(
+    next(iter(EXPERIMENT_WORKFLOW.effect_destinations("result_submission")))
+)
+if (
+    _DESIGN_REVIEW_STATE is None
+    or _DESIGN_REVIEW_STATE.review is None
+    or _RESULTS_REVIEW_STATE is None
+    or _RESULTS_REVIEW_STATE.review is None
+):
+    raise RuntimeError("experiment workflow is missing its review states")
+_DESIGN_REVIEW_ROLE = _DESIGN_REVIEW_STATE.review.role
+_RESULTS_REVIEW_ROLE = _RESULTS_REVIEW_STATE.review.role
 _PLAN_APPROVED_STATUSES = frozenset(
-    {"ready_to_run", "running", "experiment_review", "complete"}
+    EXPERIMENT_WORKFLOW.forward_path(_DESIGN_REVIEW_STATE.forward.to_status)
 )
 
 
@@ -65,7 +84,7 @@ class ExperimentContextQuery:
                 if isinstance(claim, dict)
             ],
         }
-        if status == "complete":
+        if status == EXPERIMENT_WORKFLOW.success_status:
             experiment["conclusion"] = state.get("conclusion") or ""
 
         return {
@@ -253,17 +272,17 @@ class ExperimentContextQuery:
     @staticmethod
     def _plan_status(*, state: ExperimentState | Record, artifact_id: str) -> str:
         status = str(state.get("status") or "")
-        if status == "design_review":
+        if status == _DESIGN_REVIEW_STATE.name:
             return "in_review"
         review = _latest_review(
-            state=state, role="design_reviewer", artifact_id=artifact_id
+            state=state, role=_DESIGN_REVIEW_ROLE, artifact_id=artifact_id
         )
         if review and str(review.get("verdict") or "") != "pass":
             return "changes_requested"
         if review and str(review.get("verdict") or "") == "pass":
             return "approved"
         if status in _PLAN_APPROVED_STATUSES and not _reviews_for_role(
-            state=state, role="design_reviewer"
+            state=state, role=_DESIGN_REVIEW_ROLE
         ):
             # Compatibility for durable states written before reviews were
             # persisted. If reviews do exist but none pins this plan id, the
@@ -278,17 +297,17 @@ class ExperimentContextQuery:
         artifact_id: str,
         status: str,
     ) -> str:
-        if status == "experiment_review":
+        if status == _RESULTS_REVIEW_STATE.name:
             return "in_review"
         review = _latest_review(
-            state=state, role="experiment_reviewer", artifact_id=artifact_id
+            state=state, role=_RESULTS_REVIEW_ROLE, artifact_id=artifact_id
         )
         if review and str(review.get("verdict") or "") != "pass":
             return "changes_requested"
         if review and str(review.get("verdict") or "") == "pass":
             return "approved"
-        if status == "complete" and not _reviews_for_role(
-            state=state, role="experiment_reviewer"
+        if status == EXPERIMENT_WORKFLOW.success_status and not _reviews_for_role(
+            state=state, role=_RESULTS_REVIEW_ROLE
         ):
             return "approved"
         return "submitted"

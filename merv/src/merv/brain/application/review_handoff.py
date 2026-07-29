@@ -1,9 +1,10 @@
-"""Pure reviewer handoff payload construction."""
+"""Reviewer handoff presentation at the application boundary."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from ..research_core import EXPERIMENT_WORKFLOW, REFLECTION_WORKFLOW
 
 
 def reviewer_handoff_payload(
@@ -14,11 +15,15 @@ def reviewer_handoff_payload(
     review_request_id: str = "",
     reviewer_capability: str = "",
 ) -> dict[str, Any]:
-    skill = {
-        "design_reviewer": "experiment-design-review",
-        "experiment_reviewer": "experiment-attempt-review",
-        "reflection_reviewer": "project-reflection-review",
-    }.get(role, "")
+    workflow = (
+        REFLECTION_WORKFLOW
+        if target_type == "reflection"
+        else EXPERIMENT_WORKFLOW
+        if target_type == "experiment"
+        else None
+    )
+    review = None if workflow is None else workflow.review(role)
+    skill = "" if review is None else review.skill
     handoff: dict[str, Any] = {
         "role": role,
         "skill": skill,

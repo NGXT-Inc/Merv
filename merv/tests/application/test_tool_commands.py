@@ -9,11 +9,12 @@ from merv.brain.kernel.utils import ValidationError
 
 class ControlToolOperationsTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.projects = Mock()
+        self.research = Mock()
+        self.research.reachable_projects.return_value = {"projects": []}
         self.experiments = Mock()
         self.project_context = Mock()
         self.operations = ControlToolOperations(
-            projects=self.projects,
+            research=self.research,
             experiments=self.experiments,
             project_context=self.project_context,
         )
@@ -28,7 +29,7 @@ class ControlToolOperationsTest(unittest.TestCase):
         self.experiments.agent.assert_called_once_with(project_id="proj_1")
 
     def test_project_create_forwards_only_the_historical_arguments(self) -> None:
-        self.projects.create.return_value = {"id": "proj_1"}
+        self.research.create_project.return_value = {"id": "proj_1"}
 
         result = self.operations.project(
             action="create",
@@ -40,7 +41,7 @@ class ControlToolOperationsTest(unittest.TestCase):
         )
 
         self.assertEqual(result, {"id": "proj_1"})
-        self.projects.create.assert_called_once_with(
+        self.research.create_project.assert_called_once_with(
             name="Project",
             summary="Summary",
             tenant_id="tenant_1",
@@ -61,13 +62,13 @@ class ControlToolOperationsTest(unittest.TestCase):
 
         self.assertIs(result, projected)
         self.project_context.build.assert_called_once_with(project_id="proj_1")
-        self.projects.get.assert_not_called()
+        self.research.get_project.assert_not_called()
         self.experiments.agent.assert_not_called()
 
     def test_project_current_returns_the_keys_bound_project(self) -> None:
         # D7: a keyed cloud caller reaches the brain (no proxy folder link);
         # the gateway injects key_project_id and current resolves it.
-        self.projects.get.return_value = {
+        self.research.get_project.return_value = {
             "id": "proj_bound",
             "name": "Bound",
             "summary": "S",
@@ -83,12 +84,12 @@ class ControlToolOperationsTest(unittest.TestCase):
                 "project": {"id": "proj_bound", "name": "Bound", "summary": "S"},
             },
         )
-        self.projects.get.assert_called_once_with(project_id="proj_bound")
+        self.research.get_project.assert_called_once_with(project_id="proj_bound")
 
     def test_project_current_without_a_bound_project_lists_what_it_can_reach(
         self,
     ) -> None:
-        self.projects.list_projects.return_value = {
+        self.research.reachable_projects.return_value = {
             "projects": [
                 {
                     "id": "proj_1", "name": "One", "summary": "First",
@@ -108,13 +109,14 @@ class ControlToolOperationsTest(unittest.TestCase):
         # unbound credential is now the normal case, so it gets the list.
         self.assertNotIn("Mint", result["hint"])
         self.assertEqual([p["id"] for p in result["projects"]], ["proj_1", "proj_2"])
-        self.projects.get.assert_not_called()
-        self.projects.list_projects.assert_called_once_with(
-            user_id="user_1", project_id=""
+        self.research.get_project.assert_not_called()
+        self.research.reachable_projects.assert_called_once_with(
+            user_id="user_1",
+            key_project_id="",
         )
 
     def test_project_list_returns_names_dates_and_summaries(self) -> None:
-        self.projects.list_projects.return_value = {
+        self.research.reachable_projects.return_value = {
             "projects": [
                 {
                     "id": "proj_1", "name": "One", "summary": "First",
@@ -144,14 +146,15 @@ class ControlToolOperationsTest(unittest.TestCase):
     def test_project_list_from_a_bound_key_stays_narrowed_to_that_project(
         self,
     ) -> None:
-        self.projects.list_projects.return_value = {"projects": []}
+        self.research.reachable_projects.return_value = {"projects": []}
 
         self.operations.project(
             action="list", user_id="user_1", key_project_id="proj_bound"
         )
 
-        self.projects.list_projects.assert_called_once_with(
-            user_id="user_1", project_id="proj_bound"
+        self.research.reachable_projects.assert_called_once_with(
+            user_id="user_1",
+            key_project_id="proj_bound",
         )
 
     def test_project_overview_without_any_project_fails_closed(self) -> None:
@@ -160,7 +163,7 @@ class ControlToolOperationsTest(unittest.TestCase):
 
         # Names the fix rather than guessing which project was meant.
         self.assertIn('action="list"', str(caught.exception))
-        self.projects.get.assert_not_called()
+        self.research.get_project.assert_not_called()
         self.project_context.build.assert_not_called()
 
     def test_project_overview_defaults_to_the_bound_project(self) -> None:

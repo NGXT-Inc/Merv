@@ -49,21 +49,15 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "sandbox" / "sandbox_paths.py",
     SURFACE_ROOT / "tools" / "tool_facade.py",
     SURFACE_ROOT / "tools" / "tool_handlers.py",
-    RESEARCH_CORE_ROOT / "projects.py",
-    RESEARCH_CORE_ROOT / "claims.py",
-    RESEARCH_CORE_ROOT / "experiments.py",
-    RESEARCH_CORE_ROOT / "reflections.py",
-    RESEARCH_CORE_ROOT / "reviews.py",
-    RESEARCH_CORE_ROOT / "literature.py",
+    *sorted(RESEARCH_CORE_ROOT.glob("*.py")),
+    *sorted((BACKEND_ROOT / "literature").glob("*.py")),
     BACKEND_ROOT / "application" / "status_guidance.py",
-    RESEARCH_CORE_ROOT / "snapshots.py",
     BACKEND_ROOT / "application" / "experiments" / "presentation.py",
     SERVICES_ROOT / "permissions.py",
     BACKEND_ROOT / "application" / "workflow.py",
     BACKEND_ROOT / "sandbox" / "core.py",
     FEED_ROOT / "feed.py",
     BACKEND_ROOT / "sandbox" / "observation.py",
-    SURFACE_ROOT / "control" / "record_core.py",
     SURFACE_ROOT / "control" / "control_app.py",
     SURFACE_ROOT / "control" / "control_runtime.py",
     BACKEND_ROOT / "kernel" / "state" / "store.py",
@@ -418,24 +412,6 @@ load("subprocess")
         self.assertFalse((BACKEND_ROOT / "dataplane").exists())
         self.assertFalse((BACKEND_ROOT / "workspace.py").exists())
 
-    def test_workflow_reads_have_explicit_application_boundaries(self) -> None:
-        source = (BACKEND_ROOT / "application" / "workflow.py").read_text(
-            encoding="utf-8"
-        )
-        imports = _import_segments(BACKEND_ROOT / "application" / "workflow.py")
-        self.assertIn("facade", imports)
-        self.assertIn("from .ports.sandbox import SandboxReads", source)
-        self.assertNotIn("from ..sandbox.core import SandboxReads", source)
-        self.assertNotIn("from ..research_core.experiments", source)
-        self.assertNotIn("reviews", imports)
-        self.assertNotIn("sandboxes", imports)
-        self.assertIn("snapshots: ResearchSnapshots", source)
-        self.assertIn("sandboxes: SandboxReads", source)
-        self.assertIn("policy: StatusGuidancePolicy", source)
-        for obsolete in ("workflow.py", "workflow_views.py", "project_overview.py"):
-            self.assertFalse((RESEARCH_CORE_ROOT / obsolete).exists())
-        self.assertFalse((RESEARCH_CORE_ROOT / "next_action.py").exists())
-
     def test_artifacts_is_one_service_with_passive_models_and_injected_targets(
         self,
     ) -> None:
@@ -449,38 +425,15 @@ load("subprocess")
         source = (ARTIFACTS_ROOT / "artifacts.py").read_text(encoding="utf-8")
         models = (ARTIFACTS_ROOT / "models.py").read_text(encoding="utf-8")
         imports = _import_segments(ARTIFACTS_ROOT / "artifacts.py")
-        composition = (SURFACE_ROOT / "control" / "record_core.py").read_text(
+        composition = (SURFACE_ROOT / "control" / "control_app.py").read_text(
             encoding="utf-8"
         )
 
         self.assertNotIn("research_core", imports)
         self.assertIn("targets: ArtifactTargets", source)
-        self.assertIn("targets=AssociationTargets()", composition)
+        self.assertIn("targets=ResearchTargets()", composition)
         for behavior in (".execute(", ".transaction(", "record_event(", "_blobs"):
             self.assertNotIn(behavior, models)
-
-    def test_reflection_tools_present_research_facts_in_application(self) -> None:
-        self.assertFalse((RESEARCH_CORE_ROOT / "reflection_tools.py").exists())
-        facade = (RESEARCH_CORE_ROOT / "facade.py").read_text(encoding="utf-8")
-        presentation = (BACKEND_ROOT / "application" / "reflections.py").read_text(
-            encoding="utf-8"
-        )
-        app = (SURFACE_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
-        record = (SURFACE_ROOT / "control" / "record_core.py").read_text(
-            encoding="utf-8"
-        )
-        for method in (
-            "create_reflection",
-            "reflection_state",
-            "list_reflections",
-            "transition_reflection",
-        ):
-            self.assertIn(f"    def {method}(", facade)
-        for method in ("create", "get", "list", "transition"):
-            self.assertIn(f"    def {method}(", presentation)
-        self.assertIn("ReflectionCommands(reflections=self.research_core)", app)
-        self.assertIn("reflection_tools=self.reflection_commands", app)
-        self.assertNotIn("reflection_tools", record)
 
     def test_legacy_local_app_stack_is_removed(self) -> None:
         for rel in (
@@ -569,49 +522,12 @@ load("subprocess")
                         )
         self.assertFalse(stale, "stale moved paths: " + ", ".join(stale))
 
-    def test_control_app_uses_record_core_builder_for_record_services(self) -> None:
-        app_source = (SURFACE_ROOT / "control" / "control_app.py").read_text(
-            encoding="utf-8"
-        )
-        record_source = (SURFACE_ROOT / "control" / "record_core.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("self._record_core = build_record_core", app_source)
-        for service_ctor in (
-            "ClaimService(",
-            "ExperimentService(",
-            "FeedService(",
-            "GraphRefResolver(",
-            "PermissionService(",
-            "ProjectService(",
-            "ReviewService(",
-            "ReflectionService(",
-        ):
-            self.assertNotIn(service_ctor, app_source)
-            self.assertIn(service_ctor, record_source)
-        self.assertNotIn("QuotaService(", app_source)
-        self.assertNotIn("QuotaService(", record_source)
-        self.assertIn(
-            "QuotaService(",
-            (BACKEND_ROOT / "sandbox" / "core.py").read_text(encoding="utf-8"),
-        )
-        for forbidden in (
-            "local_runtime",
-            "dataplane",
-            "workspace",
-            "execution",
-        ):
-            self.assertNotIn(
-                forbidden, _import_segments(SURFACE_ROOT / "control" / "record_core.py")
-            )
-
     def test_control_app_does_not_build_local_runtime(self) -> None:
         source = (SURFACE_ROOT / "control" / "control_app.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("class ControlApp:", source)
-        self.assertIn("build_record_core", source)
+        self.assertNotIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
         self.assertIn("tool_names = available_tool_names(", source)
         self.assertIn(

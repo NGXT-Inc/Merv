@@ -103,7 +103,7 @@ def _normalize_url_key(url: str) -> str:
     return f"url:{key}"
 
 
-class LiteratureService:
+class Literature:
     def __init__(self, *, store: BaseStateStore, unfurl: PaperPreview) -> None:
         self.store = store
         self.unfurl = unfurl

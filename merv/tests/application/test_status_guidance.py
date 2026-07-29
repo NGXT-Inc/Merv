@@ -1,22 +1,15 @@
 from __future__ import annotations
 
-import ast
 import unittest
 
 from merv.brain.application.status_guidance import (
     StatusGuidancePolicy,
 )
-from merv.brain.application.guidance_catalog import (
-    EXPERIMENT_READY,
-    EXPERIMENT_REQUIREMENTS,
-    REFLECTION_READY,
-    REFLECTION_REQUIREMENTS,
-    REVIEWS,
+from merv.brain.research_core import (
+    EXPERIMENT_WORKFLOW,
+    REFLECTION_WORKFLOW,
 )
-from merv.brain.research_core.domain.reflection_gates import REFLECTION_GATE_TABLE
-from merv.brain.research_core.domain.workflow_gates import GATE_TABLE
-from merv.brain.research_core.facade import GateEvaluation, RequirementEvaluation
-from tests.paths import BACKEND_ROOT
+from merv.brain.research_core.policy import GateEvaluation, RequirementEvaluation
 
 
 def _requirement(
@@ -35,19 +28,18 @@ def _evaluation(
     *,
     subject: str = "experiment",
     status: str,
-    transition: str | None,
     requirements: tuple[RequirementEvaluation, ...] = (),
     review: RequirementEvaluation | None = None,
 ) -> GateEvaluation:
     return GateEvaluation(
-        subject=subject,
+        workflow=(
+            REFLECTION_WORKFLOW
+            if subject == "reflection wave"
+            else EXPERIMENT_WORKFLOW
+        ),
         status=status,
-        transition=transition,
-        leads_to=None,
-        terminal=transition is None,
         requirements=requirements,
         review=review,
-        legal_transitions=(),
     )
 
 
@@ -55,60 +47,17 @@ class StatusGuidanceContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.policy = StatusGuidancePolicy()
 
-    def test_every_research_gate_fact_has_application_guidance(self) -> None:
-        self.assertEqual(
-            set(EXPERIMENT_REQUIREMENTS),
-            {
-                requirement.role
-                for forward in GATE_TABLE.values()
-                for requirement in forward.requirements
-            },
-        )
-        self.assertEqual(
-            set(REFLECTION_REQUIREMENTS),
-            {
-                requirement.role
-                for forward in REFLECTION_GATE_TABLE.values()
-                for requirement in forward.requirements
-            },
-        )
-        self.assertEqual(
-            set(EXPERIMENT_READY),
-            {
-                forward.name
-                for forward in GATE_TABLE.values()
-                if forward.review is None
-            },
-        )
-        self.assertEqual(
-            set(REFLECTION_READY),
-            {
-                forward.name
-                for forward in REFLECTION_GATE_TABLE.values()
-                if forward.review is None
-            },
-        )
-        self.assertEqual(
-            set(REVIEWS),
-            {
-                forward.review.role
-                for table in (GATE_TABLE, REFLECTION_GATE_TABLE)
-                for forward in table.values()
-                if forward.review is not None
-            },
-        )
-
-    def test_policy_imports_only_the_public_research_entrypoint(self) -> None:
-        path = BACKEND_ROOT / "application" / "status_guidance.py"
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        research_imports = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module
-            and "research_core" in node.module
-        }
-        self.assertEqual(research_imports, {"research_core.facade"})
+    def test_workflow_entries_carry_their_agent_guidance(self) -> None:
+        for workflow in (EXPERIMENT_WORKFLOW, REFLECTION_WORKFLOW):
+            for state in workflow.states:
+                for requirement in state.requirements:
+                    self.assertTrue(requirement.action, requirement.role)
+                    self.assertTrue(requirement.tools, requirement.role)
+                self.assertTrue(state.forward.action, state.forward.name)
+                self.assertTrue(state.forward.tools, state.forward.name)
+                if state.review is not None:
+                    self.assertTrue(state.review.skill, state.review.role)
+                    self.assertTrue(state.review.pass_action, state.review.role)
 
     def test_missing_requirement_precedes_an_earlier_invalid_one(self) -> None:
         result = self.policy.experiment(
@@ -116,7 +65,6 @@ class StatusGuidanceContractTest(unittest.TestCase):
             sandboxes=[],
             evaluation=_evaluation(
                 status="running",
-                transition="submit_results",
                 requirements=(
                     _requirement("result", "present", "", items=({},)),
                     _requirement(
@@ -151,7 +99,6 @@ class StatusGuidanceContractTest(unittest.TestCase):
             sandboxes=[{"status": "running"}],
             evaluation=_evaluation(
                 status="running",
-                transition="submit_results",
                 requirements=(
                     _requirement(
                         "result",
@@ -171,7 +118,6 @@ class StatusGuidanceContractTest(unittest.TestCase):
             sandboxes=[],
             evaluation=_evaluation(
                 status="design_review",
-                transition="mark_ready_to_run",
                 review=_requirement(
                     "design_reviewer",
                     "requested",
@@ -214,7 +160,6 @@ class StatusGuidanceContractTest(unittest.TestCase):
             evaluation=_evaluation(
                 subject="reflection wave",
                 status="reflecting",
-                transition="submit_reflections",
                 requirements=(
                     _requirement(
                         "reflection_lens_doc",
@@ -243,6 +188,7 @@ class StatusGuidanceContractTest(unittest.TestCase):
             signal={
                 "new_terminal_since_publish": 1,
                 "contradicted_flip": False,
+                "has_new_material": True,
                 "stale": False,
                 "experiment_create_blocked": False,
                 "last_published_reflection_id": None,

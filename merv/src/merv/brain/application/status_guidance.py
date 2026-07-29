@@ -10,20 +10,15 @@ from merv.shared.artifact_roles import (
     SUBMITTABLE_ROLES,
 )
 
-from ..research_core.facade import (
+from ..research_core import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
     GateEvaluation,
+    REFLECTION_WORKFLOW,
     RequirementEvaluation,
-    experiment_folder_rel,
 )
-from .guidance_catalog import (
-    EXPERIMENT_READY,
-    EXPERIMENT_REQUIREMENTS,
-    REFLECTION_READY,
-    REFLECTION_REQUIREMENTS,
-    REVIEWS,
-)
+from .experiments.create import experiment_folder
 from .experiments.presentation import project_rows
 from .reflection_guidance import (
     idle_reflection_hint,
@@ -40,6 +35,11 @@ _SLIM_ARTIFACT_FIELDS = (
     "tldr",
 )
 _SLIM_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "synopsis")
+_RESULT_SUBMISSION_TRANSITION = next(
+    transition.name
+    for transition in EXPERIMENT_WORKFLOW.transitions
+    if "result_submission" in transition.effects
+)
 
 
 class StatusGuidancePolicy:
@@ -72,7 +72,7 @@ class StatusGuidancePolicy:
         status = evaluation.status
         transition = evaluation.transition
         if transition is None:
-            if status == "complete":
+            if status == EXPERIMENT_WORKFLOW.success_status:
                 return self._next(
                     gate="terminal",
                     action="none",
@@ -81,7 +81,10 @@ class StatusGuidancePolicy:
                         {"action": "mutate_experiment", "reason": "experiment complete"}
                     ],
                 )
-            if status in {"failed", "abandoned"}:
+            if status in (
+                EXPERIMENT_WORKFLOW.terminal_statuses
+                - {EXPERIMENT_WORKFLOW.success_status}
+            ):
                 return self._next(gate="terminal", action="none", allowed=[])
             return self._next(
                 gate="unknown",
@@ -96,7 +99,11 @@ class StatusGuidancePolicy:
             )
         current = self._advisory_requirement(evaluation.requirements)
         if current is not None:
-            guidance = EXPERIMENT_REQUIREMENTS[current.role]
+            guidance = EXPERIMENT_WORKFLOW.requirement(current.role)
+            if guidance is None:
+                raise RuntimeError(
+                    f"experiment workflow has no requirement {current.role!r}"
+                )
             gate = current.blocker_code
             if gate == "execution_ready" and any(
                 row.get("status") in EXPERIMENT_ACTIVE_PROCESS_STATUSES
@@ -110,7 +117,7 @@ class StatusGuidancePolicy:
                     if current.status == "missing"
                     else f"fix_{current.role}_artifact"
                 ),
-                allowed=list(guidance.allowed),
+                allowed=list(guidance.tools),
                 missing=(
                     self._missing_items(current)
                     if current.status == "missing"
@@ -121,14 +128,18 @@ class StatusGuidancePolicy:
                 ),
                 revision=experiment.get("revision_context", ""),
             )
-        ready = EXPERIMENT_READY[transition]
+        ready = EXPERIMENT_WORKFLOW.transition(transition)
+        if ready is None:
+            raise RuntimeError(f"unknown experiment transition {transition!r}")
         return self._next(
             gate=ready.gate,
             action=ready.action,
-            allowed=list(ready.allowed),
+            allowed=list(ready.tools),
             revision=(
                 experiment.get("revision_context", "")
-                if status != "ready_to_run"
+                if status not in EXPERIMENT_WORKFLOW.effect_sources(
+                    "start_attempt_clock"
+                )
                 else ""
             ),
         )
@@ -136,7 +147,7 @@ class StatusGuidancePolicy:
     def _artifact_guidance(
         self, *, key: str, experiment: dict[str, Any]
     ) -> dict[str, Any] | None:
-        folder = experiment_folder_rel(
+        folder = experiment_folder(
             experiment_id=str(experiment.get("id") or ""),
             name=str(experiment.get("name") or ""),
         )
@@ -160,7 +171,14 @@ class StatusGuidancePolicy:
         target_id = target["id"]
         status = target["status"]
         role = gate.role
-        review = REVIEWS[role]
+        workflow = (
+            REFLECTION_WORKFLOW
+            if target_type == "reflection"
+            else EXPERIMENT_WORKFLOW
+        )
+        review = workflow.review(role)
+        if review is None:
+            raise RuntimeError(f"{target_type} workflow has no review {role!r}")
         skill, action_name = review.skill, review.action_name
         transition_tool = (
             "reflection.transition"
@@ -267,10 +285,7 @@ class StatusGuidancePolicy:
                 "workflow": workflow,
                 "signal": presented_signal,
             }
-        has_new_material = (
-            signal["new_terminal_since_publish"] >= 1 or signal["contradicted_flip"]
-        )
-        recommended = idle and has_new_material
+        recommended = idle and signal["has_new_material"]
         if not signal["stale"] and not recommended:
             return None
         block: dict[str, Any] = {
@@ -399,7 +414,11 @@ class StatusGuidancePolicy:
             )
         current = self._advisory_requirement(evaluation.requirements)
         if current is not None:
-            guidance = REFLECTION_REQUIREMENTS[current.role]
+            guidance = REFLECTION_WORKFLOW.requirement(current.role)
+            if guidance is None:
+                raise RuntimeError(
+                    f"reflection workflow has no requirement {current.role!r}"
+                )
             return self._next(
                 gate=current.blocker_code,
                 action=(
@@ -407,27 +426,33 @@ class StatusGuidancePolicy:
                     if current.status == "missing"
                     else f"fix_{current.role}_artifact"
                 ),
-                allowed=list(guidance.allowed),
+                allowed=list(guidance.tools),
                 missing=(
                     self._missing_items(current)
                     if current.status == "missing"
                     else list(current.problems)
-                    or ([current.explanation] if status == "reflecting" else [])
+                    or (
+                        [current.explanation]
+                        if status == REFLECTION_WORKFLOW.initial
+                        else []
+                    )
                 ),
                 artifact_guidance=(
                     self._reflection_artifact_guidance()
-                    if status == "reflecting"
+                    if status == REFLECTION_WORKFLOW.initial
                     else self._synthesizing_artifact_guidance(
                         key=guidance.artifact_key
                     )
                 ),
                 revision=reflection.get("revision_context", ""),
             )
-        ready = REFLECTION_READY[transition]
+        ready = REFLECTION_WORKFLOW.transition(transition)
+        if ready is None:
+            raise RuntimeError(f"unknown reflection transition {transition!r}")
         return self._next(
             gate=ready.gate,
             action=ready.action,
-            allowed=list(ready.allowed),
+            allowed=list(ready.tools),
             revision=reflection.get("revision_context", ""),
         )
 
@@ -598,13 +623,14 @@ class StatusGuidancePolicy:
             "storage_guidance": dict(self.storage_guidance),
             "report_guidance": (
                 "A results report (role 'report') is also required before "
-                "submit_results — write it in the same pass as your result files. "
+                f"{_RESULT_SUBMISSION_TRANSITION} — write it in the same pass "
+                "as your result files. "
                 "While the run produces metrics, save the figures (matplotlib PNGs) "
                 "you will reference. See skills/research-workflow/report-template.md."
             ),
             "graph_guidance": (
                 "A logic graph (role 'graph') is also required before "
-                "submit_results — a qualitative story you author about the "
+                f"{_RESULT_SUBMISSION_TRANSITION} — a qualitative story you author about the "
                 "experiment's logical path: the hard decisions and the "
                 "reasoning behind them, not an event or pipeline diagram "
                 "(graph.json, a DAG of at most 16 nodes, written by hand — "

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from merv.brain.artifacts import ArtifactTarget, Artifacts
 from merv.brain.kernel.utils import PermissionDeniedError, ValidationError
-from merv.brain.research_core.domain.review_validation import (
+from merv.brain.research_core.policy import (
     validate_review_role,
     validate_review_verdict,
 )

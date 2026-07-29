@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain, upload_token
 from merv.brain.mlflow import CentralMlflowService
+from merv.brain.research_core.experiment_workflow import RETURN_TO_PLANNED
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.utils import now_iso
@@ -758,8 +759,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIn("[redacted]", json.dumps(tool_call_details, sort_keys=True))
 
     def test_application_components_share_the_composed_service_instances(self) -> None:
-        self.assertIs(self.app.research_core._experiments, self.app.experiments)
-        self.assertIs(self.app.artifacts, self.app._record_core.artifacts)
+        self.assertIs(self.app.research._experiments, self.app.experiments)
+        self.assertIs(self.app.research.artifacts, self.app.artifacts)
+        self.assertFalse(hasattr(self.app._app, "_record_core"))
         self.assertIs(self.app.artifact_tools.artifacts, self.app.artifacts)
         self.assertTrue(callable(self.app.feed.transition_advisory))
         self.assertIs(self.app.transition_experiment.research, self.app.research_core)
@@ -835,8 +837,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # A review rejection bumps the attempt and clears the run identity...
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE experiments SET status = 'experiment_review' WHERE id = ?", (exp_id,))
-            self.app.experiments.send_back_to_planned(
-                conn=conn, experiment_id=exp_id, revision_context="revise the plan"
+            self.app.experiments.return_from_review(
+                conn=conn,
+                experiment_id=exp_id,
+                route=RETURN_TO_PLANNED,
+                revision_context="revise the plan",
             )
         state = self.app.call_tool(
             "experiment.get_state", {"project_id": project_id, "experiment_id": exp_id}

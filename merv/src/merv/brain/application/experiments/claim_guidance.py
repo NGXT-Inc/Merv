@@ -2,16 +2,48 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from ...research_core.facade import ExperimentState, infer_claim_status_from_conclusion
+from ...research_core import EXPERIMENT_WORKFLOW, ExperimentState
+
+
+_STATUS_MARKERS: tuple[
+    tuple[re.Pattern[str], str | None, str | None], ...
+] = (
+    (re.compile(r"\bcontradict\w*|\brefut\w*|\bfalsif\w*|\bdisprov\w*"), "contradicted", None),
+    (re.compile(r"\bsupport(?:s|ed|ing)?\b|\bconfirm\w*|\bbeats?\b|\bimprov\w*|\bpositive result\w*|\b(?:target|criterion|criteria|threshold) met\b"), "supported", "weakened"),
+    (re.compile(r"\bunsupported\b|\bnegative result\w*|\bweaken\w*|\binconclusive\b|\bmixed (?:results?|evidence|findings|signals?)\b|\bpartial(?:ly)? support\w*|\bno (?:significant )?effect\b|\bnot significant\b|\binsignificant\b|\bbelow (?:the )?baseline\b|\bbeaten\b|\bworse than\b|\bunderperform\w*"), "weakened", None),
+)
+_NEGATION = re.compile(
+    r"\b(?:not|no|never|neither|nor|without|cannot|can't|couldn't|didn't|"
+    r"doesn't|wasn't|weren't|fail(?:ed|s)?(?:\s+to)?|unable\s+to|far\s+from)\b"
+)
+_CLAUSE_BOUNDARIES = (". ", "; ", ", ", " but ", " however ", " although ", " yet ")
+
+
+def infer_claim_status(conclusion: str) -> str | None:
+    """Conservative presentation hint from a free-text conclusion."""
+    text = " ".join(conclusion.lower().split())
+    votes: set[str] = set()
+    for pattern, plain_vote, negated_vote in _STATUS_MARKERS:
+        for match in pattern.finditer(text):
+            window = text[max(0, match.start() - 40) : match.start()]
+            for boundary in _CLAUSE_BOUNDARIES:
+                if (index := window.rfind(boundary)) >= 0:
+                    window = window[index + len(boundary) :]
+            vote = negated_vote if _NEGATION.search(window) else plain_vote
+            if vote is None:
+                return None
+            votes.add(vote)
+    return votes.pop() if len(votes) == 1 else None
 
 
 def claim_update_suggestions(experiment: ExperimentState) -> list[dict[str, Any]]:
-    if experiment.get("status") != "complete":
+    if experiment.get("status") != EXPERIMENT_WORKFLOW.success_status:
         return []
     conclusion = str(experiment.get("conclusion") or "").strip()
-    suggested_status = infer_claim_status_from_conclusion(conclusion)
+    suggested_status = infer_claim_status(conclusion)
     if not conclusion or suggested_status is None:
         return []
     suggestions = []

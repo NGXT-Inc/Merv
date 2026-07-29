@@ -7,10 +7,10 @@ from typing import Any, TypedDict, cast
 
 from ...feed import FeedAdvisory
 from ...kernel.utils import ValidationError
-from ...research_core.facade import (
+from ...research_core import (
     ExperimentState,
     PersistedRunState,
-    ResearchCore,
+    Research,
 )
 from ..events import EventDispatcher
 from ..ports.tracking import (
@@ -62,7 +62,7 @@ class GetTrackingContext:
     """Build project or experiment tracking connection context."""
 
     def __init__(
-        self, *, research: ResearchCore, tracking: ExperimentTracking | None
+        self, *, research: Research, tracking: ExperimentTracking | None
     ) -> None:
         self.research, self.tracking = research, tracking
 
@@ -126,7 +126,7 @@ class GetTrackingContext:
 class AgentExperimentQuery:
     """Agent-facing experiment state, including credential-bearing tracking."""
 
-    research: ResearchCore
+    research: Research
     objects: ProducedObjectCatalog
     tracking: ExperimentTracking | None
 
@@ -174,7 +174,7 @@ class AgentExperimentQuery:
 class ExperimentDetailQuery:
     """UI experiment detail with redacted tracking connection data."""
 
-    research: ResearchCore
+    research: Research
     objects: ProducedObjectCatalog
     tracking: ExperimentTracking | None
 
@@ -215,7 +215,7 @@ class FinalizeTrackingRun:
     def __init__(
         self,
         *,
-        research: ResearchCore,
+        research: Research,
         feed: FeedAdvisory,
         tracking: ExperimentTracking | None,
         dispatcher: EventDispatcher,

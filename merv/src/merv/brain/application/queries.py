@@ -10,10 +10,10 @@ from typing import Any, Protocol
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from ..artifacts import Artifact, Artifacts
-from ..research_core.facade import (
-    ExperimentSummary,
+from ..research_core import (
     MAX_GRAPH_NODES,
-    ResearchCore,
+    ExperimentSummary,
+    Research,
     graph_problems,
     historical_latest_artifacts,
     preferred_artifact,
@@ -194,7 +194,7 @@ class ComputeCostQuery:
 class LogicGraphQuery:
     """Build the common logic-graph view from Research and Artifacts facts."""
 
-    research: ResearchCore
+    research: Research
     artifacts: Artifacts
 
     def experiment(self, *, project_id: str, experiment_id: str) -> Record:
@@ -358,7 +358,7 @@ class LogicGraphQuery:
         refs = _refs_from_graph(graph)
         if not refs:
             return {}
-        research = self.research.resolve_research_graph_refs(
+        research = self.research.resolve_graph_refs(
             project_id=project_id, refs=tuple(refs)
         )
         artifact_ids = tuple(

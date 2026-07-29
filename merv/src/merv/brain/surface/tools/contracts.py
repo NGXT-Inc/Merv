@@ -10,7 +10,61 @@ from merv.shared.artifact_roles import ARTIFACT_TARGET_TYPES, SUBMITTABLE_ROLES
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
 from merv.shared.tool_validation import validate_openssh_public_key
 
-from ...research_core.facade import REVIEW_VERDICT_VALUES
+from ...research_core import (
+    EXPERIMENT_TRANSITION_VALUES,
+    EXPERIMENT_WORKFLOW,
+    REFLECTION_TRANSITION_VALUES,
+    REFLECTION_WORKFLOW,
+    REVIEW_ROLE_VALUES,
+    REVIEW_VERDICT_VALUES,
+)
+
+REVIEW_RETURN_VALUES = (
+    "",
+    *EXPERIMENT_WORKFLOW.review_return_statuses,
+    *REFLECTION_WORKFLOW.review_return_statuses,
+)
+EXPERIMENT_INITIAL_VALUES = (EXPERIMENT_WORKFLOW.initial,)
+REVIEW_TARGET_VALUES = (
+    EXPERIMENT_WORKFLOW.target_type,
+    REFLECTION_WORKFLOW.target_type,
+)
+_EXPERIMENT_RESULT_TRANSITION = next(
+    transition.name
+    for transition in EXPERIMENT_WORKFLOW.transitions
+    if "result_submission" in transition.effects
+)
+_EXPERIMENT_RETRY_TRANSITION = next(
+    transition.name
+    for transition in EXPERIMENT_WORKFLOW.transitions
+    if "record_retry_context" in transition.effects
+)
+_EXPERIMENT_EXECUTION_STATUS = next(
+    iter(EXPERIMENT_WORKFLOW.effect_sources("result_submission"))
+)
+_EXPERIMENT_PLAN_RETURN = next(
+    route for route in EXPERIMENT_WORKFLOW.review_returns if route.attempt == "new"
+)
+_EXPERIMENT_EXECUTION_RETURN = next(
+    route for route in EXPERIMENT_WORKFLOW.review_returns if route.attempt == "same"
+)
+_REFLECTION_RERUN_RETURN = next(
+    route for route in REFLECTION_WORKFLOW.review_returns if route.attempt == "new"
+)
+_REFLECTION_REVISION_RETURN = next(
+    route for route in REFLECTION_WORKFLOW.review_returns if route.attempt == "same"
+)
+_REFLECTION_INITIAL_STATE = REFLECTION_WORKFLOW.state(
+    REFLECTION_WORKFLOW.initial
+)
+if _REFLECTION_INITIAL_STATE is None:
+    raise RuntimeError("reflection workflow is missing its first transition")
+_REFLECTION_FIRST_TRANSITION = _REFLECTION_INITIAL_STATE.forward.name
+_REFLECTION_PUBLISH_TRANSITION = next(
+    transition.name
+    for transition in REFLECTION_WORKFLOW.transitions
+    if "materialize_change_spec" in transition.effects
+)
 
 
 class ContractModel(BaseModel):
@@ -215,8 +269,9 @@ class ExperimentCreateInput(ProjectScopedInput):
         default="",
         description="Deprecated; put risks in plan.md's 'Risks & confounders' section.",
     )
-    status: Literal["planned"] = Field(
-        default="planned", description="Create always starts planned."
+    status: Literal[*EXPERIMENT_INITIAL_VALUES] = Field(
+        default=EXPERIMENT_WORKFLOW.initial,
+        description=f"Create always starts {EXPERIMENT_WORKFLOW.initial}.",
     )
 
 
@@ -242,16 +297,7 @@ class ExperimentExhibitInput(ProjectScopedInput):
 
 class ExperimentTransitionInput(ProjectScopedInput):
     experiment_id: str
-    transition: Literal[
-        "submit_design",
-        "mark_ready_to_run",
-        "start_running",
-        "retry_running",
-        "submit_results",
-        "complete",
-        "abandon",
-        "mark_failed",
-    ]
+    transition: Literal[*EXPERIMENT_TRANSITION_VALUES]
     evidence: dict[str, Any] | None = None
 
 
@@ -326,7 +372,7 @@ class ReflectionCreateInput(ProjectScopedInput):
             "(amplify, avoid, entropy) plus 2 you design for this "
             "project, each with a charter and why_distinct. The roster is "
             "fixed at create; every lens must submit its own reflection before "
-            "submit_reflections."
+            f"{_REFLECTION_FIRST_TRANSITION}."
         ),
     )
 
@@ -348,12 +394,7 @@ class ReflectionListInput(ProjectScopedInput):
 
 class ReflectionTransitionInput(ProjectScopedInput):
     reflection_id: str
-    transition: Literal[
-        "submit_reflections",
-        "submit_reflection_artifacts",
-        "publish",
-        "abandon",
-    ]
+    transition: Literal[*REFLECTION_TRANSITION_VALUES]
 
 
 class ArtifactSubmitInput(ProjectScopedInput):
@@ -383,7 +424,8 @@ class ArtifactSubmitInput(ProjectScopedInput):
         description=(
             "REQUIRED when role=reflection_lens_doc: the roster lens this "
             "reflection covers. Its submitted Markdown must contain a non-empty "
-            "Summary section to pass submit_reflections. Invalid for any other role."
+            f"Summary section to pass {_REFLECTION_FIRST_TRANSITION}. Invalid "
+            "for any other role."
         ),
     )
     title: str = Field(default="", description="Optional display title.")
@@ -577,15 +619,9 @@ class StorageObjectInput(ProjectScopedInput):
 
 
 class ReviewRequestInput(ProjectScopedInput):
-    target_type: Literal["experiment", "reflection"]
+    target_type: Literal[*REVIEW_TARGET_VALUES]
     target_id: str
-    role: Literal[
-        "design_reviewer",
-        "experiment_reviewer",
-        "reflection_reviewer",
-        "human",
-        "automated_check",
-    ]
+    role: Literal[*REVIEW_ROLE_VALUES]
     reason: str = ""
     producer_session_id: str = "main"
 
@@ -618,19 +654,22 @@ class ReviewSubmitInput(ContractModel):
             "no backticks or markdown, no newlines."
         )
     )
-    return_to: Literal["", "planned", "running", "reflecting", "synthesizing"] = Field(
+    return_to: Literal[*REVIEW_RETURN_VALUES] = Field(
         default="",
         description=(
             "Where a rejected target goes next. Omit on pass. REQUIRED on "
-            "experiment-attempt-review rejections (needs_changes/fail): 'planned' if "
-            "the results show the plan itself is flawed; 'running' if the plan "
-            "stands but execution or the conclusion is flawed (fix and re-run "
-            "without redoing design review). Design-review rejections always "
-            "return to 'planned'. REQUIRED on project-reflection-review rejections: "
-            "'reflecting' to re-launch the reflection fan-out (every lens "
-            "re-submits for the new attempt), or 'synthesizing' if the "
-            "reflections stand but the reflection artifacts (project graph, "
-            "reflection doc, and/or change spec) must be revised."
+            "experiment-attempt-review rejections (needs_changes/fail): "
+            f"{_EXPERIMENT_PLAN_RETURN.to_status!r} if the results show the "
+            f"plan itself is flawed; {_EXPERIMENT_EXECUTION_RETURN.to_status!r} "
+            "if the plan stands but execution or the conclusion is flawed "
+            "(fix and re-run without redoing design review). Design-review "
+            f"rejections always return to {_EXPERIMENT_PLAN_RETURN.to_status!r}. "
+            "REQUIRED on project-reflection-review rejections: "
+            f"{_REFLECTION_RERUN_RETURN.to_status!r} to re-launch the reflection "
+            "fan-out (every lens re-submits for the new attempt), or "
+            f"{_REFLECTION_REVISION_RETURN.to_status!r} if the reflections "
+            "stand but the reflection artifacts (project graph, reflection "
+            "doc, and/or change spec) must be revised."
         ),
     )
     notes: str = Field(default="", description="Free-text summary of the review.")
@@ -653,7 +692,7 @@ class ReviewSubmitInput(ContractModel):
 
 
 class ReviewStatusInput(ProjectScopedInput):
-    target_type: Literal["experiment", "reflection"]
+    target_type: Literal[*REVIEW_TARGET_VALUES]
     target_id: str
 
 
@@ -1081,25 +1120,25 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "project.update": ToolContract(
-        handler_identity="projects.update",
+        handler_identity="research.update_project",
         visibility="internal",
         input_model=ProjectUpdateInput,
         description="Update a project name, summary, policy knobs, or hidden state.",
     ),
     "project.get": ToolContract(
-        handler_identity="projects.get",
+        handler_identity="research.get_project",
         visibility="internal",
         input_model=ProjectGetInput,
         description="Get project metadata.",
     ),
     "project.list": ToolContract(
-        handler_identity="projects.list_projects",
+        handler_identity="operations.project_list",
         visibility="internal",
         input_model=EmptyInput,
         description="List projects in the current tool scope.",
     ),
     "claim.create": ToolContract(
-        handler_identity="claims.create",
+        handler_identity="research.create_claim",
         input_model=ClaimCreateInput,
         description=(
             'Create a claim. Check the project tool with action="overview" '
@@ -1107,13 +1146,13 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "claim.list": ToolContract(
-        handler_identity="claims.list_claims",
+        handler_identity="research.list_claims",
         visibility="internal",
         input_model=ClaimListInput,
         description="List claims.",
     ),
     "claim.update": ToolContract(
-        handler_identity="claims.update",
+        handler_identity="research.update_claim",
         input_model=ClaimUpdateInput,
         description=(
             "Update a claim's status or confidence. The statement and scope "
@@ -1127,7 +1166,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         handler_identity="create_experiment.create",
         input_model=ExperimentCreateInput,
         description=(
-            "Create a planned experiment. Requires an intent and a short "
+            f"Create a {EXPERIMENT_WORKFLOW.initial} experiment. Requires an intent and a short "
             "folder-safe 'name' unique within the project; the name becomes "
             "the experiment folder experiments/<name>/."
         ),
@@ -1157,9 +1196,10 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "id, and timestamp), plus any operation-specific side-effect receipt; it "
             "does not return experiment context. Call "
             "workflow.status_and_next afterward to continue. "
-            " Use retry_running only for infrastructure/interruption reruns "
-            "where the experiment should stay running on the same attempt. "
-            "At submit_results the system evaluates the attempt's metrics "
+            f" Use {_EXPERIMENT_RETRY_TRANSITION} only for "
+            "infrastructure/interruption reruns where the experiment should "
+            f"stay {_EXPERIMENT_EXECUTION_STATUS} on the same attempt. At "
+            f"{_EXPERIMENT_RESULT_TRANSITION} the system evaluates the attempt's metrics "
             "exhibit from eligible pinned result JSON with provenance; when an "
             "exhibit is pinned, report.md must reference it."
         ),
@@ -1169,7 +1209,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ExperimentExhibitInput,
         description=(
             "Read-only preview of the system-generated metrics exhibit for a "
-            "running experiment from eligible pinned result-file sources "
+            f"{_EXPERIMENT_EXECUTION_STATUS} experiment from eligible pinned result-file sources "
             "(metrics.json, results.json, and "
             "results/*.json associated with role 'result'). Call it before "
             "writing report.md. When pinned, the report must "
@@ -1242,10 +1282,12 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         handler_identity="reflection_tools.transition",
         input_model=ReflectionTransitionInput,
         description=(
-            "Apply an allowed reflection transition (submit_reflections, "
-            "submit_reflection_artifacts, publish, abandon). See "
+            "Apply an allowed reflection transition ("
+            + ", ".join(REFLECTION_WORKFLOW.transition_names)
+            + "). See "
             "reflection.get.allowed_transitions for preconditions from the "
-            "current status. On publish, after the reflection reviewer has "
+            f"current status. On {_REFLECTION_PUBLISH_TRANSITION}, after the "
+            "reflection reviewer has "
             "passed, the reviewed change spec applies claim changes and "
             "creates the approved experiment wave."
         ),
@@ -1383,7 +1425,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.request": ToolContract(
-        handler_identity="reviews.request",
+        handler_identity="review_request.execute",
         input_model=ReviewRequestInput,
         description=(
             "Create a review request and request-scoped reviewer capability; "
@@ -1410,7 +1452,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.submit": ToolContract(
-        handler_identity="reviews.submit",
+        handler_identity="research.submit_review",
         scope_strategy="capability",
         input_model=ReviewSubmitInput,
         description=(
@@ -1419,11 +1461,13 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "(REQUIRED: 1-3 plain sentences, 40-420 chars, the researcher's "
             "TLDR — no entity ids, markdown, or backticks), return_to, "
             "notes, findings (list of {issue, severity?}), and evidence "
-            "(free-form dict). On experiment-attempt-review rejections return_to is "
-            "REQUIRED: 'planned' if the results show the plan itself is "
-            "flawed, 'running' if the plan stands but execution or the "
-            "conclusion is flawed (the experiment resumes running with its "
-            "approved plan intact). Put structured rationale inside "
+            "(free-form dict). On experiment-attempt-review rejections "
+            f"return_to is REQUIRED: {_EXPERIMENT_PLAN_RETURN.to_status!r} if "
+            "the results show the plan itself is flawed, "
+            f"{_EXPERIMENT_EXECUTION_RETURN.to_status!r} if the plan stands "
+            "but execution or the conclusion is flawed (the experiment "
+            "resumes running with its approved plan intact). Put structured "
+            "rationale inside "
             "'evidence' — unknown top-level fields are rejected."
         ),
     ),

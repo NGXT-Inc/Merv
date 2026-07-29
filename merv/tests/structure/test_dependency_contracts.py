@@ -17,7 +17,6 @@ _BOOTSTRAP_FILES = {
     "sandbox/adapters/__init__.py",
     "surface/config.py",
     "surface/control/control_app.py",
-    "surface/control/record_core.py",
     "surface/transport/http_server.py",
 }
 

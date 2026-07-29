@@ -20,14 +20,11 @@ from merv.brain.research_core.experiments import (
     TRACKING_EVENT_TYPES,
     ExperimentService,
 )
-from merv.brain.research_core.facade import ResearchCoreFacade
+from merv.brain.research_core import Research
 from tests.fakes import FakeBlobStore
 
 
-_TRANSITION_PRODUCER = (
-    "merv.brain.research_core.experiments.ExperimentService."
-    "transition_with_event"
-)
+_TRANSITION_PRODUCER = "merv.brain.research_core.Research.transition_experiment"
 
 
 class CommittedEventTest(unittest.TestCase):
@@ -100,15 +97,12 @@ class CommittedEventTest(unittest.TestCase):
         wire[0]["payload"]["z"][0]["nested"] = "wire-remains-mutable"
         self.assertEqual(event.payload["z"][0]["nested"], "original")
 
-    def test_transition_variant_returns_committed_event_and_legacy_returns_state(self) -> None:
-        experiments = ExperimentService(
-            store=self.store,
-            artifacts=self.artifacts,
-        )
-        created = experiments.create(
+    def test_research_transition_returns_its_exact_committed_event(self) -> None:
+        research = Research(store=self.store, artifacts=self.artifacts)
+        created = research.create_experiment(
             project_id=self.project_id, name="committed-event", intent="test"
         )
-        committed = experiments.transition_with_event(
+        committed = research.transition_experiment(
             project_id=self.project_id,
             experiment_id=created["id"],
             transition="mark_failed",
@@ -165,23 +159,12 @@ class CommittedEventTest(unittest.TestCase):
         self.assertIs(dispatched.state, state)
         self.assertEqual(dict(dispatched.outcomes), {"probe": "readable"})
 
-        legacy_created = experiments.create(
-            project_id=self.project_id, name="legacy-transition", intent="test"
-        )
-        legacy_state = experiments.transition(
-            project_id=self.project_id,
-            experiment_id=legacy_created["id"],
-            transition="abandon",
-        )
-        self.assertIsInstance(legacy_state, dict)
-        self.assertEqual(legacy_state["status"], "abandoned")
-
     def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
         experiments = ExperimentService(
             store=self.store,
             artifacts=self.artifacts,
         )
-        research = ResearchCoreFacade(experiments)
+        research = Research(store=self.store, artifacts=self.artifacts)
         created = experiments.create(
             project_id=self.project_id, name="tracking-event", intent="test"
         )
@@ -594,7 +577,7 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
             delivery_id=delivery_id,
         )
 
-    def _assert_two_point_reads(self) -> None:
+    def _assert_indexed_reads(self) -> None:
         delivery_reads = [
             count for sql, count in self.store.reads
             if "FROM tracking_deliveries" in sql
@@ -602,9 +585,10 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
         event_reads = [
             (sql, count) for sql, count in self.store.reads if "FROM events" in sql
         ]
-        # One row off the unique key, one event off its primary key. Under the
-        # payload-scan this list was empty and the events read returned 206.
-        self.assertEqual(delivery_reads, [1])
+        # One row proves the requested key landed; one row identifies which
+        # delivery owns the current mutable run. The event is a primary-key
+        # point read. None of these costs grow with history.
+        self.assertEqual(delivery_reads, [1, 1])
         self.assertEqual([count for _, count in event_reads], [1])
         self.assertIn("FROM events WHERE id = ?", event_reads[0][0])
 
@@ -617,7 +601,7 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
 
         assert found is not None
         self.assertEqual(found["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}")
-        self._assert_two_point_reads()
+        self._assert_indexed_reads()
 
     def test_the_write_barrier_never_walks_the_keyed_history(self) -> None:
         # The path that made the cost quadratic: the barrier inside the write
@@ -627,7 +611,7 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
         self.assertEqual(
             replayed["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}"
         )
-        self._assert_two_point_reads()
+        self._assert_indexed_reads()
 
 
 if __name__ == "__main__":

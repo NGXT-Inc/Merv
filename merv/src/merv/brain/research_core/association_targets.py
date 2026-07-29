@@ -1,13 +1,16 @@
-"""Research-core resolution of artifact-association targets.
+# If you update this file, you must consult research_core.md to see whether research_core.md needs to be updated. research_core.md must not exceed 100 lines.
+"""Research resolution of artifact-association targets.
 
-Injected into the artifacts module at composition so artifacts never names
-research-core tables (Research reaches Artifacts through ports only).
+Artifacts receives this capability at composition, so it can verify Research
+targets without knowing Research tables or lifecycle rules.
 """
 
 from __future__ import annotations
 
 from ..artifacts import ArtifactTarget
 from ..kernel.utils import NotFoundError, ValidationError
+from .experiment_workflow import EXPERIMENT_TERMINAL_STATUSES
+from .reflection_workflow import REFLECTION_TERMINAL_STATUSES
 
 _TABLE_BY_TYPE = {
     "experiment": "experiments",
@@ -21,23 +24,23 @@ _TABLE_BY_TYPE = {
 _ATTEMPT_TABLE_BY_TYPE = {"experiment": "experiments", "reflection": "reflections"}
 # A published wave is frozen — its pinned graph is the project's comparison
 # base — and an abandoned one is closed; neither accepts new artifacts.
-_TERMINAL_REFLECTION_STATUSES = ("published", "abandoned")
+_TERMINAL_REFLECTION_STATUSES = REFLECTION_TERMINAL_STATUSES
 
 # A terminal experiment will never take another forward transition, so an
 # artifact submitted now would stay unsealed forever while still winning
 # latest-per-slot. Submitting DURING a review stays legal on purpose: it moves
 # the snapshot and invalidates the pinned verdict, which is the designed way to
 # correct work under review, and the next transition seals it.
-_CLOSED_EXPERIMENT_STATUSES = ("complete", "failed", "abandoned")
+_CLOSED_EXPERIMENT_STATUSES = EXPERIMENT_TERMINAL_STATUSES
 
 
 class AssociationTargets:
-    """Existence and attempt scoping for association targets (RC-owned SQL)."""
+    """Resolve Research targets and their current artifact attempt."""
 
     def resolve(self, *, tx, target: ArtifactTarget) -> ArtifactTarget:
         kind, target_id = target.target_type, target.target_id
         if kind == "attempt":
-            # Attempts are implicit in v0.0001.
+            # Standalone attempt targets have no Research-owned row to resolve.
             return ArtifactTarget(kind, target_id, target.project_id)
         table = _TABLE_BY_TYPE.get(kind)
         if table is None:
@@ -67,10 +70,8 @@ class AssociationTargets:
             kind == "experiment"
             and str(row["status"]) in _CLOSED_EXPERIMENT_STATUSES
         ):
-            # An upload accepted while a round is under review (or after the
-            # experiment ended) would land unsealed and win latest-per-slot,
-            # silently becoming the row the gate and the reviewer read — work
-            # nobody asked for, attributed to a round that already closed.
+            # Evidence added after the experiment ends would remain unsealed
+            # while still winning latest-per-slot for an already closed round.
             raise ValidationError(
                 f"experiment {target_id} is {row['status']} — it is not "
                 "accepting artifact submissions right now; wait for the "
