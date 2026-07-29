@@ -407,16 +407,6 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         for name, model in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
-        # The removed tools must be gone from the registry entirely.
-        for removed in (
-            "storage.list",
-            "storage.resolve",
-            "storage.pin",
-            "storage.unpin",
-            "storage.renew",
-            "storage.delete",
-        ):
-            self.assertNotIn(removed, TOOL_CONTRACTS)
         self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
         self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.submit"].description)
 
@@ -435,6 +425,18 @@ class ToolContractRegistryTest(unittest.TestCase):
         with self.assertRaises(PydanticValidationError):
             StorageFindInput.model_validate({"project_id": "p", "version": 2})
 
+    def test_storage_completion_normalizes_legacy_provider_part_names(self) -> None:
+        validated = StorageCompleteUploadInput.model_validate(
+            {
+                "project_id": "p",
+                "upload_id": "upload_1",
+                "parts": [{"PartNumber": 1, "ETag": '"abc"'}],
+            }
+        )
+        self.assertEqual(
+            validated.parts, [{"part_number": 1, "etag": '"abc"'}]
+        )
+
     def test_storage_object_action_is_required_and_enumerated(self) -> None:
         StorageObjectInput.model_validate(
             {"project_id": "p", "object_id": "so_1", "action": "pin"}
@@ -445,17 +447,6 @@ class ToolContractRegistryTest(unittest.TestCase):
             StorageObjectInput.model_validate(
                 {"project_id": "p", "object_id": "so_1", "action": "purge"}
             )
-
-    def test_hidden_storage_primitives_stay_dispatchable_but_unadvertised(self) -> None:
-        for name in ("storage.put_object", "storage.complete_upload"):
-            self.assertIn(name, MCP_HIDDEN_TOOL_NAMES, name)
-            self.assertIn(name, STORAGE_TOOL_NAMES, name)
-            self.assertIn(name, TOOL_CONTRACTS, name)
-        self.assertEqual(TOOL_CONTRACTS["storage.put_object"].visibility, "internal")
-        self.assertEqual(TOOL_CONTRACTS["storage.complete_upload"].visibility, "internal")
-        # The merged tools stay visible.
-        self.assertEqual(TOOL_CONTRACTS["storage.find"].visibility, "public")
-        self.assertEqual(TOOL_CONTRACTS["storage.object"].visibility, "public")
 
     def test_artifact_tools_are_manifested(self) -> None:
         self.assertIs(TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput)

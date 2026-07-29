@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,17 +12,18 @@ from urllib.request import url2pathname
 
 from tests.fakes import FakeObjectStore
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.object_storage.service import STORAGE_DEFAULT_TTL_SECONDS, StorageLedgerService
+from merv.brain.object_storage import ObjectStorage
+from merv.brain.object_storage.storage import STORAGE_DEFAULT_TTL_SECONDS
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
 
 
-class StorageLedgerServiceTest(unittest.TestCase):
+class ObjectStorageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.store = StateStore(db_path=self.root / "state.sqlite")
         self.objects = FakeObjectStore()
-        self.service = StorageLedgerService(store=self.store, objects=self.objects)
+        self.service = ObjectStorage(store=self.store, provider=self.objects)
         conn = self.store.connect()
         try:
             self.project_id = str(conn.execute("SELECT id FROM projects LIMIT 1").fetchone()["id"])
@@ -61,6 +64,54 @@ class StorageLedgerServiceTest(unittest.TestCase):
         self.assertLess(ttl, STORAGE_DEFAULT_TTL_SECONDS + 120)
         stat = self.objects.stat(namespace=self.project_id, sha256=self._sha(data))
         self.assertIsNotNone(stat)
+
+    def test_durable_event_names_and_payload_shape_survive_the_lifecycle(self) -> None:
+        data = b"event contract"
+        registered = self.service.put_object(
+            project_id=self.project_id,
+            name="datasets/events.tar",
+            kind="dataset",
+            sha256=self._sha(data),
+            size_bytes=len(data),
+        )
+        object_id = registered["object"]["id"]
+        self._write_upload(registered["upload"], data)
+        self.service.complete_upload(
+            project_id=self.project_id,
+            upload_id=registered["upload"]["upload_id"],
+        )
+        self.service.delete(project_id=self.project_id, object_id=object_id)
+
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT type, target_type, target_id, payload_json
+                FROM events
+                WHERE target_id = ?
+                ORDER BY id
+                """,
+                (object_id,),
+            ).fetchall()
+        self.assertEqual(
+            [(row["type"], row["target_type"], row["target_id"]) for row in rows],
+            [
+                ("storage.registered", "storage_object", object_id),
+                ("storage.completed", "storage_object", object_id),
+                ("storage.deleted", "storage_object", object_id),
+            ],
+        )
+        self.assertEqual(
+            [json.loads(row["payload_json"]) for row in rows],
+            [
+                {
+                    "name": "datasets/events.tar",
+                    "version": 1,
+                    "sha256": self._sha(data),
+                    "status": status,
+                }
+                for status in ("uploading", "available", "deleted")
+            ],
+        )
 
     def test_physical_dedup_and_idempotent_same_name_sha(self) -> None:
         data = b"shared model weights"
@@ -193,10 +244,6 @@ class StorageLedgerServiceTest(unittest.TestCase):
         self.assertGreater(resolved["object"]["expires_at"], "2026-01-01T00:00:00Z")
         self.assertIsNotNone(resolved["object"]["last_accessed_at"])
 
-    def test_ledger_does_not_own_local_file_transfer(self) -> None:
-        self.assertFalse(hasattr(self.service, "upload_file"))
-        self.assertFalse(hasattr(self.service, "download_file"))
-
     def test_pin_survives_sweep_and_unpin_renew_restore_expiry(self) -> None:
         obj = self._put_and_complete(name="datasets/pinned.tar", kind="dataset", data=b"pin")
 
@@ -237,7 +284,7 @@ class StorageLedgerServiceTest(unittest.TestCase):
         base = self.objects
         hooked = _HookedObjectStore(base)
         self.objects = hooked
-        self.service = StorageLedgerService(store=self.store, objects=hooked)
+        self.service = ObjectStorage(store=self.store, provider=hooked)
         data = b"race bytes"
         registered = self.service.put_object(
             project_id=self.project_id,
@@ -271,7 +318,7 @@ class StorageLedgerServiceTest(unittest.TestCase):
     def test_complete_reclaims_object_when_reserved_row_is_deleted_before_finish(self) -> None:
         hooked = _HookedObjectStore(self.objects)
         self.objects = hooked
-        self.service = StorageLedgerService(store=self.store, objects=hooked)
+        self.service = ObjectStorage(store=self.store, provider=hooked)
         data = b"orphan prevention"
         registered = self.service.put_object(
             project_id=self.project_id,
@@ -309,41 +356,46 @@ class StorageLedgerServiceTest(unittest.TestCase):
         )
         self.assertEqual(deleted["total"], 1)
 
-    def test_retry_recovers_crash_after_provider_completion(self) -> None:
-        data = b"crash-window bytes"
-        registered = self.service.put_object(
-            project_id=self.project_id,
-            name="datasets/recover.tar",
-            kind="dataset",
-            sha256=self._sha(data),
-            size_bytes=len(data),
-        )
-        upload_id = registered["upload"]["upload_id"]
-        self._write_upload(registered["upload"], data)
+    def test_retry_recovers_after_provider_completion(self) -> None:
+        # Cover both an exact declaration and the single-PUT rule where the
+        # declared size is a cap and the checksum-valid payload is smaller.
+        for extra_capacity in (0, 100):
+            with self.subTest(extra_capacity=extra_capacity):
+                data = f"crash-window-{extra_capacity}".encode()
+                registered = self.service.put_object(
+                    project_id=self.project_id,
+                    name=f"datasets/recover-{extra_capacity}.tar",
+                    kind="dataset",
+                    sha256=self._sha(data),
+                    size_bytes=len(data) + extra_capacity,
+                )
+                upload_id = registered["upload"]["upload_id"]
+                self._write_upload(registered["upload"], data)
 
-        # Reproduce a process death after provider verification consumed the
-        # upload sidecar but before the separate ledger transaction committed.
-        stat = self.objects.complete_upload(upload_id=upload_id)
-        self.assertEqual(stat.sha256, self._sha(data))
-        with self.store.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE storage_objects
-                SET status = 'completing'
-                WHERE project_id = ? AND upload_id = ?
-                """,
-                (self.project_id, upload_id),
-            )
+                # Reproduce death after provider verification consumed the
+                # sidecar but before the ledger transaction committed.
+                self.objects.complete_upload(upload_id=upload_id)
+                with self.store.transaction() as conn:
+                    conn.execute(
+                        """
+                        UPDATE storage_objects
+                        SET status = 'completing'
+                        WHERE project_id = ? AND upload_id = ?
+                        """,
+                        (self.project_id, upload_id),
+                    )
 
-        recovered = self.service.complete_upload(
-            project_id=self.project_id, upload_id=upload_id
-        )
+                recovered = self.service.complete_upload(
+                    project_id=self.project_id, upload_id=upload_id
+                )
 
-        self.assertEqual(recovered["status"], "available")
-        self.assertEqual(recovered["size_bytes"], len(data))
-        self.assertIsNotNone(
-            self.objects.stat(namespace=self.project_id, sha256=self._sha(data))
-        )
+                self.assertEqual(recovered["status"], "available")
+                self.assertEqual(recovered["size_bytes"], len(data))
+                self.assertIsNotNone(
+                    self.objects.stat(
+                        namespace=self.project_id, sha256=self._sha(data)
+                    )
+                )
 
     def test_reclaim_waits_for_durable_delete_record(self) -> None:
         data = b"durable delete"

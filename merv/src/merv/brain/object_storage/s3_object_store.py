@@ -1,3 +1,4 @@
+# If you update this file, you must consult object_storage.md to see whether object_storage.md needs to be updated. object_storage.md must not exceed 100 lines.
 """S3-compatible heavy-object store for R2, AWS S3, and MinIO."""
 
 from __future__ import annotations
@@ -8,22 +9,18 @@ import math
 from typing import Any
 
 from ..kernel.ports.blob_store import validate_blob_keys
-from ..kernel.ports.object_store import DownloadTarget, ObjectStat, UploadTarget
-from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
+from ..kernel.utils import NotFoundError, ValidationError, new_id
+from .provider import CompletedPart, DownloadTarget, ObjectStat, UploadTarget
 
 
 _UPLOAD_PREFIX = ".uploads/"
-# Token-curl uploads (no-dataplane Phase D) are a single presigned PUT, which S3
-# accepts up to its 5 GiB hard limit. storage.submit caps at that limit and
-# rejects larger objects (multipart command orchestration is a documented
-# follow-on), so the default store single-PUTs the entire allowed range; a
-# smaller threshold stays configurable for the multipart contract path.
+# Keep normal submissions on the single-PUT path; lower values exercise multipart.
 DEFAULT_MULTIPART_THRESHOLD_BYTES = 5 * 1024 * 1024 * 1024
 DEFAULT_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 
 
 class S3CompatibleObjectStore:
-    """ObjectStore over an S3-compatible bucket (boto3; gated import)."""
+    """S3-compatible heavy-byte provider."""
 
     def __init__(
         self,
@@ -47,7 +44,6 @@ class S3CompatibleObjectStore:
 
             client_kwargs = {"endpoint_url": endpoint_url, "region_name": region_name}
             if access_key_id is not None and secret_access_key is not None:
-                # Keep storage creds independent while preserving boto3 fallback.
                 client_kwargs.update(
                     {
                         "aws_access_key_id": access_key_id,
@@ -75,7 +71,6 @@ class S3CompatibleObjectStore:
             "sha256": sha256,
             "size_bytes": int(size_bytes),
             "content_type": content_type,
-            "created_at": now_iso(),
         }
         if int(size_bytes) > self.multipart_threshold_bytes:
             s3_upload = self._s3.create_multipart_upload(
@@ -137,7 +132,7 @@ class S3CompatibleObjectStore:
         }
 
     def complete_upload(
-        self, *, upload_id: str, parts: list[dict[str, Any]] | None = None
+        self, *, upload_id: str, parts: list[CompletedPart] | None = None
     ) -> ObjectStat:
         sidecar = self._get_sidecar(upload_id=upload_id)
         key = self._key(namespace=str(sidecar["namespace"]), sha256=str(sidecar["sha256"]))
@@ -150,7 +145,7 @@ class S3CompatibleObjectStore:
                     raise
             size_bytes = int(sidecar["size_bytes"])
             if sidecar.get("mode") == "multipart":
-                # Multipart trusts producer-declared sha content keys; we size-verify and do not re-hash GB objects server-side.
+                # Multipart verifies size but cannot cheaply rehash remote GB objects.
                 head = self._head(key=key)
                 if head is None:
                     raise NotFoundError(f"upload received no bytes: {upload_id}")
@@ -182,10 +177,7 @@ class S3CompatibleObjectStore:
                 namespace=str(sidecar["namespace"]), sha256=str(sidecar["sha256"])
             )
             assert stat is not None
-            # Delete the sidecar ONLY on success: a transient completion failure
-            # (bytes not yet landed) must leave it so the still-valid completion
-            # token can resolve the upload on retry (INV: token + sidecar share a
-            # lifetime). Genuinely-bad uploads leak a small sidecar until GC.
+            # Keep the sidecar after transient failure so completion can retry.
             self._delete_sidecar(upload_id=upload_id)
             return stat
         except Exception:
@@ -211,13 +203,11 @@ class S3CompatibleObjectStore:
         head = self._head(key=self._key(namespace=namespace, sha256=sha256))
         if head is None:
             return None
-        meta = head.get("Metadata") or {}
         return ObjectStat(
             sha256=sha256,
             namespace=namespace,
             size_bytes=int(head.get("ContentLength") or 0),
             content_type=str(head.get("ContentType") or "application/octet-stream"),
-            created_at=str(meta.get("created_at") or now_iso()),
         )
 
     def delete(self, *, namespace: str, sha256: str) -> bool:
@@ -257,7 +247,7 @@ class S3CompatibleObjectStore:
         return json.loads(obj["Body"].read().decode("utf-8"))
 
     def _complete_multipart(
-        self, *, sidecar: dict[str, Any], parts: list[dict[str, Any]] | None
+        self, *, sidecar: dict[str, Any], parts: list[CompletedPart] | None
     ) -> None:
         if not parts:
             raise ValidationError(

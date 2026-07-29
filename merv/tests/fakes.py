@@ -37,18 +37,11 @@ class FakeProcess:
     def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
         return self._code if not (self.terminated or self.killed) else -15
 class FakeBlobStore:
-    """In-memory BlobStore double sharing LocalDirBlobStore's semantics.
-
-    Single-use uploads stage in a real temp directory so the ``file://`` URL
-    the presign returns is writable by producers exactly like the local
-    store's.
-    """
+    """In-memory BlobStore double sharing LocalDirBlobStore's semantics."""
 
     def __init__(self) -> None:
         self.blobs: dict[tuple[str, str], bytes] = {}
         self.meta: dict[tuple[str, str], dict] = {}
-        self.uploads: dict[str, dict] = {}
-        self._staging_dir: str | None = None
 
     def put(
         self,
@@ -87,94 +80,6 @@ class FakeBlobStore:
         if key not in self.blobs:
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
         return self.blobs[key]
-
-    def presign_get(self, *, namespace: str, sha256: str) -> dict:
-        import tempfile
-        from pathlib import Path as _Path
-
-        data = self.get(namespace=namespace, sha256=sha256)
-        if self._staging_dir is None:
-            self._staging_dir = tempfile.mkdtemp(prefix="fake-blob-uploads-")
-        path = _Path(self._staging_dir) / f"{namespace}-{sha256}"
-        path.write_bytes(data)
-        return {"url": path.resolve().as_uri()}
-
-    def stat(self, *, namespace: str, sha256: str):
-        from merv.brain.object_storage.blobs import BlobStat
-
-        meta = self.meta.get((namespace, sha256))
-        if meta is None:
-            return None
-        return BlobStat(**meta)
-
-    def delete(self, *, namespace: str, sha256: str) -> bool:
-        key = (namespace, sha256)
-        existed = key in self.blobs
-        self.blobs.pop(key, None)
-        self.meta.pop(key, None)
-        return existed
-
-    def presign_put(
-        self,
-        *,
-        namespace: str,
-        max_size_bytes: int,
-        expires_at: str | None = None,
-        content_type: str = "application/octet-stream",
-    ) -> dict:
-        import tempfile
-        from pathlib import Path as _Path
-
-        from merv.brain.kernel.utils import new_id
-
-        if self._staging_dir is None:
-            self._staging_dir = tempfile.mkdtemp(prefix="fake-blob-uploads-")
-        upload_id = new_id(prefix="upload")
-        staging = _Path(self._staging_dir) / upload_id
-        self.uploads[upload_id] = {
-            "namespace": namespace,
-            "max_size_bytes": int(max_size_bytes),
-            "content_type": content_type,
-            "expires_at": expires_at,
-            "path": staging,
-        }
-        return {
-            "upload_id": upload_id,
-            "url": staging.resolve().as_uri(),
-            "max_size_bytes": int(max_size_bytes),
-            "expires_at": expires_at,
-        }
-
-    def finalize_put(self, *, upload_id: str):
-        from merv.brain.kernel.utils import NotFoundError, ValidationError
-
-        meta = self.uploads.pop(upload_id, None)
-        if meta is None:
-            raise NotFoundError(f"unknown or already-consumed upload: {upload_id}")
-        staging = meta["path"]
-        try:
-            if not staging.exists():
-                raise NotFoundError(f"upload received no bytes: {upload_id}")
-            data = staging.read_bytes()
-            if len(data) > meta["max_size_bytes"]:
-                raise ValidationError(
-                    f"upload {upload_id} exceeds its size cap: "
-                    f"{len(data)} > {meta['max_size_bytes']} bytes"
-                )
-            sha = self.put(
-                namespace=meta["namespace"],
-                data=data,
-                content_type=meta["content_type"],
-                expires_at=meta["expires_at"],
-            )
-        finally:
-            try:
-                staging.unlink()
-            except FileNotFoundError:
-                pass
-        stat = self.stat(namespace=meta["namespace"], sha256=sha)
-        assert stat is not None
-        return stat
 
     def sweep_expired(self, *, now: str | None = None) -> int:
         from merv.brain.kernel.utils import now_iso
@@ -217,8 +122,9 @@ class FakeObjectStore:
         from pathlib import Path as _Path
 
         from merv.brain.kernel.ports.blob_store import validate_blob_keys
-        from merv.brain.kernel.utils import new_id, now_iso
+        from merv.brain.kernel.utils import new_id
 
+        _ = expires_in
         validate_blob_keys(namespace=namespace, sha256=sha256)
         if self._staging_dir is None:
             self._staging_dir = tempfile.mkdtemp(prefix="fake-object-uploads-")
@@ -229,7 +135,6 @@ class FakeObjectStore:
             "sha256": sha256,
             "size_bytes": int(size_bytes),
             "content_type": content_type,
-            "created_at": now_iso(),
             "path": staging,
         }
         return {
@@ -237,14 +142,13 @@ class FakeObjectStore:
             "url": staging.resolve().as_uri(),
             "size_bytes": int(size_bytes),
             "content_type": content_type,
-            "expires_in": int(expires_in),
         }
 
     def complete_upload(self, *, upload_id: str, parts: list[dict] | None = None):
         import hashlib
 
-        from merv.brain.kernel.ports.object_store import ObjectStat
-        from merv.brain.kernel.utils import NotFoundError, ValidationError, now_iso
+        from merv.brain.object_storage.provider import ObjectStat
+        from merv.brain.kernel.utils import NotFoundError, ValidationError
 
         _ = parts
         meta = self.uploads.pop(upload_id, None)
@@ -275,7 +179,6 @@ class FakeObjectStore:
                     "namespace": str(meta["namespace"]),
                     "size_bytes": len(data),
                     "content_type": str(meta["content_type"]),
-                    "created_at": now_iso(),
                 },
             )
             return ObjectStat(**self.meta[key])
@@ -291,6 +194,7 @@ class FakeObjectStore:
 
         from merv.brain.kernel.utils import NotFoundError
 
+        _ = expires_in
         key = (namespace, sha256)
         if key not in self.objects:
             raise NotFoundError(f"object not found: {namespace}/{sha256}")
@@ -298,10 +202,10 @@ class FakeObjectStore:
             self._staging_dir = tempfile.mkdtemp(prefix="fake-object-uploads-")
         path = _Path(self._staging_dir) / f"{namespace}-{sha256}"
         path.write_bytes(self.objects[key])
-        return {"url": path.resolve().as_uri(), "expires_in": int(expires_in)}
+        return {"url": path.resolve().as_uri()}
 
     def stat(self, *, namespace: str, sha256: str):
-        from merv.brain.kernel.ports.object_store import ObjectStat
+        from merv.brain.object_storage.provider import ObjectStat
 
         meta = self.meta.get((namespace, sha256))
         return ObjectStat(**meta) if meta is not None else None

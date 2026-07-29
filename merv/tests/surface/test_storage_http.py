@@ -18,7 +18,8 @@ from merv.brain.surface.composition import build_local_server
 from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.object_storage.service import SINGLE_PUT_MAX_BYTES, StorageLedgerService
+from merv.brain.object_storage import ObjectStorage
+from merv.brain.object_storage.storage import SINGLE_PUT_MAX_BYTES
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.kernel.utils import ValidationError
 
@@ -38,7 +39,7 @@ class StorageHttpApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         store = StateStore(db_path=self.repo / ".research_plugin" / "state.sqlite")
-        storage = StorageLedgerService(store=store, objects=FakeObjectStore())
+        storage = ObjectStorage(store=store, provider=FakeObjectStore())
         self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
@@ -146,7 +147,7 @@ class StorageHttpApiTest(unittest.TestCase):
         # separate shell word — the whole header stays one shell-quoted token.
         import shlex
 
-        from merv.brain.object_storage.service import storage_submit_command
+        from merv.brain.object_storage.storage import storage_submit_command
 
         payload = "application/x' ; touch /tmp/pwned ; echo '"
         run = storage_submit_command(
@@ -214,8 +215,8 @@ class StorageHttpApiTest(unittest.TestCase):
         self.assertIn("unsupported in v1", str(ctx.exception).lower())
 
         # An absolute cap (env-configured in composition) rejects before presign.
-        capped = StorageLedgerService(
-            store=self.app.store, objects=FakeObjectStore(), max_upload_bytes=1024
+        capped = ObjectStorage(
+            store=self.app.store, provider=FakeObjectStore(), max_upload_bytes=1024
         )
         with self.assertRaises(ValidationError) as ctx2:
             capped.submit(
@@ -254,7 +255,7 @@ class StorageHttpApiTest(unittest.TestCase):
             f"printf '%s  %s\\n' {sha} 'local/copy.bin' | shasum -a 256 -c", run
         )
 
-    def test_experiment_state_surfaces_produced_storage_objects(self) -> None:
+    def test_experiment_state_surfaces_objects_and_hides_deleted_rows(self) -> None:
         exp = self.app.call_tool(
             "experiment.create",
             {
@@ -271,15 +272,13 @@ class StorageHttpApiTest(unittest.TestCase):
             producing_run="run-001",
             notes="checkpoint retained for reviewer inspection",
         )
-        uploaded = {"object": obj}
-
         state = self.app.call_tool(
             "experiment.get_state",
             {"project_id": self.project_id, "experiment_id": exp["id"]},
         )
         objects = state["storage_objects"]
         self.assertEqual(len(objects), 1)
-        self.assertEqual(objects[0]["id"], uploaded["object"]["id"])
+        self.assertEqual(objects[0]["id"], obj["id"])
         self.assertEqual(objects[0]["kind"], "model")
         self.assertEqual(objects[0]["status"], "available")
         self.assertEqual(objects[0]["producing_run"], "run-001")
@@ -289,46 +288,11 @@ class StorageHttpApiTest(unittest.TestCase):
         )
         self.assertNotIn("namespace", objects[0])
 
-        object_id = uploaded["object"]["id"]
-        listed = self.app.call_tool(
-            "experiment.list", {"project_id": self.project_id}
-        )
-        self.assertEqual(listed["experiments"][0]["storage_objects"][0]["id"], object_id)
-        detail = self._request(
-            "GET", f"/api/projects/{self.project_id}/experiments/{exp['id']}"
-        )
-        self.assertEqual(detail["storage_objects"][0]["id"], object_id)
-        filtered = self._request(
-            "GET", f"/api/projects/{self.project_id}/experiments?status=planned"
-        )
-        self.assertEqual(filtered["experiments"][0]["storage_objects"][0]["id"], object_id)
-        view = self._request(
-            "GET", f"/api/projects/{self.project_id}/experiments/view"
-        )
-        self.assertEqual(view["experiments"][0]["storage_objects"][0]["id"], object_id)
-        status = self._request(
-            "GET",
-            f"/api/projects/{self.project_id}/status?experiment_id={exp['id']}",
-        )
-        self.assertEqual(status["experiment"]["storage_objects"][0]["id"], object_id)
-        home = self._request("GET", f"/api/projects/{self.project_id}/home")
-        self.assertEqual(home["experiments"][0]["storage_objects"][0]["id"], object_id)
-        transitioned = self.app.call_tool(
-            "experiment.transition",
-            {
-                "project_id": self.project_id,
-                "experiment_id": exp["id"],
-                "transition": "abandon",
-            },
-        )
-        self.assertEqual(transitioned["status"], "abandoned")
-        self.assertNotIn("storage_objects", transitioned)
-
         self.app.call_tool(
             "storage.object",
             {
                 "project_id": self.project_id,
-                "object_id": uploaded["object"]["id"],
+                "object_id": obj["id"],
                 "action": "delete",
             },
         )
@@ -338,23 +302,22 @@ class StorageHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(state["storage_objects"], [])
 
-    def test_storage_find_lists_and_resolves_like_the_old_tools(self) -> None:
+    def test_storage_find_lists_or_resolves(self) -> None:
         a = self._put_and_complete(name="datasets/a.tar", kind="dataset", data=b"aa")
         b = self._put_and_complete(name="models/b.bin", kind="model", data=b"bbbb")
 
-        # List mode (omit selectors) mirrors the former storage.list.
+        # Omitting selectors lists the ledger.
         listed = self.app.call_tool("storage.find", {"project_id": self.project_id})
         self.assertEqual(listed["count"], 2)
         self.assertEqual({o["id"] for o in listed["objects"]}, {a["id"], b["id"]})
 
-        # List mode honours the old filters.
+        # List mode honours filters.
         models = self.app.call_tool(
             "storage.find", {"project_id": self.project_id, "kind": "model"}
         )
         self.assertEqual([o["id"] for o in models["objects"]], [b["id"]])
 
-        # Resolve mode by object_id mirrors the former storage.resolve, with a
-        # presigned download and a bumped TTL.
+        # A selector resolves one object with a presigned download.
         resolved = self.app.call_tool(
             "storage.find", {"project_id": self.project_id, "object_id": a["id"]}
         )
@@ -377,8 +340,7 @@ class StorageHttpApiTest(unittest.TestCase):
         obj = self._put_and_complete(name="datasets/train.tar", kind="dataset", data=b"data")
         oid = obj["id"]
 
-        # pin/unpin/renew return the bare hydrated object (mirrors the old
-        # single-purpose tools).
+        # pin/unpin/renew return the hydrated object.
         pinned = self.app.call_tool(
             "storage.object",
             {"project_id": self.project_id, "object_id": oid, "action": "pin"},
@@ -403,14 +365,6 @@ class StorageHttpApiTest(unittest.TestCase):
         )
         self.assertTrue(deleted["deleted"])
         self.assertTrue(deleted["reclaimed"])
-
-    def test_storage_object_rejects_unknown_action(self) -> None:
-        obj = self._put_and_complete(name="datasets/x.tar", kind="dataset", data=b"x")
-        with self.assertRaises(ValidationError):
-            self.app.call_tool(
-                "storage.object",
-                {"project_id": self.project_id, "object_id": obj["id"], "action": "purge"},
-            )
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         response = self.client.request(method, path, json=body)

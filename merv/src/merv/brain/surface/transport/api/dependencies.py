@@ -19,8 +19,8 @@ from ....application.facade import (
     StatusAndNextQuery,
     TenantCountersQuery,
 )
-from ....application.ports.storage import ObjectStorage
 from ....artifacts import Artifacts
+from ....object_storage import ObjectStorage
 from ...user_settings import UserHfTokenSettings
 from ....feed import FeedService
 from ....research_core.facade import (

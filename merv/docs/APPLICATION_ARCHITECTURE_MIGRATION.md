@@ -11,10 +11,8 @@ Adopt these classifications as architectural facts:
   components; each may contain domain policy, application services, ports, and
   adapters internally.
 - `mlflow` is an outbound experiment-tracking adapter.
-- concrete code under `object_storage` is outbound persistence infrastructure.
-  The current `object_storage/service.py` is a mixed-in application/ledger
-  service and must be classified inward rather than mislabeled as an adapter
-  merely because of its directory; physical relocation is deferred.
+- `object_storage/storage.py` is the component's application root; its local
+  and S3 byte providers are outbound persistence infrastructure.
 - a new `application` module owns cross-domain use cases and outbound ports.
 - `surface` is delivery code (HTTP/MCP/auth/serialization) plus a temporarily
   co-located composition root. Composition is an outer/bootstrap role, not a
@@ -112,7 +110,8 @@ The initial layer table is explicit about mixed packages:
 | `sandbox/execution/{__init__,driver_registry}.py` | bootstrap |
 | `mlflow/**` | adapter |
 | `object_storage/{blobs,s3_blobs,s3_object_store}.py` | adapter |
-| `object_storage/service.py` | application |
+| `object_storage/provider.py` | port |
+| `object_storage/{__init__,storage}.py` | application |
 | `application/**` | application |
 | `application/ports/**` | port |
 | `surface/**` | delivery |
@@ -300,29 +299,21 @@ HTTP remain inside the adapter.
 
 There are two distinct storage seams and they must not be conflated:
 
-1. Submitted evidence bytes used by Artifacts and Feed. Move `BlobStat` and the
-   narrow `EvidenceBlobStore` (`put`, `get`, `stat`) to `kernel/ports`. Define a
-   separate `ExpiringBlobStore.sweep_expired` cleanup port. Presigning,
-   deletion, and finalize remain an optional adapter-transfer extension because
-   no production domain caller currently uses them. Adapter implementations
-   remain in `object_storage` and retain identity-preserving compatibility
-   exports. Namespace/SHA validation moves beside the port in kernel so the
-   application-layer storage ledger no longer imports a private adapter helper.
-2. Heavy objects. Keep the existing `kernel.ports.object_store.ObjectStore`
-   (`presign_upload`, `complete_upload`, `presign_download`, `stat`, `delete`),
-   because it already matches `StorageLedgerService` usage. Add TypedDict
-   `UploadTarget`/`DownloadTarget` results in place of undocumented dictionaries
-   without changing their wire shapes.
+1. Submitted evidence bytes used by Artifacts and Feed depend on the narrow
+   Kernel `EvidenceBlobStore` (`put`, `get`) and a separate
+   `ExpiringBlobStore.sweep_expired` cleanup capability. Local/S3
+   implementations remain in `object_storage`; the unconsumed binary presign /
+   finalize extension was removed.
+2. Heavy objects use the component-owned `ObjectProvider`
+   (`presign_upload`, `complete_upload`, `presign_download`, `stat`, `delete`).
+   Its typed transfer results preserve the provider wire shapes without making
+   provider arguments part of the lifecycle API.
 
-`StorageLedgerService` itself is not a provider adapter: it owns versioning,
-TTL, deduplication, lifecycle events, concurrency, and reference-aware
-reclamation. Classify that file as Storage-component/application-layer code in
-place for this slice; do not perform an unrelated 800-line relocation. A later
-storage use-case extraction can move it behind a stable storage facade with an
-identity-preserving old-path export. Local/S3 byte movement is classified as
-the adapter now. This is the concrete architectural change implied by calling
-“object storage” infrastructure rather than a peer domain without pretending
-that the current ledger policy is infrastructure.
+`ObjectStorage` is not a provider adapter: it owns versioning, TTL,
+deduplication, lifecycle events, concurrency, reference-aware reclamation, and
+the provider-independent produced-object projection. Tool and HTTP delivery
+call this root directly; Application retains only the genuine batch projection
+port used to compose experiment responses.
 
 Replace `ExperimentService.storage_objects_reader: Any` with a named,
 research-owned query protocol for the existing transaction-aware

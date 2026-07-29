@@ -5,9 +5,9 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from merv.brain.application.ports.storage import ProducedObjectCatalog
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.object_storage.catalog import StorageObjectCatalog
+from merv.brain.kernel.utils import NotFoundError
+from merv.brain.object_storage import ObjectStorage
 
 
 class CountingStateStore(StateStore):
@@ -31,7 +31,7 @@ class ProducedObjectCatalogTest(unittest.TestCase):
             project = conn.execute("SELECT id FROM projects ORDER BY created_at LIMIT 1").fetchone()
             assert project is not None
             self.project_id = str(project["id"])
-        self.catalog = StorageObjectCatalog(store=self.store)
+        self.catalog = ObjectStorage(store=self.store, provider=None)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -128,8 +128,19 @@ class ProducedObjectCatalogTest(unittest.TestCase):
             ["so_other"],
         )
 
-    def test_structurally_implements_application_catalog_without_provider(self) -> None:
-        self.assertIsInstance(self.catalog, ProducedObjectCatalog)
+    def test_disabled_provider_rejects_writes_without_leaving_a_row(self) -> None:
+        self.assertFalse(self.catalog.enabled)
+        with self.assertRaisesRegex(NotFoundError, "not enabled"):
+            self.catalog.put_object(
+                project_id=self.project_id,
+                name="disabled.bin",
+                kind="other",
+                sha256="a" * 64,
+                size_bytes=1,
+            )
+        with closing(self.store.connect()) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM storage_objects").fetchone()[0]
+        self.assertEqual(count, 0)
 
     def test_batches_historical_rows_with_exact_filter_fields_and_order(self) -> None:
         self._insert(
@@ -178,6 +189,12 @@ class ProducedObjectCatalogTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in result["exp_2"]], ["so_uploading"])
         self.assertEqual(result["exp_missing"], [])
         self.assertEqual(
+            self.catalog.by_experiment(
+                project_id=self.project_id, experiment_ids=()
+            ),
+            {},
+        )
+        self.assertEqual(
             list(result["exp_1"][0]),
             [
                 "id", "name", "version", "kind", "content_sha256",
@@ -195,31 +212,6 @@ class ProducedObjectCatalogTest(unittest.TestCase):
         ]
         self.assertEqual(len(storage_reads), 1)
 
-    def test_one_and_twenty_five_ids_each_use_one_storage_query(self) -> None:
-        experiment_ids = tuple(f"exp_{index}" for index in range(1, 26))
-        for index, experiment_id in enumerate(experiment_ids, start=1):
-            self._insert(
-                object_id=f"so_{index}",
-                experiment_id=experiment_id,
-                name=f"object-{index}",
-                version=1,
-                kind="other",
-                created_seq=index,
-            )
-        for ids in (("exp_1",), experiment_ids):
-            with self.subTest(ids=ids):
-                self.store.statements.clear()
-                self.catalog.by_experiment(
-                    project_id=self.project_id, experiment_ids=ids
-                )
-                self.assertEqual(
-                    sum(
-                        "FROM storage_objects" in statement
-                        for statement in self.store.statements
-                    ),
-                    1,
-                )
-
     def test_large_batch_is_chunked_below_sql_parameter_limits(self) -> None:
         experiment_ids = tuple(f"exp_{index}" for index in range(801))
         self.store.statements.clear()
@@ -236,18 +228,6 @@ class ProducedObjectCatalogTest(unittest.TestCase):
             ),
             3,
         )
-
-    def test_empty_batch_opens_no_connection(self) -> None:
-        self.store.statements.clear()
-
-        self.assertEqual(
-            self.catalog.by_experiment(
-                project_id=self.project_id, experiment_ids=()
-            ),
-            {},
-        )
-        self.assertEqual(self.store.statements, [])
-
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

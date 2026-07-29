@@ -1,36 +1,15 @@
-"""S3-backed content-addressed submitted-byte blob store.
-
-The cloud implementation of the same ``BlobStore`` protocol as
-``LocalDirBlobStore``, behind the same contract tests (``BlobStoreContractMixin``
-against a dockerized minio). ``S3BlobStore.presign_put`` returns a real
-single-use HTTPS PUT URL for off-process producers.
-
-boto3 is imported lazily so lightweight brain compositions and the
-local-directory blob path do not import it.
-
-Layout, keyed ``tenant/sha256`` like the local store:
-- ``<namespace>/<sha256>`` — the content-addressed object.
-- ``.uploads/<upload_id>`` — a staging key a presigned PUT lands in;
-  ``finalize_put`` hashes it, copies to the content key, and deletes staging.
-TTL: per-object ``expires_at`` lives in object metadata; ``sweep_expired`` lists
-and deletes past-due objects. Operators may also configure bucket lifecycle
-rules as a backstop.
-"""
+# If you update this file, you must consult object_storage.md to see whether object_storage.md needs to be updated. object_storage.md must not exceed 100 lines.
+"""S3 content-addressed bytes for Artifacts and Feed."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
-from ..kernel.ports.blob_store import (
-    BlobDownloadTarget,
-    BlobStat,
-    BlobUploadTarget,
-    validate_blob_keys,
-)
-from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
+from ..kernel.ports.blob_store import validate_blob_keys
+from ..kernel.utils import NotFoundError, now_iso
 
+# Ignore staging keys left by the retired binary transfer flow.
 _UPLOAD_PREFIX = ".uploads/"
 
 
@@ -42,18 +21,14 @@ class S3BlobStore:
         *,
         bucket: str,
         client: Any | None = None,
-        presign_expiry_seconds: int = 3600,
     ) -> None:
         self.bucket = bucket
-        self.presign_expiry_seconds = presign_expiry_seconds
         if client is not None:
             self._s3 = client
         else:
             import boto3  # gated: control profile only
 
             self._s3 = boto3.client("s3")
-
-    # ---- content-addressed put/get/stat/delete ----
 
     def put(
         self,
@@ -68,8 +43,7 @@ class S3BlobStore:
         key = self._key(namespace=namespace, sha256=sha)
         existing = self._head(key=key)
         if existing is not None:
-            # Idempotent: only ever EXTEND expiry (never shorten), matching the
-            # local store's contract.
+            # Re-puts may extend expiry but never shorten it.
             self._maybe_extend_expiry(key=key, head=existing, expires_at=expires_at)
             return sha
         meta = {"sha256": sha, "namespace": namespace}
@@ -97,119 +71,6 @@ class S3BlobStore:
             raise
         return obj["Body"].read()
 
-    def presign_get(
-        self, *, namespace: str, sha256: str
-    ) -> BlobDownloadTarget:
-        validate_blob_keys(namespace=namespace, sha256=sha256)
-        key = self._key(namespace=namespace, sha256=sha256)
-        if self._head(key=key) is None:
-            raise NotFoundError(f"blob not found: {namespace}/{sha256}")
-        return {
-            "url": self._s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.bucket, "Key": key},
-                ExpiresIn=self.presign_expiry_seconds,
-            )
-        }
-
-    def stat(self, *, namespace: str, sha256: str) -> BlobStat | None:
-        validate_blob_keys(namespace=namespace, sha256=sha256)
-        head = self._head(key=self._key(namespace=namespace, sha256=sha256))
-        if head is None:
-            return None
-        meta = head.get("Metadata") or {}
-        return BlobStat(
-            sha256=sha256,
-            namespace=namespace,
-            size_bytes=int(head.get("ContentLength") or 0),
-            content_type=str(head.get("ContentType") or "application/octet-stream"),
-            created_at=str(meta.get("created_at") or now_iso()),
-            expires_at=meta.get("expires_at"),
-        )
-
-    def delete(self, *, namespace: str, sha256: str) -> bool:
-        validate_blob_keys(namespace=namespace, sha256=sha256)
-        key = self._key(namespace=namespace, sha256=sha256)
-        existed = self._head(key=key) is not None
-        self._s3.delete_object(Bucket=self.bucket, Key=key)
-        return existed
-
-    # ---- single-use presigned uploads (real HTTPS) ----
-
-    def presign_put(
-        self,
-        *,
-        namespace: str,
-        max_size_bytes: int,
-        expires_at: str | None = None,
-        content_type: str = "application/octet-stream",
-    ) -> BlobUploadTarget:
-        validate_blob_keys(namespace=namespace)
-        upload_id = new_id(prefix="upload")
-        staging_key = f"{_UPLOAD_PREFIX}{upload_id}"
-        # Stash the finalize parameters in a sidecar so finalize_put is
-        # stateless against the store (the local impl uses a meta file).
-        sidecar = {
-            "upload_id": upload_id,
-            "namespace": namespace,
-            "max_size_bytes": int(max_size_bytes),
-            "content_type": content_type,
-            "expires_at": expires_at,
-            "staging_key": staging_key,
-        }
-        self._s3.put_object(
-            Bucket=self.bucket,
-            Key=f"{staging_key}.meta",
-            Body=json.dumps(sidecar, sort_keys=True).encode("utf-8"),
-        )
-        url = self._s3.generate_presigned_url(
-            "put_object",
-            Params={"Bucket": self.bucket, "Key": staging_key, "ContentType": content_type},
-            ExpiresIn=self.presign_expiry_seconds,
-        )
-        return {
-            "upload_id": upload_id,
-            "url": url,
-            "max_size_bytes": int(max_size_bytes),
-            "expires_at": expires_at,
-        }
-
-    def finalize_put(self, *, upload_id: str) -> BlobStat:
-        meta_key = f"{_UPLOAD_PREFIX}{upload_id}.meta"
-        try:
-            meta_obj = self._s3.get_object(Bucket=self.bucket, Key=meta_key)
-        except Exception as exc:  # noqa: BLE001
-            if _is_not_found(exc):
-                raise NotFoundError(
-                    f"unknown or already-consumed upload: {upload_id}"
-                ) from exc
-            raise
-        sidecar = json.loads(meta_obj["Body"].read().decode("utf-8"))
-        staging_key = str(sidecar["staging_key"])
-        try:
-            if self._head(key=staging_key) is None:
-                raise NotFoundError(f"upload received no bytes: {upload_id}")
-            data = self._s3.get_object(Bucket=self.bucket, Key=staging_key)["Body"].read()
-            max_size = int(sidecar["max_size_bytes"])
-            if len(data) > max_size:
-                raise ValidationError(
-                    f"upload {upload_id} exceeds its size cap: "
-                    f"{len(data)} > {max_size} bytes"
-                )
-            sha = self.put(
-                namespace=str(sidecar["namespace"]),
-                data=data,
-                content_type=str(sidecar["content_type"]),
-                expires_at=sidecar.get("expires_at"),
-            )
-        finally:
-            # Single use either way: drop the staging object + sidecar.
-            self._s3.delete_object(Bucket=self.bucket, Key=staging_key)
-            self._s3.delete_object(Bucket=self.bucket, Key=meta_key)
-        stat = self.stat(namespace=str(sidecar["namespace"]), sha256=sha)
-        assert stat is not None
-        return stat
-
     def sweep_expired(self, *, now: str | None = None) -> int:
         cutoff = now or now_iso()
         swept = 0
@@ -228,8 +89,6 @@ class S3BlobStore:
                 self._s3.delete_object(Bucket=self.bucket, Key=key)
                 swept += 1
         return swept
-
-    # ---- helpers ----
 
     def _key(self, *, namespace: str, sha256: str) -> str:
         return f"{namespace}/{sha256}"
@@ -255,9 +114,7 @@ class S3BlobStore:
                 new_meta.pop("expires_at", None)
             else:
                 new_meta["expires_at"] = expires_at
-            # Copy onto itself to replace metadata (S3 metadata is immutable
-            # without a copy). REPLACE resets ContentType too — carry it over
-            # or the blob silently degrades to binary/octet-stream.
+            # S3 metadata replacement requires a self-copy and resets ContentType.
             self._s3.copy_object(
                 Bucket=self.bucket,
                 Key=key,

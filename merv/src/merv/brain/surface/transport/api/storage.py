@@ -6,8 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ....application.ports.storage import ObjectStorage
 from ....kernel.utils import NotFoundError
+from ....object_storage import ObjectStorage
 
 def build_router(*, storage: ObjectStorage | None) -> APIRouter:
     api_router = APIRouter()

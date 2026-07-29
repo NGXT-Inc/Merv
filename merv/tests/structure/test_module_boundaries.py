@@ -92,8 +92,8 @@ ALLOWED_COMPONENT_EDGES = (
 )
 
 # Layer is independent of component ownership. A provider driver can therefore
-# be an adapter in the Sandbox component, and StorageLedgerService can remain
-# application policy in the Storage component until a later physical move.
+# be an adapter in the Sandbox component, while ObjectStorage is application
+# policy in the Storage component.
 FOUNDATION = "foundation"
 PORT = "port"
 DOMAIN = "domain"
@@ -141,7 +141,9 @@ FILE_LAYERS = {
     "sandbox/managed_mgmt_keys.py": ADAPTER,
     "sandbox/mgmt_keys.py": ADAPTER,
     "sandbox/ssh_keys.py": ADAPTER,
-    "object_storage/service.py": APPLICATION_LAYER,
+    "object_storage/__init__.py": APPLICATION_LAYER,
+    "object_storage/provider.py": PORT,
+    "object_storage/storage.py": APPLICATION_LAYER,
     "surface/config.py": BOOTSTRAP,
     "surface/transport/http_server.py": BOOTSTRAP,
     "surface/control/control_app.py": BOOTSTRAP,

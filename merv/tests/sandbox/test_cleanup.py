@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
-from merv.brain.kernel.utils import parse_iso
+from merv.brain.kernel.utils import NotFoundError, parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.sandbox import sandbox_support
@@ -126,8 +126,9 @@ class CleanupSweepTest(unittest.TestCase):
         )
         swept = self.cleanup.sweep_expired_blobs(now=datetime.now(tz=UTC))
         self.assertEqual(swept, {"deleted": 1, "ok": True})
-        self.assertIsNotNone(self.app.blobs.stat(namespace=ns, sha256=live))
-        self.assertIsNone(self.app.blobs.stat(namespace=ns, sha256=dead))
+        self.assertEqual(self.app.blobs.get(namespace=ns, sha256=live), b"keep")
+        with self.assertRaises(NotFoundError):
+            self.app.blobs.get(namespace=ns, sha256=dead)
 
     # ---- stale provisioning reap ----
 

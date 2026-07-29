@@ -8,7 +8,6 @@ from typing import Any
 from ..kernel.utils import ValidationError
 from ..research_core.facade import ResearchProjects
 from .experiments.queries import ExperimentCollectionQuery
-from .ports.storage import ObjectStorage
 from .project_context import ProjectContextQuery
 
 
@@ -17,7 +16,6 @@ class ControlToolOperations:
     projects: ResearchProjects
     experiments: ExperimentCollectionQuery
     project_context: ProjectContextQuery
-    storage: ObjectStorage | None
 
     def experiment_list(self, *, project_id: str | None = None) -> dict[str, Any]:
         return self.experiments.agent(project_id=project_id)
@@ -103,48 +101,3 @@ class ControlToolOperations:
                 for project in listed
             ]
         }
-
-    def storage_find(
-        self,
-        *,
-        project_id: str | None = None,
-        object_id: str | None = None,
-        name: str | None = None,
-        version: int | None = None,
-        include_download: bool = True,
-        kind: str | None = None,
-        status: str | None = None,
-        include_expired: bool = False,
-        limit: int | None = None,
-        offset: int = 0,
-        compact: bool = False,
-    ) -> dict[str, Any]:
-        assert self.storage is not None
-        if object_id or name:
-            return self.storage.resolve(
-                project_id=project_id,
-                object_id=object_id,
-                name=name,
-                version=version,
-                include_download=include_download,
-            )
-        return self.storage.list_objects(
-            project_id=project_id,
-            kind=kind,
-            status=status,
-            include_expired=include_expired,
-            limit=limit,
-            offset=offset,
-            compact=compact,
-        )
-
-    def storage_object(
-        self, *, object_id: str, action: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        if self.storage is None or action not in {"pin", "unpin", "renew", "delete"}:
-            raise ValidationError(f"unknown storage object action: {action}")
-        operation = {
-            "pin": self.storage.pin, "unpin": self.storage.unpin,
-            "renew": self.storage.renew, "delete": self.storage.delete,
-        }[action]
-        return operation(project_id=project_id, object_id=object_id)
