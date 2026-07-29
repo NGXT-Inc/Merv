@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from merv.brain.artifacts import Artifacts
+from merv.brain.feed.persistence import install_feed_schema
+from merv.brain.kernel.state import StateStore
+from merv.brain.object_storage.blobs import LocalDirBlobStore
+from merv.brain.research_core.association_targets import AssociationTargets
+
+FIXTURE = Path(__file__).parent / "fixtures" / "release_f0439ca_v40.sql"
+EXPECTED_SCHEMA_SHA256 = (
+    "a65a0e4eff2f6c1c67aeb36fa2de1abe0866588b863c24adb10a1b426de23776"
+)
+
+
+def _quoted_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _normalized_sql(value: str | None) -> str:
+    if value is None:
+        return ""
+    without_conditional = re.sub(
+        r"\bIF\s+NOT\s+EXISTS\b", "", value, flags=re.IGNORECASE
+    )
+    return " ".join(without_conditional.split())
+
+
+def _schema_contract(db_path: Path) -> dict[str, Any]:
+    """Return a structural contract including defaults, constraints, and indexes."""
+    conn = sqlite3.connect(db_path)
+    try:
+        objects = conn.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+        contract: dict[str, Any] = {
+            "objects": [
+                {
+                    "type": row[0],
+                    "name": row[1],
+                    "table": row[2],
+                    "sql": _normalized_sql(row[3]),
+                }
+                for row in objects
+            ],
+            "tables": {},
+        }
+        table_names = sorted(
+            str(row[1]) for row in objects if row[0] == "table"
+        )
+        for table_name in table_names:
+            quoted = _quoted_identifier(table_name)
+            columns = conn.execute(f"PRAGMA table_xinfo({quoted})").fetchall()
+            foreign_keys = conn.execute(
+                f"PRAGMA foreign_key_list({quoted})"
+            ).fetchall()
+            indexes = []
+            for index in conn.execute(f"PRAGMA index_list({quoted})").fetchall():
+                index_name = str(index[1])
+                index_columns = conn.execute(
+                    f"PRAGMA index_xinfo({_quoted_identifier(index_name)})"
+                ).fetchall()
+                indexes.append(
+                    {
+                        "name": index_name,
+                        "unique": int(index[2]),
+                        "origin": str(index[3]),
+                        "partial": int(index[4]),
+                        "columns": sorted(tuple(row) for row in index_columns),
+                    }
+                )
+            contract["tables"][table_name] = {
+                "columns": sorted(tuple(row) for row in columns),
+                "foreign_keys": sorted(tuple(row) for row in foreign_keys),
+                "indexes": sorted(indexes, key=lambda item: item["name"]),
+            }
+        return contract
+    finally:
+        conn.close()
+
+
+def _schema_sha256(db_path: Path) -> str:
+    encoded = json.dumps(
+        _schema_contract(db_path),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _data_snapshot(db_path: Path) -> dict[str, list[tuple[Any, ...]]]:
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = [
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+                """
+            ).fetchall()
+        ]
+        return {
+            table: sorted(
+                (
+                    tuple(row)
+                    for row in conn.execute(
+                        f"SELECT * FROM {_quoted_identifier(table)}"
+                    ).fetchall()
+                ),
+                key=repr,
+            )
+            for table in tables
+        }
+    finally:
+        conn.close()
+
+
+def _restore_fixture(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(FIXTURE.read_text(encoding="utf-8"))
+    finally:
+        conn.close()
+
+
+class ReleaseDatabaseCompatibilityTest(unittest.TestCase):
+    def test_release_v40_database_boot_is_schema_and_data_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release_db = root / "release-v40.sqlite"
+            fresh_db = root / "fresh.sqlite"
+            _restore_fixture(release_db)
+
+            release_schema_before = _schema_sha256(release_db)
+            data_before = _data_snapshot(release_db)
+            self.assertEqual(release_schema_before, EXPECTED_SCHEMA_SHA256)
+
+            store = StateStore(db_path=release_db)
+            self.assertEqual(_schema_sha256(release_db), release_schema_before)
+            self.assertEqual(_data_snapshot(release_db), data_before)
+            install_feed_schema(store)
+            composed_schema = _schema_sha256(release_db)
+            composed_data = _data_snapshot(release_db)
+            for table, rows in data_before.items():
+                self.assertEqual(composed_data[table], rows)
+
+            reopened = StateStore(db_path=release_db)
+            install_feed_schema(reopened)
+            self.assertEqual(_schema_sha256(release_db), composed_schema)
+            self.assertEqual(_data_snapshot(release_db), composed_data)
+
+            fresh = StateStore(db_path=fresh_db)
+            install_feed_schema(fresh)
+            fresh_schema = _schema_sha256(fresh_db)
+            self.assertEqual(fresh_schema, composed_schema)
+
+            service = Artifacts(
+                store=store,
+                targets=AssociationTargets(),
+                blobs=LocalDirBlobStore(root=root / "blobs"),
+            )
+            found = service.scan(
+                project_id="proj_contract_v40",
+                target_type="experiment",
+                target_ids=("exp_contract_v40",),
+            )
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].id, "art_contract_v40")
+            self.assertEqual(found[0].status, "complete")
+
+            conn = store.connect()
+            try:
+                artifacts = conn.execute(
+                    """
+                    SELECT id, status, upload_token, submission_id
+                    FROM artifacts
+                    ORDER BY id
+                    """
+                ).fetchall()
+                self.assertEqual(
+                    [tuple(row) for row in artifacts],
+                    [
+                        (
+                            "art_contract_v40",
+                            "complete",
+                            "",
+                            "sub_contract_v40",
+                        ),
+                        (
+                            "art_pending_v40",
+                            "pending",
+                            "release-v40-token",
+                            "",
+                        ),
+                    ],
+                )
+                figure = conn.execute(
+                    """
+                    SELECT artifact_id, link_path, status, content_sha256
+                    FROM artifact_figures
+                    WHERE id = 'fig_contract_v40'
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    tuple(figure),
+                    (
+                        "art_contract_v40",
+                        "figures/curve.png",
+                        "complete",
+                        "b" * 64,
+                    ),
+                )
+                snapshot = conn.execute(
+                    """
+                    SELECT target_snapshot_id
+                    FROM review_requests
+                    WHERE id = 'rr_contract_v40'
+                    """
+                ).fetchone()[0]
+                self.assertEqual(
+                    snapshot, "exp_contract_v40:1:art_contract_v40"
+                )
+                event = conn.execute(
+                    """
+                    SELECT type, target_type, target_id, payload_json
+                    FROM events
+                    WHERE id = 100
+                    """
+                ).fetchone()
+                self.assertEqual(
+                    tuple(event[:3]),
+                    (
+                        "artifact.submitted",
+                        "experiment",
+                        "exp_contract_v40",
+                    ),
+                )
+                self.assertEqual(
+                    json.loads(event[3]),
+                    {
+                        "artifact_id": "art_contract_v40",
+                        "attempt_index": 1,
+                        "path": "plan.md",
+                        "role": "plan",
+                    },
+                )
+                latest_migration = conn.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+                self.assertEqual(latest_migration, 40)
+            finally:
+                conn.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

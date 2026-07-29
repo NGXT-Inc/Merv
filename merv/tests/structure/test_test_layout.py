@@ -6,7 +6,14 @@ import unittest
 from tests.paths import TESTS_ROOT
 
 SHARED_FAKE_NAMES = {"FakeProcess"}
-CONCERN_PACKAGES = {"sandbox", "workflow", "surface", "state", "structure"}
+CONCERN_PACKAGES = {
+    "compat",
+    "sandbox",
+    "workflow",
+    "surface",
+    "state",
+    "structure",
+}
 
 
 def _test_sources() -> list[Path]:
