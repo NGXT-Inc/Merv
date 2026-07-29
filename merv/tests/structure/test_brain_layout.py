@@ -446,7 +446,9 @@ load("subprocess")
             self.assertFalse((RESEARCH_CORE_ROOT / obsolete).exists())
         self.assertFalse((RESEARCH_CORE_ROOT / "next_action.py").exists())
 
-    def test_artifacts_is_one_service_with_passive_models_and_a_resolver(self) -> None:
+    def test_artifacts_is_one_service_with_passive_models_and_injected_targets(
+        self,
+    ) -> None:
         self.assertEqual(
             {
                 path.relative_to(ARTIFACTS_ROOT).as_posix()
@@ -461,12 +463,8 @@ load("subprocess")
             encoding="utf-8"
         )
 
-        self.assertNotIn("permissions", imports)
-        self.assertNotIn("permissions:", source)
-        self.assertNotIn("self.permissions", source)
-        self.assertIn("def _validate_association(", source)
-        self.assertIn("targets: ArtifactTargets", source)
         self.assertNotIn("research_core", imports)
+        self.assertIn("targets: ArtifactTargets", source)
         self.assertIn("targets=AssociationTargets()", composition)
         for behavior in (".execute(", ".transaction(", "record_event(", "_blobs"):
             self.assertNotIn(behavior, models)

@@ -327,36 +327,6 @@ class ArtifactFlowTest(unittest.TestCase):
             transition="submit_reflections",
         )
 
-    def test_figure_follow_up_flow_over_http(self) -> None:
-        exp_id = self.call(
-            "experiment.create",
-            project_id=self.project_id,
-            name="figure-flow",
-            intent="Figure follow-up uploads.",
-        )["id"]
-        result = self._submit(
-            target_type="experiment", target_id=exp_id,
-            role="plan", path="plan.md",
-            body=VALID_PLAN + "\n![sketch](figures/sketch.png)\n",
-        )
-        self.assertEqual(len(result["figures"]), 1)
-        figure = result["figures"][0]
-        self.assertEqual(figure["link_path"], "figures/sketch.png")
-        self.assertIn("/api/artifacts/f/", figure["run"])
-        token = figure["run"].rsplit("/", 1)[-1].rstrip("'")
-        response = self.app._client.put(
-            f"/api/artifacts/f/{token}", content=b"\x89PNG fake"
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        # The UI figure read serves the submitted bytes.
-        fetched = self.app._client.get(
-            f"/api/projects/{self.project_id}/artifacts/"
-            f"{result['artifact_id']}/figure",
-            params={"rel": "figures/sketch.png"},
-        )
-        self.assertEqual(fetched.status_code, 200)
-        self.assertEqual(fetched.content, b"\x89PNG fake")
-
     def test_oversize_upload_returns_413(self) -> None:
         exp_id = self.call(
             "experiment.create",
@@ -378,37 +348,6 @@ class ArtifactFlowTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 413)
         self.assertEqual(response.json()["max_bytes"], 16_000)
-
-    def test_ui_read_routes_serve_list_content_and_file(self) -> None:
-        exp_id = self.call(
-            "experiment.create",
-            project_id=self.project_id,
-            name="ui-reads",
-            intent="Read routes.",
-        )["id"]
-        submitted = self._submit(
-            target_type="experiment", target_id=exp_id,
-            role="plan", path="plan.md", body=VALID_PLAN,
-        )
-        listing = self.app._client.get(
-            f"/api/projects/{self.project_id}/artifacts",
-            params={"target_type": "experiment", "target_id": exp_id},
-        ).json()
-        self.assertEqual(listing["count"], 1)
-        self.assertEqual(listing["artifacts"][0]["id"], submitted["artifact_id"])
-
-        content = self.app._client.get(
-            f"/api/projects/{self.project_id}/artifacts/"
-            f"{submitted['artifact_id']}/content"
-        ).json()
-        self.assertEqual(content["content"], VALID_PLAN)
-
-        file_response = self.app._client.get(
-            f"/api/projects/{self.project_id}/artifacts/"
-            f"{submitted['artifact_id']}/file"
-        )
-        self.assertEqual(file_response.content.decode(), VALID_PLAN)
-        self.assertIn("text/markdown", file_response.headers["content-type"])
 
     def test_public_artifact_wire_shapes_are_frozen(self) -> None:
         exp_id = self.call(

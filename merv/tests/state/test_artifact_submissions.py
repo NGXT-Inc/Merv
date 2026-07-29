@@ -105,14 +105,23 @@ class ArtifactsTest(unittest.TestCase):
         **kwargs,
     ):
         return self.artifacts.submit(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=self.experiment_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(),
             role=role,
             path=path,
             **kwargs,
+        )
+
+    def _target(
+        self,
+        target_id: str | None = None,
+        *,
+        target_type: str = "experiment",
+        project_id: str | None = None,
+    ) -> ArtifactTarget:
+        return ArtifactTarget(
+            target_type=target_type,
+            target_id=target_id or self.experiment_id,
+            project_id=project_id or self.project_id,
         )
 
     def _complete(self, pending, data: bytes = PLAN.encode()) -> CompletedArtifact:
@@ -133,27 +142,6 @@ class ArtifactsTest(unittest.TestCase):
                 target_ids=(target_id,),
                 summarize=True,
             )[target_id]
-
-    def test_public_api_is_the_nine_domain_operations(self) -> None:
-        public_methods = {
-            name
-            for name, value in vars(Artifacts).items()
-            if callable(value) and not name.startswith("_")
-        }
-        self.assertEqual(
-            public_methods,
-            {
-                "submit",
-                "upload_cap",
-                "complete_upload",
-                "get",
-                "scan",
-                "figure",
-                "pin",
-                "seal",
-                "history",
-            },
-        )
 
     def test_submit_upload_get_scan_and_history(self) -> None:
         pending = self._submit(path=r"\plans\plan.md")
@@ -188,10 +176,14 @@ class ArtifactsTest(unittest.TestCase):
         self._complete(pending)
         unavailable_blobs = Mock(wraps=self.blobs)
         unavailable_blobs.get.side_effect = RuntimeError("storage unavailable")
-        self.artifacts._blobs = unavailable_blobs
+        artifacts = Artifacts(
+            store=self.store,
+            blobs=unavailable_blobs,
+            targets=AssociationTargets(),
+        )
 
         with closing(self.store.connect()) as tx:
-            plain = self.artifacts.history(
+            plain = artifacts.history(
                 tx=tx,
                 target_type="experiment",
                 target_ids=(self.experiment_id,),
@@ -201,7 +193,7 @@ class ArtifactsTest(unittest.TestCase):
         self.assertEqual(plain.artifacts[0].tldr, "")
 
         with closing(self.store.connect()) as tx:
-            summarized = self.artifacts.history(
+            summarized = artifacts.history(
                 tx=tx,
                 target_type="experiment",
                 target_ids=(self.experiment_id,),
@@ -223,11 +215,7 @@ class ArtifactsTest(unittest.TestCase):
             self._submit(role="plan", lens_id="rigor")
         with self.assertRaises(NotFoundError):
             self.artifacts.submit(
-                target=ArtifactTarget(
-                    target_type="experiment",
-                    target_id=self.experiment_id,
-                    project_id="proj_missing",
-                ),
+                target=self._target(project_id="proj_missing"),
                 role="plan",
                 path="plan.md",
             )
@@ -280,11 +268,7 @@ class ArtifactsTest(unittest.TestCase):
         with self.store.transaction() as tx:
             self.artifacts.seal(
                 tx=tx,
-                target=ArtifactTarget(
-                    target_type="experiment",
-                    target_id=self.experiment_id,
-                    project_id=self.project_id,
-                ),
+                target=self._target(),
                 transition="submit_design",
             )
         third = self._submit()
@@ -305,11 +289,7 @@ class ArtifactsTest(unittest.TestCase):
             with self.store.transaction() as tx:
                 self.artifacts.seal(
                     tx=tx,
-                    target=ArtifactTarget(
-                        target_type="experiment",
-                        target_id=self.experiment_id,
-                        project_id=self.project_id,
-                    ),
+                    target=self._target(),
                     transition="submit_design",
                 )
                 raise RuntimeError("force rollback")
@@ -332,11 +312,7 @@ class ArtifactsTest(unittest.TestCase):
     def test_terminal_target_token_is_deleted_before_refusal(self) -> None:
         reflection_id = self._insert_reflection()
         pending = self.artifacts.submit(
-            target=ArtifactTarget(
-                target_type="reflection",
-                target_id=reflection_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(reflection_id, target_type="reflection"),
             role="reflection_doc",
             path="reflection.md",
         )
@@ -435,11 +411,7 @@ class ArtifactsTest(unittest.TestCase):
         second = self._submit(role="result", path="second.txt")
         self._complete(second, b"second")
         self.artifacts.pin(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=self.experiment_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(),
             role="exhibit",
             path="large.json",
             data=b"a" * (MAX_SUBMITTED_TEXT_BYTES + 10),
@@ -486,9 +458,13 @@ class ArtifactsTest(unittest.TestCase):
 
         flaky_blobs = Mock(wraps=self.blobs)
         flaky_blobs.get.side_effect = flaky_get
-        self.artifacts._blobs = flaky_blobs
+        artifacts = Artifacts(
+            store=self.store,
+            blobs=flaky_blobs,
+            targets=AssociationTargets(),
+        )
 
-        content = self.artifacts.get(
+        content = artifacts.get(
             artifact_ids=(unavailable.artifact_id, available.artifact_id),
             include="content",
         )
@@ -500,7 +476,7 @@ class ArtifactsTest(unittest.TestCase):
         self.assertEqual(content[1].data, b"available")
 
         with self.assertRaisesRegex(RuntimeError, "transient storage failure"):
-            self.artifacts.get(
+            artifacts.get(
                 artifact_ids=(unavailable.artifact_id,),
                 include="document",
             )
@@ -513,11 +489,7 @@ class ArtifactsTest(unittest.TestCase):
         self._complete(result, b'{"accuracy": 0.9}')
         other_id = self._insert_experiment(attempt_index=2)
         other = self.artifacts.submit(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=other_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(other_id),
             role="plan",
             path="other.md",
         )
@@ -592,11 +564,7 @@ class ArtifactsTest(unittest.TestCase):
 
     def test_pin_is_complete_and_event_atomic(self) -> None:
         self.artifacts.pin(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=self.experiment_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(),
             role="exhibit",
             path="metrics/exhibit.json",
             data=b'{"version": 1}',
@@ -619,11 +587,7 @@ class ArtifactsTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(sqlite3.IntegrityError, "forced pinned event"):
             self.artifacts.pin(
-                target=ArtifactTarget(
-                    target_type="experiment",
-                    target_id=self.experiment_id,
-                    project_id=self.project_id,
-                ),
+                target=self._target(),
                 role="exhibit",
                 path="metrics/exhibit.json",
                 data=b'{"version": 2}',

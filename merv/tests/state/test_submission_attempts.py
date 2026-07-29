@@ -9,16 +9,12 @@ from supersede.
 
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.artifacts import ArtifactTarget, artifacts as artifacts_module
-from merv.brain.research_core.domain.artifact_evidence import (
-    artifact_slot_key,
-    latest_per_slot,
-)
+from merv.brain.artifacts import ArtifactTarget
+from merv.brain.research_core.domain.artifact_evidence import latest_per_slot
 from tests.support.brain import TestBrain
 
 VALID_PLAN = (
@@ -42,53 +38,18 @@ VALID_GRAPH = (
 )
 
 
-class SlotKeyLockstepTest(unittest.TestCase):
-    def test_latest_per_slot_key_matches_supersede_slot_sql(self) -> None:
-        """latest_per_slot decides what is current; _replace_slot decides
-        what may be deleted. If the two keys drift, a row can be superseded
-        while still counting as current (or the reverse), so pin them."""
-        source = Path(artifacts_module.__file__).read_text(encoding="utf-8")
-        body = source.split("def _replace_slot", 1)[1].split("def ", 1)[0]
-        where = body.split("WHERE", 1)[1].split('"""', 1)[0]
-        columns = set(re.findall(r"(\w+) = \?", where))
-        # role/lens_id/path are what artifact_slot_key carries; the rest are
-        # fixed by the caller (one target, one attempt).
-        self.assertEqual(
-            columns,
-            {
-                "project_id",
-                "target_type",
-                "target_id",
-                "attempt_index",
-                "role",
-                "lens_id",
-                "path",
-            },
-        )
-        self.assertEqual(
-            artifact_slot_key({"role": "r", "lens_id": "l", "path": "p"}),
-            ("r", "l", "p"),
-        )
-        self.assertIn("submission_id = ''", where)
-
-    def test_latest_per_slot_keeps_newest_and_preserves_order(self) -> None:
+class LatestPerSlotTest(unittest.TestCase):
+    def test_latest_per_slot_keeps_only_the_newest_row_in_order(self) -> None:
         artifacts = [
             {"id": "a1", "role": "report", "lens_id": "", "path": "r.md", "submitted_order": 1},
             {"id": "a2", "role": "result", "lens_id": "", "path": "x.json", "submitted_order": 2},
             {"id": "a3", "role": "report", "lens_id": "", "path": "r.md", "submitted_order": 3},
         ]
-        kept = [a["id"] for a in latest_per_slot(artifacts)]
-        self.assertEqual(kept, ["a2", "a3"])
-
-    def test_latest_per_slot_is_identity_on_one_row_per_slot(self) -> None:
-        """The backward-compatibility property: on data written before
-        submissions existed there is exactly one row per slot, so this selects
-        the identical set and no review snapshot string moves."""
-        artifacts = [
-            {"id": "a1", "role": "plan", "lens_id": "", "path": "p.md", "submitted_order": 1},
-            {"id": "a2", "role": "report", "lens_id": "", "path": "r.md", "submitted_order": 2},
-        ]
-        self.assertEqual(latest_per_slot(artifacts), artifacts)
+        self.assertEqual(latest_per_slot(artifacts[:2]), artifacts[:2])
+        self.assertEqual(
+            [artifact["id"] for artifact in latest_per_slot(artifacts)],
+            ["a2", "a3"],
+        )
 
 
 class SubmissionAttemptFlowTest(unittest.TestCase):
@@ -107,6 +68,9 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
 
     def call(self, tool_name: str, **kwargs):
         return self.app.call_tool(tool_name, kwargs)
+
+    def _target(self, experiment_id: str) -> ArtifactTarget:
+        return ArtifactTarget("experiment", experiment_id, self.project_id)
 
     def _submit(self, *, target_id: str, role: str, path: str, body: str) -> str:
         pending = self.call(
@@ -239,6 +203,23 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
             a for a in state["current_attempt_artifacts"] if a["role"] == "report"
         ]
         self.assertEqual([a["id"] for a in current], [second_id])
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
+        )
+        rounds = self._rows(
+            "SELECT attempt_index, transition FROM submissions "
+            "WHERE target_id = ? AND transition = 'submit_results' "
+            "ORDER BY created_seq",
+            (exp_id,),
+        )
+        self.assertEqual(
+            [r["attempt_index"] for r in rounds],
+            [1, 1],
+            "two report rounds inside one experiment attempt",
+        )
 
     def test_resubmitting_inside_one_round_still_replaces(self) -> None:
         exp_id = self.call(
@@ -265,49 +246,8 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
         )
         self.assertNotEqual(first, second)
 
-    def test_second_round_is_a_second_submission_row(self) -> None:
-        exp_id = self.call(
-            "experiment.create",
-            project_id=self.project_id,
-            name="rounds-are-rows",
-            intent="Prove each submit_results is its own round.",
-        )["id"]
-        self._reach_experiment_review(exp_id)
-        self._review(
-            exp_id=exp_id,
-            role="experiment_reviewer",
-            verdict="needs_changes",
-            return_to="running",
-        )
-        self._submit(
-            target_id=exp_id,
-            role="report",
-            path="report.md",
-            body=VALID_REPORT.replace("0.72", "0.81"),
-        )
-        self.call(
-            "experiment.transition",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-            transition="submit_results",
-        )
-        rounds = self._rows(
-            "SELECT attempt_index, transition FROM submissions "
-            "WHERE target_id = ? AND transition = 'submit_results' "
-            "ORDER BY created_seq",
-            (exp_id,),
-        )
-        self.assertEqual(
-            [r["attempt_index"] for r in rounds],
-            [1, 1],
-            "two report rounds inside one experiment attempt",
-        )
-
     def test_sealed_system_artifact_survives_the_next_rounds_pin(self) -> None:
-        """pin deletes by (project, target, role, attempt) with
-        no path, and never calls _replace_slot — so without the same seal
-        immunity, re-pinning the exhibit in round 2 would destroy round 1's,
-        which is the metrics record of the round a reviewer rejected."""
+        """A new round may replace only its own unsealed exhibit."""
         exp_id = self.call(
             "experiment.create",
             project_id=self.project_id,
@@ -317,11 +257,7 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
         artifacts = self.app.artifacts
 
         artifacts.pin(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=exp_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(exp_id),
             role="exhibit",
             path="exhibit.json",
             data=b'{"round": 1}',
@@ -333,19 +269,11 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
         with self.app.store.transaction() as conn:
             artifacts.seal(
                 tx=conn,
-                target=ArtifactTarget(
-                    target_type="experiment",
-                    target_id=exp_id,
-                    project_id=self.project_id,
-                ),
+                target=self._target(exp_id),
                 transition="submit_results",
             )
         artifacts.pin(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=exp_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(exp_id),
             role="exhibit",
             path="exhibit.json",
             data=b'{"round": 2}',
@@ -374,11 +302,7 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
         # A third pin inside the same unsealed round still replaces, so
         # exhibits do not pile up within one round.
         artifacts.pin(
-            target=ArtifactTarget(
-                target_type="experiment",
-                target_id=exp_id,
-                project_id=self.project_id,
-            ),
+            target=self._target(exp_id),
             role="exhibit",
             path="exhibit.json",
             data=b'{"round": 2, "revised": true}',

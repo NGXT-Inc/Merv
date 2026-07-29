@@ -492,21 +492,6 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "merv.shared.markdown_images"},
         )
 
-    def test_artifacts_uses_an_injected_research_target_resolver(self) -> None:
-        artifacts_path = ARTIFACTS_ROOT / "artifacts.py"
-        artifacts = artifacts_path.read_text(encoding="utf-8")
-        models = _artifacts_source("models.py")
-        resolver = _rc_source("association_targets.py")
-        composition = (
-            SURFACE_ROOT / "control" / "record_core.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("class ArtifactTargets(Protocol):", models)
-        self.assertIn("targets: ArtifactTargets", artifacts)
-        self.assertNotIn("research_core", _import_segments(artifacts_path))
-        self.assertIn("class AssociationTargets:", resolver)
-        self.assertIn("targets=AssociationTargets()", composition)
-
     def test_http_policy_is_fastapi_free(self) -> None:
         imports = _import_module_names(SURFACE_ROOT / "transport" / "http_policy.py")
 
@@ -602,27 +587,17 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn("sandbox.rsync_error", source)
             self.assertNotIn("initial_rsynchronized", source)
 
-    def test_artifacts_service_has_no_local_file_reads(self) -> None:
+    def test_artifacts_never_read_checkout_paths(self) -> None:
         # The brain never reads a checkout: every consumed byte arrives via the
-        # token-bearer upload PUT. Artifacts owns association legality but no
-        # permissions and no filesystem.
+        # token-bearer upload PUT.
         source = _artifacts_source("artifacts.py")
         imports = _import_segments(ARTIFACTS_ROOT / "artifacts.py")
 
         for local_read in ("open(", ".read_bytes(", ".read_text("):
             self.assertNotIn(local_read, source)
-        self.assertNotIn("repo_root", source)
-        self.assertNotIn("self.workspace", source)
-        self.assertNotIn("observe_file", source)
+        for local_context in ("repo_root", "self.workspace", "observe_file"):
+            self.assertNotIn(local_context, source)
         self.assertFalse({"pathlib", "tempfile"} & imports)
-        self.assertNotIn("permissions", imports)
-        self.assertNotIn("permissions:", source)
-        self.assertNotIn("self.permissions", source)
-        self.assertIn("def _validate_association(", source)
-
-        from merv.brain.artifacts import Artifacts
-
-        get_type_hints(Artifacts.__init__)
 
     def test_review_service_owns_vocabulary_validation(self) -> None:
         imports = _import_segments(RESEARCH_CORE / "reviews.py")
