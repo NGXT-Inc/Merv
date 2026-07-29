@@ -11,12 +11,7 @@ SANDBOX_STATES = ("provisioning", "running", "terminated", "failed", "unknown")
 
 
 class ExecutionBackendError(Exception):
-    """Base error for sandbox backends.
-
-    Carries an optional ``details`` dict so a backend error can attach a
-    machine-readable reason (for example ``daemon_unreachable``) without
-    forcing every raise site to populate it.
-    """
+    """Backend error with optional machine-readable details."""
 
     def __init__(self, message: str = "", *, details: dict | None = None) -> None:
         super().__init__(message)
@@ -52,29 +47,19 @@ class BackendUnavailableError(ExecutionBackendError):
 
 
 class CapacityUnavailableError(BackendUnavailableError):
-    """The provider has no stock for the requested SKU/region right now.
-
-    A routine, retryable condition — distinct from an outage: the provider
-    answered, it just has nothing to sell. Callers surface it as a clear
-    provision-failure reason and may retry another SKU, region, or provider.
-    """
+    """Retryable lack of stock, distinct from provider outage."""
 
 
-# Provisioning progress callbacks. The repository passes these to acquire() so it
-# can persist the sandbox id the instant it exists, before the slow SSH wait.
+# Persist the native ID before the slow SSH wait.
 OnPhase = Callable[[str, str], None]      # (phase, detail)
 OnCreated = Callable[[str, str], None]    # (sandbox_id, sandbox_name)
 
 
 @dataclass(frozen=True)
 class TranscriptTail:
-    """A bounded tail window of a sandbox transcript, plus its true size.
+    """Tail bytes plus the full transcript size.
 
-    ``data`` is the last ``len(data)`` bytes of the transcript; ``total_bytes``
-    is the size of the whole transcript file, so callers can keep a cursor in
-    absolute byte offsets even after the log outgrows the window. ``data``
-    stays undecoded: offsets are raw bytes, and decoding (with replacement)
-    before slicing would let multibyte characters skew the cursor math.
+    Keep ``data`` undecoded so multibyte text cannot skew absolute byte cursors.
     """
 
     data: bytes = b""
@@ -101,23 +86,16 @@ class SandboxRequest:
     remote_workdir: str = ""
     instance_type: str | None = None
     region: str | None = None
-    # Compute provider to serve this request when several are configured
-    # (multiplexed deployments); None = the configured default backend.
+    # None selects the configured default provider.
     provider: str | None = None
-    # Per-user Hugging Face token resolved by the facade from the PROVISIONING
-    # principal (no-dataplane Phase C). Empty = no token = public-models-only.
-    # Modal injects it at provision from here; VM/SSH backends deliver it
-    # post-boot via the facade's secret stash, not from this field.
+    # Modal injects this token at provision; VM providers deliver it post-boot.
     hf_token: str = ""
-    # project_api_keys.id of the mk_ key that provisioned this generation, for
-    # spend attribution (sandbox_generations.key_id). Empty for JWT/rr_sk_/local.
+    # Management-key ID for generation spend attribution.
     key_id: str = ""
 
 
 @dataclass(frozen=True)
 class ProvisionedSandbox:
-    """SSH connection facts for a live sandbox."""
-
     sandbox_id: str
     ssh_host: str
     ssh_port: int
@@ -243,34 +221,18 @@ class SandboxBackend(SandboxDriver, Protocol):
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
-        """Optionally find an orphan sandbox by experiment.
+        """Find an orphan within the row's provider.
 
-        ``provider`` is the owner the ROW records, and it scopes the search the
-        same way it scopes ``qualified_sandbox_id``: the deterministic name is
-        derived from the experiment, so a sibling attempt on another provider
-        answers to the same name. Empty = the row names no owner.
-
-        None means the provider answered and named nothing (or the backend has
-        no such lookup). A provider that could not be asked RAISES — swallowing
-        the outage into None tells the lifecycle a possibly-live, billing VM is
-        gone (audit SAN-06), and only an authoritative answer may do that.
+        ``None`` is authoritative absence; provider failure must raise.
         """
         ...
 
     def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
-        """The id to address, qualified by the provider that owns the row.
-
-        RAISES when the recorded owner cannot be reached from this deployment;
-        answering with somebody else's provider would read a 404 as "gone".
-        """
+        """Qualify by recorded owner; raise rather than route to another provider."""
         ...
 
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:
-        """Optionally return post-boot secrets for the backend.
-
-        ``hf_token`` is the provisioning user's resolved Hugging Face token
-        (empty = none); the facade passes it so no deployment-wide HF secret is
-        read from the environment (no-dataplane Phase C)."""
+        """Return post-boot secrets for this provisioning user."""
         ...
 
     def shutdown(self) -> None:
@@ -279,13 +241,10 @@ class SandboxBackend(SandboxDriver, Protocol):
 
 
 class SandboxBackendBase:
-    """Sentinel defaults for optional SandboxBackend operations."""
-
     capabilities: BackendCapabilities
 
     @staticmethod
     def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
-        """Invoke a progress callback, allowing it to raise to cancel."""
         if callback is not None:
             callback(*args)
 
@@ -297,7 +256,6 @@ class SandboxBackendBase:
             return {"ok": False, "backend": self.capabilities.name, "error": str(exc)}
 
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
-        """Single-provider default: one backend serves every request."""
         _ = provider
         return self.capabilities
 
@@ -324,7 +282,6 @@ class SandboxBackendBase:
         ssh_user: str = "",
         key_path: str = "",
     ) -> dict[str, Any] | None:
-        """Unsupported default: no live usage sample is available."""
         return None
 
     def read_runs(
@@ -337,18 +294,15 @@ class SandboxBackendBase:
         ssh_user: str = "",
         key_path: str = "",
     ) -> list[dict[str, Any]] | None:
-        """Unsupported default: no run receipts are observable."""
         return None
 
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
-        """Unsupported default: no refreshed SSH endpoint is available."""
         return None
 
     def _selection_catalog(
         self, *, reason: str, options: list[dict[str, Any]],
         regions: list[str] | None = None,
     ) -> dict[str, Any]:
-        """The common envelope for fixed bundled-hardware selections."""
         if regions is None:
             regions = sorted({r for option in options for r in option.get("regions", [])})
         return {
@@ -364,23 +318,19 @@ class SandboxBackendBase:
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any] | None:
-        """Unsupported default: no hardware catalog is available."""
         return None
 
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
-        """Unsupported default: no orphan lookup is available."""
         _ = provider  # single-provider backend: it owns every row it serves
         return None
 
     def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
-        """Single-provider default: this backend owns every id it was given."""
         _ = provider
         return sandbox_id
 
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:
-        """Unsupported default: no post-boot secrets to deliver."""
         _ = hf_token
         return {}
 
@@ -393,12 +343,29 @@ class SandboxBackendBase:
         ssh_port: int = 0,
         key_path: str = "",
     ) -> bool:
-        """Unsupported default: no post-boot secret channel."""
         return False
 
     def shutdown(self) -> None:
-        """Unsupported default: no backend-level resources need cleanup."""
         return None
+
+
+def qualified_row_sandbox_id(
+    *, backend: SandboxBackend, row: Mapping[str, Any]
+) -> str:
+    """Qualify legacy native IDs with the durable row's provider.
+
+    Using today's default could read, terminate, or disclose secrets to the
+    wrong provider.
+    """
+    sandbox_id = str(row.get("sandbox_id") or "")
+    if not sandbox_id:
+        return ""
+    return str(
+        backend.qualified_sandbox_id(
+            sandbox_id=sandbox_id,
+            provider=str(row.get("provider") or ""),
+        )
+    )
 
 
 __all__ = [
@@ -417,4 +384,5 @@ __all__ = [
     "SandboxDriver",
     "SandboxRequest",
     "TranscriptTail",
+    "qualified_row_sandbox_id",
 ]

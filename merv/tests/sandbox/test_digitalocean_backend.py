@@ -13,16 +13,11 @@ from merv.brain.sandbox.execution.backends.digitalocean.config import (
 from merv.brain.sandbox.execution.backends.digitalocean.sandbox_backend import (
     DigitalOceanSandboxBackend,
 )
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -47,7 +42,11 @@ SIZES = [
         "regions": ["nyc2", "tor1"],
         "available": True,
         "description": "H100 GPU - 1X",
-        "gpu_info": {"count": 1, "model": "nvidia_h100", "vram": {"amount": 80, "unit": "gib"}},
+        "gpu_info": {
+            "count": 1,
+            "model": "nvidia_h100",
+            "vram": {"amount": 80, "unit": "gib"},
+        },
     },
     {
         "slug": "gpu-h100x8-640gb",
@@ -58,7 +57,11 @@ SIZES = [
         "regions": [],
         "available": False,
         "description": "H100 GPU - 8X",
-        "gpu_info": {"count": 8, "model": "nvidia_h100", "vram": {"amount": 640, "unit": "gib"}},
+        "gpu_info": {
+            "count": 8,
+            "model": "nvidia_h100",
+            "vram": {"amount": 640, "unit": "gib"},
+        },
     },
 ]
 
@@ -86,7 +89,11 @@ class FakeDigitalOceanClient:
         stored = [{"id": 512190, **k} for k in self.keys_created]
         if self.duplicate_key:
             stored.append(
-                {"id": 999, "name": "pre-existing", "public_key": "ssh-ed25519 AAAA old"}
+                {
+                    "id": 999,
+                    "name": "pre-existing",
+                    "public_key": "ssh-ed25519 AAAA old",
+                }
             )
         return stored
 
@@ -95,7 +102,12 @@ class FakeDigitalOceanClient:
 
     def create_droplet(self, **kwargs):
         self.droplets_created.append(kwargs)
-        droplet = {"id": 3164444, "name": kwargs["name"], "status": "new", "networks": {"v4": []}}
+        droplet = {
+            "id": 3164444,
+            "name": kwargs["name"],
+            "status": "new",
+            "networks": {"v4": []},
+        }
         self.droplets["3164444"] = droplet
         return droplet
 
@@ -224,12 +236,6 @@ class DigitalOceanLivenessTest(unittest.TestCase):
 
 
 class DigitalOceanCatalogTest(unittest.TestCase):
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend = _backend(FakeDigitalOceanClient())
-        descriptor = sandbox_driver_descriptor("digitalocean")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_options_offer_only_available_gpu_sizes(self) -> None:
         options = to_agent_options(SIZES)

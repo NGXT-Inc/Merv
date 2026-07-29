@@ -540,15 +540,14 @@ class ApplicationQueryTest(unittest.TestCase):
         state = RecordingQuery(experiment)
         snapshot = RecordingQuery({"attempt_index": 1})
         open_reviews = RecordingQuery([])
-        sandbox_row = RecordingQuery({"status": "running", "gpu": "H100"})
-        sandbox_view = RecordingQuery({"status": "running", "gpu": "H100"})
+        sandbox_snapshot = RecordingQuery(
+            ({"status": "running", "gpu": "H100"}, True)
+        )
         query = ExperimentFigureQuery(
             experiment_state=state,
             review_snapshot=snapshot,
             open_reviews=open_reviews,
-            sandbox_row=sandbox_row,
-            sandbox_view=sandbox_view,
-            sandbox_status_active={"running"}.__contains__,
+            sandbox_snapshot=sandbox_snapshot,
         )
 
         result = query(project_id="proj_1", experiment_id="exp_1")

@@ -1,10 +1,6 @@
-"""Sandbox quota admission and spend accounting.
+"""Quota admission and generation-ledger spend accounting.
 
-Quota rows can cap concurrency, lifetime, price, GPU-hours, USD, and blob bytes.
-Global or per-tenant kill switches refuse new provisioning. Spend is rebuilt
-from the sandbox-generation ledger, including open generations billed through
-``now``. A scope with no quota row or kill switch is unlimited; the current
-unauthenticated HTTP surface normally uses the implicit ``local`` tenant.
+Open generations bill through ``now``; absent quota rows are unlimited.
 """
 
 from __future__ import annotations
@@ -18,9 +14,7 @@ from ..kernel.ports.quota_admission import AdmissionRequest
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import PermissionDeniedError, now_iso, parse_iso
 
-# Scope key for the platform-wide kill-switch row (vs a per-tenant scope, which
-# is the tenant id). Tenant ids are opaque strings; '__global__' cannot collide
-# with one minted by ``new_id`` (those carry a ``tnt_``-style prefix).
+# Tenant IDs cannot collide with this reserved global scope.
 GLOBAL_SCOPE = "__global__"
 
 
@@ -37,23 +31,24 @@ class TenantQuota:
 
 
 class QuotaService:
-    """Reads tenant quotas and admits or denies procurement against them."""
-
     def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
 
-    def get_quota(self, *, tenant_id: str) -> TenantQuota | None:
-        """The tenant's quota row as a TenantQuota, or None = unlimited."""
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                """
-                SELECT max_concurrent_sandboxes, max_time_limit_seconds,
-                       max_price_usd_per_hour, gpu_hours_budget, usd_budget,
-                       blob_bytes_budget
-                FROM tenant_quotas WHERE tenant_id = ?
-                """,
-                (tenant_id,),
-            ).fetchone()
+    def get_quota(
+        self, *, tenant_id: str, conn: Any | None = None
+    ) -> TenantQuota | None:
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.get_quota(tenant_id=tenant_id, conn=owned)
+        row = conn.execute(
+            """
+            SELECT max_concurrent_sandboxes, max_time_limit_seconds,
+                   max_price_usd_per_hour, gpu_hours_budget, usd_budget,
+                   blob_bytes_budget
+            FROM tenant_quotas WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
         if row is None:
             return None
         data = row_to_dict(row=row) or {}
@@ -67,7 +62,6 @@ class QuotaService:
         )
 
     def set_quota(self, *, tenant_id: str, **fields: Any) -> None:
-        """Upsert a tenant's quota row (control-plane admin / tests)."""
         columns = (
             "max_concurrent_sandboxes",
             "max_time_limit_seconds",
@@ -94,44 +88,31 @@ class QuotaService:
                     (*(values[col] for col in columns), tenant_id),
                 )
 
-    def running_sandbox_count(self, *, tenant_id: str) -> int:
-        """How many sandboxes the tenant has that may be costing money.
-
-        Provisioning rows must count: a GPU boot takes minutes, so counting
-        only 'running' lets a burst of requests sail past the concurrency cap
-        before the first VM ever reaches running.
-
-        `cleanup_pending` rows must count too, for the same reason they are not
-        terminal: the provider never confirmed the delete, so the VM may be UP
-        AND BILLING. Excluding them turns release/expiry + request into a
-        ratchet — every failed teardown frees a slot while leaving a live box
-        behind, and a `max_concurrent_sandboxes=1` tenant accumulates them
-        without ever tripping the ceiling. Tenancy is reached through the
-        project: sandboxes carry project_id and projects carry tenant_id.
-        """
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                """
-                SELECT COUNT(*) AS n
-                FROM sandboxes s
-                JOIN projects p ON p.id = s.project_id
-                WHERE p.tenant_id = ?
-                  AND s.status IN ('provisioning', 'running', 'cleanup_pending')
-                """,
-                (tenant_id,),
-            ).fetchone()
+    def running_sandbox_count(
+        self, *, tenant_id: str, conn: Any | None = None
+    ) -> int:
+        """Count provisioning and parked rows because either may already bill."""
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.running_sandbox_count(tenant_id=tenant_id, conn=owned)
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM sandboxes s
+            JOIN projects p ON p.id = s.project_id
+            WHERE p.tenant_id = ?
+              AND s.status IN ('provisioning', 'running', 'cleanup_pending')
+            """,
+            (tenant_id,),
+        ).fetchone()
         return int(row["n"]) if row is not None else 0
 
-    # ---------- spend kill-switch (cloud plan Phase 9, risk 13) ----------
+    # ---------- spend kill-switch ----------
 
     def set_kill_switch(
         self, *, scope: str, tripped: bool, reason: str = ""
     ) -> None:
-        """Trip or arm a spend kill-switch (operator / runbook action).
-
-        ``scope`` is a tenant id, or ``GLOBAL_SCOPE`` for the platform-wide
-        breaker. Upserts so re-tripping just refreshes the reason/timestamp.
-        """
+        """Set a tenant or platform-wide provisioning halt."""
         with self.store.transaction() as conn:
             exists = conn.execute(
                 "SELECT 1 FROM spend_kill_switches WHERE scope = ?", (scope,)
@@ -149,23 +130,25 @@ class QuotaService:
                     (1 if tripped else 0, reason, now_iso() if tripped else None, scope),
                 )
 
-    def kill_switch_tripped(self, *, scope: str) -> dict[str, Any] | None:
-        """The tripped kill-switch row for ``scope`` (reason + when), or None."""
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                "SELECT reason, tripped_at FROM spend_kill_switches "
-                "WHERE scope = ? AND tripped = 1",
-                (scope,),
-            ).fetchone()
+    def kill_switch_tripped(
+        self, *, scope: str, conn: Any | None = None
+    ) -> dict[str, Any] | None:
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.kill_switch_tripped(scope=scope, conn=owned)
+        row = conn.execute(
+            "SELECT reason, tripped_at FROM spend_kill_switches "
+            "WHERE scope = ? AND tripped = 1",
+            (scope,),
+        ).fetchone()
         if row is None:
             return None
         data = row_to_dict(row=row) or {}
         return {"reason": data.get("reason") or "", "tripped_at": data.get("tripped_at")}
 
-    # ---------- running-total spend accounting (cloud plan Phase 9) ----------
+    # ---------- running-total spend accounting ----------
 
     def tenant_generation_counters(self, *, tenant_id: str) -> dict[str, float | int]:
-        """Closed generation count and hours for the operator tenant view."""
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 "SELECT started_at, ended_at FROM sandbox_generations WHERE tenant_id = ?",
@@ -180,23 +163,27 @@ class QuotaService:
         return {"sandbox_generations": len(rows), "sandbox_hours": hours}
 
     def tenant_spend(
-        self, *, tenant_id: str, now: datetime | None = None
+        self,
+        *,
+        tenant_id: str,
+        now: datetime | None = None,
+        conn: Any | None = None,
     ) -> dict[str, float]:
-        """Reconstruct a tenant's running spend from the generation ledger.
+        """Bill open generations through ``now``.
 
-        Sum over generations of ``price_usd_per_hour × runtime_hours``; an open
-        generation (``ended_at IS NULL``) bills to ``now``. GPU-hours here are
-        billed wall-clock generation-hours (one GPU job = its runtime); the
-        ledger does not yet carry a GPU count, so this is the conservative
-        single-accelerator reading. Clock-injectable for tests.
+        GPU-hours are generation wall time because the ledger has no GPU count.
         """
         now_dt = now or datetime.now(tz=UTC)
-        with closing(self.store.connect()) as conn:
-            rows = conn.execute(
-                "SELECT price_usd_per_hour, started_at, ended_at "
-                "FROM sandbox_generations WHERE tenant_id = ?",
-                (tenant_id,),
-            ).fetchall()
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.tenant_spend(
+                    tenant_id=tenant_id, now=now_dt, conn=owned
+                )
+        rows = conn.execute(
+            "SELECT price_usd_per_hour, started_at, ended_at "
+            "FROM sandbox_generations WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
         usd = 0.0
         gpu_hours = 0.0
         for row in rows:
@@ -213,14 +200,9 @@ class QuotaService:
     def project_spend(
         self, *, project_id: str, now: datetime | None = None
     ) -> dict[str, Any]:
-        """A project's compute spend from the generation ledger, grouped for the UI.
+        """Group project spend by experiment, hardware, and UTC day.
 
-        Same billing rule as ``tenant_spend`` — price × wall-clock hours, an
-        open generation bills to ``now`` — plus the groupings a spend panel
-        needs: per experiment, per hardware SKU, and per UTC day (a generation
-        spanning midnight is apportioned across the days it ran). Hours quoted
-        at $0 (Modal, local) are summed separately so the UI can say "N hours
-        unpriced" instead of passing off a partial total as the whole truth.
+        Zero-priced hours remain explicit instead of disappearing from totals.
         """
         now_dt = now or datetime.now(tz=UTC)
         with closing(self.store.connect()) as conn:
@@ -301,31 +283,35 @@ class QuotaService:
             "daily": sorted(daily.values(), key=lambda bucket: bucket["date"]),
         }
 
-    def check_admission(self, *, request: AdmissionRequest) -> None:
-        """Admit a sandbox procurement, or raise PermissionDeniedError.
-
-        Order of checks (cheapest/loudest first): the global then per-tenant
-        spend kill-switch, then — for tenants with a quota row — the
-        running-total USD/GPU-hour budgets, then the per-request concurrent /
-        time_limit / instance-price ceilings.
-
-        No-op for any tenant with no quota row AND no kill-switch (unlimited) —
-        which is exactly local mode's 'local' tenant — so local mode is
-        byte-identical.
-        """
-        # Kill-switches apply to every tenant, quota row or not — a tripped
-        # global breaker halts ALL new provisioning, including 'local' if an
-        # operator ever trips it (it never is in local mode: no row exists).
-        self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform")
-        self._check_kill_switch(scope=request.tenant_id, label="tenant")
-        quota = self.get_quota(tenant_id=request.tenant_id)
+    def check_admission(
+        self,
+        *,
+        request: AdmissionRequest,
+        conn: Any | None = None,
+        _serialize: bool = False,
+    ) -> None:
+        """Check kill switches, cumulative budgets, then request ceilings."""
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.check_admission(request=request, conn=owned)
+        # Serialize capped admissions so the second sees the first reservation.
+        if _serialize:
+            conn.execute(
+                "UPDATE tenant_quotas SET tenant_id = tenant_id WHERE tenant_id = ?",
+                (request.tenant_id,),
+            )
+        self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform", conn=conn)
+        self._check_kill_switch(
+            scope=request.tenant_id, label="tenant", conn=conn
+        )
+        quota = self.get_quota(tenant_id=request.tenant_id, conn=conn)
         if quota is None:
             return
-        self._check_budget(tenant_id=request.tenant_id, quota=quota)
+        self._check_budget(tenant_id=request.tenant_id, quota=quota, conn=conn)
         self._check_price_known(quota=quota, request=request)
         if (
             quota.max_concurrent_sandboxes is not None
-            and self.running_sandbox_count(tenant_id=request.tenant_id)
+            and self.running_sandbox_count(tenant_id=request.tenant_id, conn=conn)
             >= quota.max_concurrent_sandboxes
         ):
             raise PermissionDeniedError(
@@ -371,12 +357,7 @@ class QuotaService:
         total_time_limit_seconds: int,
         price_usd_per_hour: float | None = None,
     ) -> None:
-        """Admit extra lifetime for an already-running sandbox.
-
-        Concurrent-count is intentionally skipped: the sandbox already exists.
-        Kill switches, budgets, per-sandbox lifetime, and price ceilings still
-        apply.
-        """
+        """Check extension policy without recounting an existing sandbox."""
         self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform")
         self._check_kill_switch(scope=tenant_id, label="tenant")
         quota = self.get_quota(tenant_id=tenant_id)
@@ -414,14 +395,7 @@ class QuotaService:
     def _check_price_known(
         self, *, quota: "TenantQuota", request: AdmissionRequest
     ) -> None:
-        """Refuse an unpriced procurement while a cost policy is in force.
-
-        Every dollar ceiling is arithmetic on a price, so admitting a sandbox
-        nobody can price spends the budget blind — the one outcome a budget
-        exists to prevent (audit SAN-04). Gated on the USD ceilings only: a
-        GPU-hour budget counts time, not money, and must stay permissive.
-        Tenants with no cost policy keep today's behavior exactly.
-        """
+        """Require a known price only when a dollar policy needs one."""
         if not request.price_unknown_reason:
             return
         if quota.usd_budget is None and quota.max_price_usd_per_hour is None:
@@ -440,8 +414,10 @@ class QuotaService:
             },
         )
 
-    def _check_kill_switch(self, *, scope: str, label: str) -> None:
-        tripped = self.kill_switch_tripped(scope=scope)
+    def _check_kill_switch(
+        self, *, scope: str, label: str, conn: Any | None = None
+    ) -> None:
+        tripped = self.kill_switch_tripped(scope=scope, conn=conn)
         if tripped is None:
             return
         reason = tripped.get("reason") or "spend halt"
@@ -456,17 +432,13 @@ class QuotaService:
             },
         )
 
-    def _check_budget(self, *, tenant_id: str, quota: "TenantQuota") -> None:
-        """Refuse a new provision when the tenant's running total is over budget.
-
-        Budgets are running totals reconstructed from the ledger, so this denies
-        once the tenant has ALREADY spent up to its ceiling (the in-flight
-        generation's own future cost is not pre-charged — the next admission
-        catches it, and a generation's cost is bounded by its time_limit).
-        """
+    def _check_budget(
+        self, *, tenant_id: str, quota: "TenantQuota", conn: Any | None = None
+    ) -> None:
+        """Deny at the current ledger total; future runtime is not precharged."""
         if quota.gpu_hours_budget is None and quota.usd_budget is None:
             return
-        spend = self.tenant_spend(tenant_id=tenant_id)
+        spend = self.tenant_spend(tenant_id=tenant_id, conn=conn)
         if (
             quota.gpu_hours_budget is not None
             and spend["gpu_hours"] >= quota.gpu_hours_budget
@@ -495,7 +467,6 @@ class QuotaService:
 def _hours_by_utc_day(
     *, started: datetime, ended: datetime
 ) -> Iterator[tuple[str, float]]:
-    """Yield (YYYY-MM-DD, hours) portions of [started, ended) per UTC day."""
     cursor = started.astimezone(UTC)
     ended = ended.astimezone(UTC)
     while cursor < ended:

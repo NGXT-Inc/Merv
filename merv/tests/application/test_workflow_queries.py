@@ -122,7 +122,7 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
                 "intent": "Remain private to the other project.",
             },
         )["id"]
-        self.app.sandbox_runtime.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=other_experiment,
             sandbox_uid="sb_other_project",
             project_id=other_project,

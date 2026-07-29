@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.sandbox.execution import build_sandbox_backend
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
-from merv.brain.sandbox.execution.backends.thunder_compute.catalog import summarize_specs
+from merv.brain.sandbox.execution.backends.thunder_compute.catalog import (
+    summarize_specs,
+)
 from merv.brain.sandbox.execution.backends.thunder_compute.config import (
     ThunderCloudConfig,
     ThunderSandboxConfig,
@@ -25,10 +26,6 @@ from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -107,12 +104,16 @@ class FakeBootstrapRunner:
         self.stderr = stderr
 
     def __call__(self, command: list[str], script: str, timeout: int):
-        self.calls.append({"command": list(command), "script": script, "timeout": timeout})
+        self.calls.append(
+            {"command": list(command), "script": script, "timeout": timeout}
+        )
         return subprocess.CompletedProcess(command, self.returncode, "", self.stderr)
 
 
 class FakeSshRunner:
-    def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+    def __init__(
+        self, *, returncode: int = 0, stdout: str = "", stderr: str = ""
+    ) -> None:
         self.commands: list[list[str]] = []
         self.inputs: list[str] = []
         self.returncode = returncode
@@ -123,7 +124,9 @@ class FakeSshRunner:
         self.commands.append(list(command))
         if stdin is not None:
             self.inputs.append(stdin)
-        return subprocess.CompletedProcess(command, self.returncode, self.stdout, self.stderr)
+        return subprocess.CompletedProcess(
+            command, self.returncode, self.stdout, self.stderr
+        )
 
 
 class ThunderCatalogTest(unittest.TestCase):
@@ -150,7 +153,9 @@ class ThunderCatalogTest(unittest.TestCase):
 
 class ThunderConfigTest(unittest.TestCase):
     def test_env_config_accepts_thunder_compute_api_key(self) -> None:
-        with patch.dict(os.environ, {"THUNDER_COMPUTE_API_KEY": "test-key"}, clear=True):
+        with patch.dict(
+            os.environ, {"THUNDER_COMPUTE_API_KEY": "test-key"}, clear=True
+        ):
             config = ThunderCloudConfig.from_env()
         self.assertEqual(config.api_key, "test-key")
         self.assertEqual(config.base_url, "https://api.thundercompute.com:8443/v1")
@@ -159,7 +164,11 @@ class ThunderConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / ".env"
             env_file.write_text("THUNDER_COMPUTE_API_KEY=file-key\n", encoding="utf-8")
-            with patch.dict(os.environ, {"RESEARCH_PLUGIN_THUNDER_ENV_FILE": str(env_file)}, clear=True):
+            with patch.dict(
+                os.environ,
+                {"RESEARCH_PLUGIN_THUNDER_ENV_FILE": str(env_file)},
+                clear=True,
+            ):
                 config = ThunderCloudConfig.from_env()
         self.assertEqual(config.api_key, "file-key")
 
@@ -200,7 +209,12 @@ class ThunderBackendTest(unittest.TestCase):
         client: FakeThunderClient | None = None,
         bootstrap_runner: FakeBootstrapRunner | None = None,
         ssh_runner: FakeSshRunner | None = None,
-    ) -> tuple[ThunderComputeSandboxBackend, FakeThunderClient, FakeBootstrapRunner, FakeSshRunner]:
+    ) -> tuple[
+        ThunderComputeSandboxBackend,
+        FakeThunderClient,
+        FakeBootstrapRunner,
+        FakeSshRunner,
+    ]:
         fake_client = client or FakeThunderClient()
         fake_bootstrap = bootstrap_runner or FakeBootstrapRunner()
         fake_ssh = ssh_runner or FakeSshRunner()
@@ -230,15 +244,10 @@ class ThunderBackendTest(unittest.TestCase):
         kwargs.update(overrides)
         return SandboxRequest(**kwargs)
 
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend, _, _, _ = self._backend()
-        descriptor = sandbox_driver_descriptor("thunder_compute")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
-
     def test_build_sandbox_backend_accepts_thunder_aliases(self) -> None:
-        with patch.dict(os.environ, {"RESEARCH_PLUGIN_EXECUTION_BACKEND": "thunder"}, clear=True):
+        with patch.dict(
+            os.environ, {"RESEARCH_PLUGIN_EXECUTION_BACKEND": "thunder"}, clear=True
+        ):
             aliased = build_sandbox_backend(repo_root=Path("/tmp/merv-test"))
         self.assertEqual(aliased.capabilities.name, "thunder_compute")
 
@@ -258,9 +267,13 @@ class ThunderBackendTest(unittest.TestCase):
         self.assertTrue(catalog["selection_required"])
         self.assertEqual(catalog["select_with"], "instance_type")
         self.assertEqual(catalog["regions"], [])
-        self.assertEqual(catalog["options"][0]["instance_type"], "a100xl_x1_prototyping")
+        self.assertEqual(
+            catalog["options"][0]["instance_type"], "a100xl_x1_prototyping"
+        )
 
-    def test_find_sandbox_id_matches_live_instance_by_management_key_comment(self) -> None:
+    def test_find_sandbox_id_matches_live_instance_by_management_key_comment(
+        self,
+    ) -> None:
         client = FakeThunderClient()
 
         def list_instances():
@@ -283,7 +296,9 @@ class ThunderBackendTest(unittest.TestCase):
         self.assertEqual(backend.find_sandbox_id(experiment_id="exp1"), "8")
         self.assertIsNone(backend.find_sandbox_id(experiment_id="other"))
 
-    def test_acquire_creates_vm_without_user_data_then_bootstraps_over_ssh(self) -> None:
+    def test_acquire_creates_vm_without_user_data_then_bootstraps_over_ssh(
+        self,
+    ) -> None:
         backend, client, bootstrap, ssh = self._backend()
 
         provisioned = backend.acquire(request=self._request())
@@ -318,7 +333,9 @@ class ThunderBackendTest(unittest.TestCase):
         # Bootstrap readiness is checked through the management principal.
         self.assertEqual(ssh.commands[-1][-2], f"{MGMT_SSH_USER}@198.51.100.7")
 
-    def test_acquire_calls_created_before_bootstrap_and_cleans_up_on_bootstrap_failure(self) -> None:
+    def test_acquire_calls_created_before_bootstrap_and_cleans_up_on_bootstrap_failure(
+        self,
+    ) -> None:
         events: list[tuple] = []
         backend, client, _, _ = self._backend(
             bootstrap_runner=FakeBootstrapRunner(returncode=1, stderr="boom")

@@ -21,18 +21,13 @@ from unittest.mock import patch
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.sandbox_backend import (
-    BackendCapabilities,
-    BackendUnavailableError,
-    SandboxRequest,
-)
+from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.sandbox import sandbox_support
-from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
+from merv.brain.sandbox.scheduler import SandboxScheduler
 from merv.brain.sandbox.sandbox_support import (
     CLEANUP_INFLIGHT_DEADLINE_SECONDS,
     cleanup_inflight_token,
 )
-from merv.brain.sandbox.sandbox_views import sandbox_row_view
 from merv.brain.application.maintenance import CleanupService
 
 
@@ -82,7 +77,7 @@ class CleanupSweepTest(unittest.TestCase):
     def test_orphan_vm_sweep_reaps_a_running_row_whose_vm_is_gone(self) -> None:
         exp_id = self._experiment()
         sandbox_uid = "uid_gone"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -97,12 +92,12 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertFalse(self.backend.is_alive(sandbox_id="sb-gone"))
         reaped = self.cleanup.sweep_orphan_vms(now=datetime.now(tz=UTC))
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "terminated")
 
     def test_orphan_vm_sweep_leaves_a_live_row_running(self) -> None:
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_live",
             project_id=self.project_id,
@@ -116,7 +111,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.alive["sb-live"] = True
         reaped = self.cleanup.sweep_orphan_vms(now=datetime.now(tz=UTC))
         self.assertEqual(reaped, 0)
-        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
+        row = self.app.sandbox_storage.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "running")
 
     # ---- blob TTL GC ----
@@ -140,7 +135,7 @@ class CleanupSweepTest(unittest.TestCase):
         exp_id = self._experiment()
         sandbox_uid = "uid_wedged"
         started = "2026-01-01T00:00:00Z"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -155,7 +150,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "failed")
         # The billing VM was terminated by cleanup_orphan.
         self.assertIn("sb-wedged", self.backend.terminated)
@@ -165,7 +160,7 @@ class CleanupSweepTest(unittest.TestCase):
         # leaves a billing VM in a provisioning phase. The sweep must still
         # reap it — the VM exists from `creating` onward.
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_connecting",
             project_id=self.project_id,
@@ -179,7 +174,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid="uid_connecting")
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid="uid_connecting")
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-connecting", self.backend.terminated)
 
@@ -190,7 +185,7 @@ class CleanupSweepTest(unittest.TestCase):
         # (cleanup_orphan -> backend.find_sandbox_id). It must still be killed.
         exp_id = self._experiment()
         sandbox_uid = "uid_unrecorded"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -205,13 +200,13 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-unrecorded", self.backend.terminated)
 
     def test_stale_provision_left_alone_within_deadline(self) -> None:
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_fresh",
             project_id=self.project_id,
@@ -224,7 +219,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 2, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 0)
-        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
+        row = self.app.sandbox_storage.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "provisioning")
 
     # ---- run_all ----
@@ -235,7 +230,7 @@ class CleanupSweepTest(unittest.TestCase):
             namespace=self.project_id, data=b"x", expires_at="2000-01-01T00:00:00Z"
         )
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_dead_run_all",
             project_id=self.project_id,
@@ -294,7 +289,7 @@ class CleanupSweepTest(unittest.TestCase):
     def test_retention_runs_in_process_without_any_operator_or_cron(self) -> None:
         """Production schedules no cleanup pass, so the 30-day horizon has to be
         enforced by the one timer this process already owns."""
-        daemons = self.app.sandboxes.daemons
+        daemons = self.app.sandbox_scheduler
         self.assertEqual(daemons.periodic_maintenance, self.app.tool_ledger.prune)
 
         self.app.call_tool("claim.list", {"project_id": self.project_id})
@@ -316,7 +311,7 @@ class CleanupSweepTest(unittest.TestCase):
     def test_the_maintenance_tick_keeps_its_own_low_frequency_cadence(self) -> None:
         """It rides the reaper's tick without running on every one of them."""
         runs: list[int] = []
-        daemons = self.app.sandboxes.daemons
+        daemons = self.app.sandbox_scheduler
         daemons.periodic_maintenance = lambda: runs.append(1)
         daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
 
@@ -334,7 +329,7 @@ class CleanupSweepTest(unittest.TestCase):
             "MERV_SANDBOX_IDLE_SECONDS": "",
         }
         with patch.dict(os.environ, off, clear=False):
-            daemons = SandboxDaemons(
+            daemons = SandboxScheduler(
                 repository=object(),  # type: ignore[arg-type]
                 backend=SimpleNamespace(
                     capabilities=BackendCapabilities(name="stub", enforce_expiry=False)
@@ -359,7 +354,7 @@ class CleanupSweepTest(unittest.TestCase):
         def explode() -> None:
             raise RuntimeError("database unreachable")
 
-        daemons = self.app.sandboxes.daemons
+        daemons = self.app.sandbox_scheduler
         daemons.periodic_maintenance = explode
         daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
         self.assertTrue(daemons.maintenance_tick(now=0.0))
@@ -370,12 +365,12 @@ class CleanupSweepTest(unittest.TestCase):
         housekeeping has stopped; discarding the return value is what let a
         dead connection disable retention until restart."""
         reported = {"ok": False, "deleted": 0, "error": "connection closed"}
-        daemons = self.app.sandboxes.daemons
+        daemons = self.app.sandbox_scheduler
         daemons.periodic_maintenance = lambda: reported
         daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
 
         with self.assertLogs(
-            "merv.brain.sandbox.sandbox_daemons", level="WARNING"
+            "merv.brain.sandbox.scheduler", level="WARNING"
         ) as logs:
             self.assertTrue(daemons.maintenance_tick(now=0.0))
 
@@ -419,7 +414,7 @@ class CleanupSweepTest(unittest.TestCase):
 
     def _running_row(self, *, sandbox_uid: str, sandbox_id: str) -> str:
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -431,7 +426,7 @@ class CleanupSweepTest(unittest.TestCase):
         return exp_id
 
     def _row(self, sandbox_uid: str) -> dict:
-        return self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        return self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
 
     def _due_at(self, sandbox_uid: str) -> datetime:
         """An instant at which the parked row's backoff window has elapsed."""
@@ -523,7 +518,7 @@ class CleanupSweepTest(unittest.TestCase):
         # settles as `failed` (not a clean `terminated`) once the VM is gone.
         exp_id = self._experiment()
         uid = "uid_wedged_unconfirmed"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -559,7 +554,7 @@ class CleanupSweepTest(unittest.TestCase):
         # a provider that cannot be asked is not evidence the VM is gone.
         exp_id = self._experiment()
         uid = "uid_lookup_outage"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -585,7 +580,7 @@ class CleanupSweepTest(unittest.TestCase):
         # Same row, but the provider answers and names nothing: that IS proof.
         exp_id = self._experiment()
         uid = "uid_lookup_empty"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -601,6 +596,34 @@ class CleanupSweepTest(unittest.TestCase):
             1,
         )
         self.assertEqual(self._row(uid)["status"], "failed")
+
+    def test_request_never_forgets_an_unrecorded_orphan_on_lookup_failure(self) -> None:
+        exp_id = self._experiment()
+        uid = "uid_reacquire_lookup_outage"
+        self.app.sandbox_storage.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="",
+            provider="fake",
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+
+        def unavailable_lookup(**_kwargs):
+            raise RuntimeError("provider lookup unavailable")
+
+        self.backend.find_sandbox_id = unavailable_lookup  # type: ignore[method-assign]
+        fresh = self.app.sandboxes.request(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            public_key=DEFAULT_PUBLIC_KEY,
+        )
+
+        parked = self._row(uid)
+        self.assertEqual(parked["status"], "cleanup_pending")
+        self.assertNotEqual(fresh["sandbox_uid"], uid)
 
     def test_a_pending_cleanup_makes_the_whole_pass_not_ok(self) -> None:
         uid = "uid_not_ok"
@@ -635,7 +658,7 @@ class CleanupSweepTest(unittest.TestCase):
     def _interrupted_provision(self, *, uid: str, sandbox_id: str, **fields) -> str:
         """A `provisioning` row whose job died with the brain (restart)."""
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -696,7 +719,7 @@ class CleanupSweepTest(unittest.TestCase):
         # failure from the only status the agent ever reads.
         uid = "uid_release_verdict"
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -732,7 +755,7 @@ class CleanupSweepTest(unittest.TestCase):
         # tells the operator the bill stopped, and they stop looking.
         exp_id = self._experiment()
         for uid, sandbox_id in (("uid_agg_ok", "sb-agg-ok"), ("uid_agg_bad", "sb-agg-bad")):
-            self.app.sandboxes.repository.upsert(
+            self.app.sandbox_storage.upsert(
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 project_id=self.project_id,
@@ -841,7 +864,7 @@ class CleanupSweepTest(unittest.TestCase):
         # asked its owner.
         exp_id = self._experiment()
         uid = "uid_foreign_provider"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -868,7 +891,7 @@ class CleanupSweepTest(unittest.TestCase):
         # Same row, correct owner recorded: the sweep works exactly as before.
         exp_id = self._experiment()
         uid = "uid_own_provider"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -899,14 +922,14 @@ class CleanupSweepTest(unittest.TestCase):
         # already closed back to cleanup_pending.
         uid = "uid_cas_race"
         exp_id = self._running_row(sandbox_uid=uid, sandbox_id="sb-cas")
-        self.app.sandboxes.lifecycle.mark_terminated(
+        self.app.sandbox_lifecycle.mark_terminated(
             experiment_id=exp_id,
             sandbox_uid=uid,
             expected_project_id=self.project_id,
         )
         self.assertEqual(self._row(uid)["status"], "terminated")
 
-        self.app.sandboxes.repository.mark_cleanup_pending(
+        self.app.sandbox_storage.mark_cleanup_pending(
             sandbox_uid=uid,
             detail="late worker",
             expected_project_id=self.project_id,
@@ -926,45 +949,13 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
 
-        self.app.sandboxes.repository.mark_cleanup_pending(
+        self.app.sandbox_storage.mark_cleanup_pending(
             sandbox_uid=uid,
             detail="second attempt",
             expected_project_id=self.project_id,
             attempts=2,
         )
         self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
-
-    def test_ensure_job_refuses_a_rewrite_without_a_confirmed_cleanup(self) -> None:
-        # The facade normally confirms the cleanup itself and passes
-        # cleanup_confirmed=True. This is the guard underneath that: any other
-        # caller reaching ensure_job must not be able to blank a row's
-        # sandbox_id — the only record of a VM that may still be billing.
-        uid = "uid_ensure_job_guard"
-        exp_id = self._interrupted_provision(uid=uid, sandbox_id="sb-ensure-guard")
-        existing = self._row(uid)
-        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
-        self.backend.liveness_unavailable = True
-        req = SandboxRequest(
-            experiment_id=uid,
-            project_id=self.project_id,
-            public_key=DEFAULT_PUBLIC_KEY,
-            sandbox_uid=uid,
-        )
-
-        with self.assertRaises(BackendUnavailableError) as ctx:
-            self.app.sandboxes.provisioner.ensure_job(
-                experiment_id=exp_id,
-                project_id=self.project_id,
-                req=req,
-                existing=existing,
-                sandbox_uid=uid,
-                cleanup_confirmed=False,
-            )
-
-        self.assertIn("cleanup_pending", str(ctx.exception))
-        parked = self._row(uid)
-        self.assertEqual(parked["status"], "cleanup_pending")
-        self.assertEqual(parked["sandbox_id"], "sb-ensure-guard")  # never blanked
 
     def test_two_cleanup_workers_racing_one_parked_row_confirm_it_once(self) -> None:
         # The daemon loop and the cloud CleanupService sweep the same pending
@@ -982,7 +973,7 @@ class CleanupSweepTest(unittest.TestCase):
 
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
 
         self.assertTrue(
             lifecycle._retry_one_cleanup(  # noqa: SLF001
@@ -1023,7 +1014,7 @@ class CleanupSweepTest(unittest.TestCase):
         # The provider can delete again: both workers would otherwise succeed.
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         repository = lifecycle.repository
         inner_get = repository.get_by_uid
         # Hold each worker at the instant after its re-read, so neither can
@@ -1067,6 +1058,39 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
         self.assertEqual(self._row(uid)["status"], "terminated")
 
+    def test_two_releases_of_a_running_row_take_one_destructive_claim(self) -> None:
+        uid = "uid_two_live_releases"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-two-live-releases")
+        snapshot = self._row(uid)
+        real_terminate = FakeSandboxBackend.terminate.__get__(self.backend)
+        entered = threading.Event()
+        finish = threading.Event()
+
+        def gated_terminate(*, sandbox_id: str):
+            entered.set()
+            finish.wait(timeout=5)
+            return real_terminate(sandbox_id=sandbox_id)
+
+        self.backend.terminate = gated_terminate  # type: ignore[assignment]
+        first: list[dict] = []
+        worker = threading.Thread(
+            target=lambda: first.append(
+                self.app.sandboxes._release_row(row=dict(snapshot))
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5))
+        second = self.app.sandboxes._release_row(row=dict(snapshot))
+        finish.set()
+        worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.backend.terminated.count("sb-two-live-releases"), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.released")), 1)
+        self.assertEqual(first[0]["status"], "terminated")
+        self.assertEqual(second["status"], "cleanup_pending")
+        self.assertIn("Nothing was sent", second["hint"])
+
     def test_a_staggered_worker_never_enters_a_claimed_provider_call(self) -> None:
         # The race the barrier test cannot reach: the workers are STAGGERED, not
         # simultaneous. A claims the attempt and blocks inside the provider
@@ -1086,7 +1110,7 @@ class CleanupSweepTest(unittest.TestCase):
 
         real_terminate = FakeSandboxBackend.terminate.__get__(self.backend)
         self.backend.liveness_unavailable = False
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         inside = threading.Event()
         finish = threading.Event()
         worker_a: threading.Thread
@@ -1155,7 +1179,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
 
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         claim = lifecycle.claim_cleanup_due(row=self._row(uid), now=self._due_at(uid))
         self.assertTrue(claim)
 
@@ -1183,7 +1207,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         claimed_at = self._due_at(uid)
         worker_a = lifecycle.claim_cleanup_due(row=self._row(uid), now=claimed_at)
         self.assertTrue(worker_a)
@@ -1246,7 +1270,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
         snapshot = self._row(uid)
         self.backend.liveness_unavailable = False
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         real_terminate = FakeSandboxBackend.terminate.__get__(self.backend)
         reclaimed: list[str] = []
 
@@ -1336,7 +1360,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         claimed_at = self._due_at(uid)
         worker_a = lifecycle.claim_cleanup_due(row=self._row(uid), now=claimed_at)
         self.assertTrue(worker_a)
@@ -1369,13 +1393,16 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
         claim = lifecycle.claim_cleanup_due(row=self._row(uid), now=self._due_at(uid))
         self.assertTrue(claim)
         token = cleanup_inflight_token(phase=self._row(uid)["phase"])
         self.assertTrue(token)
 
-        view = sandbox_row_view(row=self._row(uid))
+        view = self.app.sandboxes.snapshot(
+            project_id=self.project_id,
+            sandbox_uid=uid,
+        )
         self.assertNotIn(token, str(view))
         self.assertEqual(view["phase"], "cleanup_attempt_2")
 

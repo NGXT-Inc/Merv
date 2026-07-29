@@ -14,16 +14,11 @@ from merv.brain.sandbox.execution.backends.hyperstack.sandbox_backend import (
     SSH_INGRESS_RULES,
     HyperstackSandboxBackend,
 )
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -115,7 +110,12 @@ class FakeHyperstackClient:
                 "status": "ACTIVE",
                 "floating_ip": "203.0.113.5",
                 "environment": {"region": "CANADA-1"},
-                "flavor": {"name": "n3-A100x1", "cpu": 28, "ram": 120, "gpu": "A100-80G-PCIe"},
+                "flavor": {
+                    "name": "n3-A100x1",
+                    "cpu": 28,
+                    "ram": 120,
+                    "gpu": "A100-80G-PCIe",
+                },
             }
         return state
 
@@ -166,7 +166,9 @@ class HyperstackAcquireTest(unittest.TestCase):
         self.assertEqual(created["security_rules"], SSH_INGRESS_RULES)
         self.assertEqual(created["environment_name"], "test-env")
         self.assertIn("#!/usr/bin/env bash", created["user_data"])
-        self.assertEqual(client.keypairs_imported[0]["public_key"], "ssh-ed25519 AAAA test")
+        self.assertEqual(
+            client.keypairs_imported[0]["public_key"], "ssh-ed25519 AAAA test"
+        )
 
     def test_acquire_requires_instance_type(self) -> None:
         backend = _backend(FakeHyperstackClient())
@@ -228,12 +230,6 @@ class HyperstackLivenessTest(unittest.TestCase):
 
 
 class HyperstackCatalogTest(unittest.TestCase):
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend = _backend(FakeHyperstackClient())
-        descriptor = sandbox_driver_descriptor("hyperstack")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_options_join_pricebook_and_filter_stock(self) -> None:
         options = to_agent_options(FLAVOR_GROUPS, PRICEBOOK)

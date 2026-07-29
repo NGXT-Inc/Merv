@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
+from merv.brain.sandbox.scheduler import SandboxScheduler
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.sandbox.sandbox_heartbeat import SandboxActivityPolicy, SandboxIdlePolicy
 from merv.brain.kernel.utils import format_iso
@@ -231,7 +231,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         idle_since: datetime,
         metrics: dict,
     ) -> None:
-        self.app.sandboxes.repository.record_heartbeat(
+        self.app.sandbox_storage.record_heartbeat(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             expected_project_id=self.project_id,
@@ -304,7 +304,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
 
     def _status(self, sandbox_uid: str) -> str:
         return str(
-            self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)["status"]
+            self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)["status"]
         )
 
     def test_a_running_merv_run_receipt_vetoes_the_idle_reap(self) -> None:
@@ -336,7 +336,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         self.assertEqual(self._status(str(idle["sandbox_uid"])), "running")
         # Work in flight also resets the idle clock rather than banking it.
         self.assertIsNone(
-            self.app.sandboxes.repository.get_by_uid(
+            self.app.sandbox_storage.get_by_uid(
                 sandbox_uid=str(idle["sandbox_uid"])
             )["idle_since"]
         )
@@ -462,7 +462,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
             "===MERV_RUN dHJhaW4=\n"
             "===META eyJsYWJlbCI6InRyYWluIiwiY29tbWFuZCI6InB5dGhvbiB0cmFpbi5weSJ9\n"
         )
-        ledger = self.app.sandboxes.runs_ledger
+        ledger = self.app.sandbox_runs
 
         def exploding_record(*, row, listing):
             raise RuntimeError("state store unreachable")
@@ -476,7 +476,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
     def test_a_running_command_vetoes_the_idle_reap(self) -> None:
         now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         idle = self._idle_candidate("command-veto", now=now)
-        self.app.sandboxes.repository.record_command_snapshot(
+        self.app.sandbox_storage.record_command_snapshot(
             sandbox_uid=str(idle["sandbox_uid"]),
             snapshot={"command_id": "cmd_1", "command": "bash setup.sh", "status": "running"},
             expected_project_id=self.project_id,
@@ -506,7 +506,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         # comes up.
         now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         idle = self._idle_candidate("raced", now=now)
-        repository = self.app.sandboxes.repository
+        repository = self.app.sandbox_storage
         original_get = repository.get_by_uid
 
         def get_by_uid(*, sandbox_uid):
@@ -549,7 +549,7 @@ class SandboxSweepOrderTest(unittest.TestCase):
             reap_expired=lambda **_kwargs: trace.append("expiry"),
             retry_cleanup_pending=lambda **_kwargs: trace.append("cleanup_retry"),
         )
-        daemons = SandboxDaemons(
+        daemons = SandboxScheduler(
             repository=object(),  # type: ignore[arg-type]
             # MinimalBackend-like: enforce_expiry defaults on, so the expiry
             # and stale-provision sweeps actually run in this tick.
@@ -579,8 +579,8 @@ class SandboxSweepOrderTest(unittest.TestCase):
 
 
 class SandboxHeartbeatEnvTest(unittest.TestCase):
-    def _daemons(self) -> SandboxDaemons:
-        return SandboxDaemons(
+    def _daemons(self) -> SandboxScheduler:
+        return SandboxScheduler(
             repository=object(),  # type: ignore[arg-type]
             backend=FakeSandboxBackend(),
             provisioner=object(),  # type: ignore[arg-type]

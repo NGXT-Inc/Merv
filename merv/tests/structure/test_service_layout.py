@@ -476,7 +476,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("snapshots: ResearchSnapshots", query)
         self.assertIn("sandboxes: SandboxReads", query)
         self.assertIn("from .ports.sandbox import SandboxReads", query)
-        self.assertNotIn("from ..sandbox.facade import SandboxReads", query)
+        self.assertNotIn("from ..sandbox.core import SandboxReads", query)
 
         reader = _rc_source("snapshots.py")
         self.assertIn("class ResearchSnapshotReader:", reader)
@@ -543,28 +543,28 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_sandbox_lifecycle_workers_use_ports_not_concrete_services(self) -> None:
         self.assertNotIn(
             "experiments",
-            _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_provisioner.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "acquisition.py"),
         )
         self.assertNotIn(
             "sandbox_mgmt_keys",
-            _import_segments(BACKEND_ROOT / "sandbox" / "facade.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "core.py"),
         )
         self.assertFalse((SERVICES / "sandbox_mgmt_keys.py").exists())
-        self.assertNotIn("class QuotaAdmission", _sandbox_source("facade.py"))
+        self.assertNotIn("class QuotaAdmission", _sandbox_source("core.py"))
         self.assertNotIn(
-            "class ControlPlaneView", _sandbox_source("sandbox_daemons.py")
+            "class ControlPlaneView", _sandbox_source("scheduler.py")
         )
         self.assertNotIn(
-            "class SyncSessionIssuer", _sandbox_source("sandbox_provisioner.py")
+            "class SyncSessionIssuer", _sandbox_source("acquisition.py")
         )
         daemon_imports = _import_segments(
-            BACKEND_ROOT / "sandbox" / "sandbox_daemons.py"
+            BACKEND_ROOT / "sandbox" / "scheduler.py"
         )
         self.assertNotIn("experiments", daemon_imports)
-        self.assertNotIn("sandbox_provisioner", daemon_imports)
+        self.assertNotIn("acquisition", daemon_imports)
 
     def test_auto_sync_poller_is_removed(self) -> None:
-        local_source = _sandbox_source("sandbox_daemons.py")
+        local_source = _sandbox_source("scheduler.py")
         http_source = _api_package_source()
         api_source = (UI_SRC / "api.js").read_text(encoding="utf-8")
         components = UI_SRC / "components"
@@ -934,7 +934,7 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
         for path in (
             ARTIFACTS_ROOT / "artifacts.py",
-            BACKEND_ROOT / "sandbox" / "facade.py",
+            BACKEND_ROOT / "sandbox" / "core.py",
         ):
             with self.subTest(module=path.name):
                 source = path.read_text(encoding="utf-8")

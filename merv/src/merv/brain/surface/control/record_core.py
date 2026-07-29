@@ -14,7 +14,6 @@ from ...research_core.graph_refs import GraphRefResolver
 from ...research_core.literature import LiteratureService
 from ..permissions import PermissionService
 from ...research_core.projects import ProjectService
-from ...sandbox.quotas import QuotaService
 from ...research_core.reviews import ReviewService
 from ...research_core.reflections import ReflectionService
 from ...kernel.state import BaseStateStore
@@ -24,7 +23,6 @@ from ...kernel.ports.blob_store import EvidenceBlobStore
 @dataclass(frozen=True)
 class RecordCore:
     permissions: PermissionService
-    quotas: QuotaService
     projects: ProjectService
     claims: ClaimService
     experiments: ExperimentService
@@ -39,7 +37,6 @@ class RecordCore:
 def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> RecordCore:
     """Build record services without workspace, worker, or execution objects."""
     permissions = PermissionService()
-    quotas = QuotaService(store=store)
     projects = ProjectService(store=store)
     claims = ClaimService(store=store)
     # Artifacts receives the narrow Research-owned association target resolver.
@@ -69,7 +66,6 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
     literature = LiteratureService(store=store, unfurl=AllowlistedPaperUnfurl())
     return RecordCore(
         permissions=permissions,
-        quotas=quotas,
         projects=projects,
         claims=claims,
         experiments=experiments,

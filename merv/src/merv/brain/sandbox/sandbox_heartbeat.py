@@ -22,20 +22,13 @@ class RowReaper(Protocol):
 
 
 class RunActivityProbe(Protocol):
-    """The run ledger's durable 'is anything still in flight' read."""
-
     def __call__(
         self, *, sandbox_uid: str, fresh_since: datetime | None = ...
     ) -> bool: ...
 
 
 class RunReceiptRefresh(Protocol):
-    """Pull one sandbox's .runs receipts into the mirror, right now.
-
-    True only when the box actually answered. False covers every kind of
-    silence — dead management channel, unsupported backend, a mirror write
-    that failed — none of which is evidence that no work is running.
-    """
+    """Return True only when the box answered and its mirror write succeeded."""
 
     def __call__(self, *, row: dict[str, Any]) -> bool: ...
 
@@ -56,16 +49,12 @@ class SandboxIdlePolicy:
         elapsed_seconds: float,
         work_running: bool = False,
     ) -> bool:
-        # Durable evidence outranks sampled gauges: a merv_run receipt with no
-        # exit code, or a command still in flight, means WORK IS RUNNING even
-        # when every meter reads zero (audit SAN-07).
+        # Durable work evidence outranks sampled gauges.
         if work_running:
             return False
         if previous is None or elapsed_seconds <= 0:
             return False
-        # A live SSH session blocks idle; an UNMEASURABLE one (None — e.g. Modal
-        # has no sshd, or ss/proc are absent) must not, or such boxes could never
-        # reap. The activity signals below still guard genuinely-busy work.
+        # Unmeasurable SSH (for example Modal) must not block reap forever.
         ssh = self._ssh_established(current)
         if ssh is not None and ssh != 0:
             return False
@@ -202,8 +191,6 @@ class SandboxActivityPolicy:
 
 
 class SandboxHeartbeatMonitor:
-    """Samples running sandboxes and delegates reap decisions to the policy."""
-
     def __init__(
         self,
         *,
@@ -218,11 +205,8 @@ class SandboxHeartbeatMonitor:
         self.sample_metrics = sample_metrics
         self.reap_row = reap_row
         self.policy = policy or SandboxIdlePolicy()
-        # The run ledger's "is anything still in flight" probe; wired by the
-        # composition so the monitor and the ledger stay peers.
         self.runs_active = runs_active
-        # Pulls the candidate's receipts fresh from the box before we decide.
-        # The mirror alone is only as current as the last successful sweep.
+        # Idle reap requires a fresh receipt read, not merely the last mirror.
         self.refresh_runs = refresh_runs
 
     def reap_idle(
@@ -247,7 +231,6 @@ class SandboxHeartbeatMonitor:
     ) -> bool:
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
-        # The sweep read this row; its owner guards every write below (SAN-02).
         project_id = str(row.get("project_id") or "")
         if not experiment_id and not sandbox_uid:
             return False
@@ -304,27 +287,17 @@ class SandboxHeartbeatMonitor:
             threshold_seconds=threshold_seconds,
         ):
             return False
-        # Re-read under a guard, as the expiry reaper does: the sweep snapshot
-        # ages while earlier rows make provider calls, and a run launched or a
-        # command started in that window must cancel this reap rather than lose
-        # its box. Only a row that is STILL running and still idle is reaped.
+        # Provider calls age snapshots; reread before destructive action.
         fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
         if fresh.get("status") != "running" or parse_iso(fresh.get("idle_since")) is None:
             return False
-        # Read the receipts from the BOX before deciding, and treat the read as
-        # tri-state. A quiet merv_run that started since the last mirror sweep
-        # exists only on the sandbox, and a management channel that has been
-        # down longer than the idle window ages the last known receipt out of
-        # the freshness query — in both cases the ledger's silence is ignorance,
-        # not proof of an empty box, and it must not license a reap (SAN-07).
+        # Receipt silence after a failed read is ignorance, not an empty box.
         if not self._receipts_readable(row=fresh):
             return False
         if self._work_in_flight(
             row=fresh, now=now, max_age_seconds=threshold_seconds
         ):
             return False
-        # Honest outcome: an unconfirmed provider deletion parks the row as
-        # cleanup_pending and is NOT a reap (audit SAN-07).
         return bool(
             self.reap_row(
                 row=fresh,
@@ -338,12 +311,7 @@ class SandboxHeartbeatMonitor:
         )
 
     def _receipts_readable(self, *, row: dict[str, Any]) -> bool:
-        """Refresh this row's receipts; False vetoes the reap.
-
-        Only a SUCCESSFUL read may age a receipt out of the veto. Rows the
-        ledger cannot mirror at all (no sandbox_id, no wired refresh) keep the
-        old behavior — there is nothing to read, so nothing to be ignorant of.
-        """
+        """Veto reap when a supported receipt channel fails to answer."""
         if self.refresh_runs is None or not str(row.get("sandbox_id") or ""):
             return True
         try:
@@ -354,7 +322,6 @@ class SandboxHeartbeatMonitor:
     def _work_in_flight(
         self, *, row: dict[str, Any], now: datetime, max_age_seconds: float
     ) -> bool:
-        """Durable evidence that this box is doing something, gauges aside."""
         if str(row.get("last_command_status") or "") == "running":
             return True
         if self.runs_active is None:

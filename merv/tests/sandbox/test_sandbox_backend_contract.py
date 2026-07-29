@@ -29,7 +29,7 @@ from merv.brain.sandbox.sandbox_backend import (
     SandboxRequest,
     TranscriptTail,
 )
-from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
+from merv.brain.sandbox.scheduler import SandboxScheduler
 from tests.paths import BACKEND_ROOT, SERVICES_ROOT, SURFACE_ROOT
 
 SANDBOX_ROOT = BACKEND_ROOT / "sandbox"
@@ -105,8 +105,8 @@ class MinimalBackend(SandboxBackendBase):
 class SandboxBackendContractTest(unittest.TestCase):
     def _daemons_for_backend(
         self, backend: SandboxBackendBase, *, force_expiry_reaper: bool = False
-    ) -> SandboxDaemons:
-        return SandboxDaemons(
+    ) -> SandboxScheduler:
+        return SandboxScheduler(
             repository=object(),  # type: ignore[arg-type]
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
@@ -382,7 +382,7 @@ class SandboxBackendContractTest(unittest.TestCase):
         )
         self.assertIn("force_expiry_reaper=True", control_source)
         daemons_source = (
-            BACKEND_ROOT / "sandbox" / "sandbox_daemons.py"
+            BACKEND_ROOT / "sandbox" / "scheduler.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("resolve_mode", daemons_source)
 

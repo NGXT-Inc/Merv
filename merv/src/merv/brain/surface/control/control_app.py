@@ -39,9 +39,7 @@ from ...kernel.ports.mgmt_keys import MgmtKeyStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
 from .record_core import build_record_core
 from ...sandbox.sandbox_backend import SandboxBackend
-from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
-from ...sandbox.facade import SandboxFacade
-from ...sandbox.runtime import build_sandbox_runtime
+from ...sandbox.core import SandboxEngine
 from ...object_storage.service import StorageLedgerService
 from ...object_storage.catalog import StorageObjectCatalog
 from ...kernel.state import BaseStateStore
@@ -163,15 +161,11 @@ class ControlApp:
             storage=storage,
         )
 
-        self._sandbox_runtime = build_sandbox_runtime(
+        self.sandboxes = SandboxEngine(
             store=store,
             backend=execution_backend,
             mgmt_keys=mgmt_keys,
             force_expiry_reaper=force_expiry_reaper,
-        )
-        self.sandboxes = SandboxFacade(
-            runtime=self._sandbox_runtime,
-            quotas=core.quotas,
             storage_enabled=storage is not None,
             # The sandbox module embeds/calls the component-owned values it is handed.
             storage_hint=STORAGE_RULE_OF_THUMB,
@@ -181,8 +175,7 @@ class ControlApp:
         # no cleanup pass, so a 30-day horizon that waits on an external cron is
         # a horizon nothing enforces. The reaper is the only timer this process
         # owns, and the prune it now carries is bounded and batched.
-        self._sandbox_runtime.daemons.periodic_maintenance = self.tool_ledger.prune
-        self._sandbox_runtime.start()
+        self.sandboxes.start(periodic_maintenance=self.tool_ledger.prune)
         self.research_snapshots = ResearchSnapshotReader(
             store=store,
             experiments=core.experiments,
@@ -222,17 +215,15 @@ class ControlApp:
             experiment_state=self.research_core.experiment_state,
             review_snapshot=core.reviews.snapshot_from_id,
             open_reviews=core.reviews.open_requests_for_target,
-            sandbox_row=self.sandboxes.get_row,
-            sandbox_view=self.sandboxes.row_view,
-            sandbox_status_active=ACTIVE_SANDBOX_STATUSES.__contains__,
+            sandbox_snapshot=self.sandboxes.figure_snapshot,
         )
         self.compute_cost_query = ComputeCostQuery(
-            project_spend=core.quotas.project_spend,
+            project_spend=self.sandboxes.project_spend,
             experiments=self.research_core.project_experiment_summaries,
         )
         self.tenant_counters_query = TenantCountersQuery(
             event_count=store.tenant_event_count,
-            generation_counters=core.quotas.tenant_generation_counters,
+            generation_counters=self.sandboxes.tenant_generation_counters,
         )
         self.logic_graph_query = LogicGraphQuery(
             research=self.research_core,
@@ -320,7 +311,7 @@ class ControlApp:
         that defense every time rather than in the case it exists for.
         """
         with suppress(Exception):
-            self._sandbox_runtime.shutdown()  # signals + joins the reaper
+            self.sandboxes.shutdown()  # signals + joins the reaper
         with suppress(Exception):
             self._execution_backend.shutdown()
         with suppress(Exception):  # the ledger holds one connection per writer

@@ -14,16 +14,11 @@ from merv.brain.sandbox.execution.backends.voltage_park.config import (
 from merv.brain.sandbox.execution.backends.voltage_park.sandbox_backend import (
     VoltageParkSandboxBackend,
 )
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -168,7 +163,9 @@ class VoltageParkAcquireTest(unittest.TestCase):
         self.assertEqual(write_file["encoding"], "b64")
         decoded = base64.b64decode(write_file["content"]).decode("utf-8")
         self.assertIn("#!/usr/bin/env bash", decoded)
-        self.assertEqual(created["cloud_init"]["runcmd"], ["bash /opt/merv/bootstrap.sh"])
+        self.assertEqual(
+            created["cloud_init"]["runcmd"], ["bash /opt/merv/bootstrap.sh"]
+        )
 
     def test_acquire_uses_port_forward_when_internal_22_is_mapped(self) -> None:
         client = FakeVoltageParkClient()
@@ -227,12 +224,6 @@ class VoltageParkLivenessTest(unittest.TestCase):
 
 
 class VoltageParkCatalogTest(unittest.TestCase):
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend = _backend(FakeVoltageParkClient())
-        descriptor = sandbox_driver_descriptor("voltage_park")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_options_exclude_windows_and_sold_out_presets(self) -> None:
         options = to_agent_options(LOCATIONS)

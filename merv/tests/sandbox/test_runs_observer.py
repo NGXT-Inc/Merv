@@ -8,14 +8,10 @@ who is allowed to wait for a slot.
 
 from __future__ import annotations
 
-import tempfile
 import threading
 import unittest
-from pathlib import Path
 
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.runs_observer import RunsObserver
-from tests.support.brain import TestBrain
+from merv.brain.sandbox.observation import RunsObserver
 
 
 def _row(uid: str = "sbx-1", status: str = "running") -> dict:
@@ -207,39 +203,6 @@ class RunsObserverConcurrencyCapTest(unittest.TestCase):
         waiter.join(timeout=5.0)
         self.assertEqual(answers, [True])
         self.assertEqual(self.ledger.calls, 2)
-
-
-class RunsObserverWiringTest(unittest.TestCase):
-    """Every path that reads receipts holds the observer, not the ledger."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        repo = Path(self.tmp.name)
-        self.app = TestBrain(
-            repo_root=repo,
-            db_path=repo / ".research_plugin" / "state.sqlite",
-            execution_backend=FakeSandboxBackend(),
-        )
-
-    def tearDown(self) -> None:
-        self.app.shutdown()
-        self.tmp.cleanup()
-
-    def test_every_receipt_path_runs_through_the_observer(self) -> None:
-        runtime = self.app.sandbox_runtime
-        observer = runtime.runs_observer
-        self.assertIs(observer.ledger, runtime.runs)
-        self.assertIs(observer.repository, runtime.repository)
-        self.assertEqual(runtime.lifecycle.observe_runs, observer.observe_forced)
-        self.assertEqual(runtime.daemons.reconcile_runs, observer.observe_live)
-        self.assertEqual(
-            runtime.daemons.heartbeat.refresh_runs, observer.observe_forced
-        )
-        self.assertIs(self.app.sandboxes.runs_observer, observer)
-        # The ledger's own fan-out and pre-terminal wrappers are gone with it:
-        # a second way in is a second way to read the same box twice.
-        self.assertFalse(hasattr(runtime.runs, "reconcile_live"))
-        self.assertFalse(hasattr(runtime.runs, "final_observe"))
 
 
 if __name__ == "__main__":

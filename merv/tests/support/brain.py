@@ -32,14 +32,35 @@ class TestBrain:
 
     __test__ = False
     _RECORD_SERVICES = frozenset(
-        {"permissions", "quotas", "projects", "claims", "experiments",
-         "artifacts", "graph_refs", "reflection_waves", "reviews",
-         "feed", "literature"}
+        {
+            "permissions",
+            "projects",
+            "claims",
+            "experiments",
+            "artifacts",
+            "graph_refs",
+            "reflection_waves",
+            "reviews",
+            "feed",
+            "literature",
+        }
     )
     _PRIVATE_ALIASES = {
         "store": "_store", "blobs": "_blobs", "storage": "_storage",
         "execution_backend": "_execution_backend", "mlflow_tracking": "_tracking",
-        "sandbox_runtime": "_sandbox_runtime",
+    }
+    _SANDBOX_TEST_PARTS = {
+        "sandbox_storage": "_storage",
+        "sandbox_lifecycle": "_lifecycle",
+        "sandbox_provisioner": "_provisioner",
+        "sandbox_scheduler": "_scheduler",
+        "sandbox_metrics": "_metrics",
+        "sandbox_runs": "_runs",
+        "sandbox_observer": "_observer",
+        "sandbox_keys": "_keys",
+        "sandbox_backend": "_backend",
+        "sandbox_transcripts": "_transcripts",
+        "quotas": "_quotas",
     }
 
     def __init__(
@@ -93,6 +114,8 @@ class TestBrain:
     def __getattr__(self, name: str) -> Any:
         if name in self._RECORD_SERVICES:
             return getattr(self._app._record_core, name)
+        if name in self._SANDBOX_TEST_PARTS:
+            return getattr(self._app.sandboxes, self._SANDBOX_TEST_PARTS[name])
         return getattr(self._app, self._PRIVATE_ALIASES.get(name, name))
 
     def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:

@@ -9,7 +9,9 @@ sandbox_generations ledger, with the price plumbed through FakeSandboxBackend.
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from datetime import UTC, datetime
@@ -626,7 +628,7 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
         # A keypair minted before that check belongs to a sandbox_uid no row
         # ever records, so nothing ever names it again and nothing removes it —
         # one orphaned key directory per retry, forever.
-        keys_root = self.app.sandboxes.mgmt_keys.root
+        keys_root = self.app.sandbox_keys.root
 
         def minted() -> list[str]:
             if not keys_root.exists():
@@ -665,7 +667,7 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "running")
         self.assertTrue(
-            self.app.sandboxes.mgmt_keys.key_path(
+            self.app.sandbox_keys.key_path(
                 sandbox_uid=result["sandbox_uid"]
             ).exists()
         )
@@ -730,6 +732,79 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
             conn.close()
         self.assertEqual(len(gens), 1)
         self.assertIsNotNone(gens[0]["ended_at"])
+
+    def test_concurrent_reservations_cannot_cross_the_tenant_cap(self) -> None:
+        """Both preflights may pass; the transaction must admit only one."""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE projects SET tenant_id = ? WHERE id = ?",
+                ("tenant_atomic", self.project_id),
+            )
+        QuotaService(store=self.store).set_quota(
+            tenant_id="tenant_atomic", max_concurrent_sandboxes=1
+        )
+        experiments = [
+            self._experiment("atomic-a"),
+            self._experiment("atomic-b"),
+        ]
+        self.backend.gate = threading.Event()
+        self.app.sandboxes.request_wait_seconds = 0.05
+
+        preflight = threading.Barrier(2)
+        original = self.app.sandboxes._quotas.check_admission
+
+        def synchronized_admission(*, request, conn=None, _serialize=False):
+            if conn is None:
+                preflight.wait(timeout=5)
+            return original(
+                request=request,
+                conn=conn,
+                _serialize=_serialize,
+            )
+
+        results: list[dict] = []
+        errors: list[Exception] = []
+
+        def reserve(experiment_id: str) -> None:
+            try:
+                results.append(
+                    self.app.sandboxes.request(
+                        project_id=self.project_id,
+                        experiment_id=experiment_id,
+                        public_key=DEFAULT_PUBLIC_KEY,
+                        instance_type="gpu_1x_a10",
+                    )
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        with mock.patch.object(
+            self.app.sandboxes._quotas,
+            "check_admission",
+            side_effect=synchronized_admission,
+        ):
+            threads = [
+                threading.Thread(target=reserve, args=(experiment_id,))
+                for experiment_id in experiments
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        self.backend.gate.set()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], PermissionDeniedError)
+        self.assertEqual(
+            errors[0].details.get("quota"), "max_concurrent_sandboxes"
+        )
+        self.assertEqual(
+            self.app.sandboxes._quotas.running_sandbox_count(
+                tenant_id="tenant_atomic"
+            ),
+            1,
+        )
 
 
 class UnpricedAdapterSkuAdmissionTest(unittest.TestCase):

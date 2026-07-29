@@ -276,7 +276,7 @@ class MultiplexerTest(unittest.TestCase):
 
 
 class MultiplexedServiceTest(unittest.TestCase):
-    """SandboxService over a two-provider multiplexer (whole-stack routing)."""
+    """SandboxEngine over a two-provider multiplexer (whole-stack routing)."""
 
     def setUp(self) -> None:
         from merv.brain.mlflow import CentralMlflowService
@@ -450,7 +450,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         alive_on: FakeSandboxBackend | None = None,
     ) -> str:
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -467,7 +467,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         return exp_id
 
     def _row(self, sandbox_uid: str = "uid_legacy") -> dict:
-        return self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        return self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
 
     def _watch_alpha(self) -> list[str]:
         """Record every id the WRONG provider is asked about."""
@@ -488,14 +488,49 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
     ) -> None:
         exp_id = self._legacy_row(provider="beta", alive_on=self.beta)
         asked_alpha = self._watch_alpha()
+        alpha_operations: list[str] = []
+        beta_operations: list[str] = []
+        self.alpha.sandbox_secrets = lambda **_kwargs: {}  # type: ignore[method-assign]
+        self.beta.sandbox_secrets = lambda **_kwargs: {"TOKEN": "write-only"}  # type: ignore[method-assign]
+        self.alpha.write_secrets = lambda **_kwargs: alpha_operations.append("secrets") or True  # type: ignore[method-assign]
+        self.beta.write_secrets = lambda **_kwargs: beta_operations.append("secrets") or True  # type: ignore[method-assign]
+        self.alpha.sample_metrics = lambda **_kwargs: alpha_operations.append("metrics") or {}  # type: ignore[method-assign]
+        self.beta.sample_metrics = lambda **_kwargs: beta_operations.append("metrics") or {}  # type: ignore[method-assign]
+        alpha_read_runs = self.alpha.read_runs
+        beta_read_runs = self.beta.read_runs
+        self.alpha.read_runs = lambda **kwargs: alpha_operations.append("runs") or alpha_read_runs(**kwargs)  # type: ignore[method-assign]
+        self.beta.read_runs = lambda **kwargs: beta_operations.append("runs") or beta_read_runs(**kwargs)  # type: ignore[method-assign]
+        self.beta.transcripts["uid_legacy"] = "owned by beta"
         # The control that makes this bug real: today's default says "gone".
         self.assertFalse(self.alpha.alive.get("sb-legacy", False))
 
         view = self.app.sandboxes.get(project_id=self.project_id, experiment_id=exp_id)
+        metrics = self.app.sandboxes.sample_metrics(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+        self.app.sandboxes.observe_run(
+            sandbox_uid="uid_legacy",
+            max_age_seconds=0.0,
+        )
+        terminal = self.app.sandboxes.terminal(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
 
         self.assertEqual(view["status"], "running")
+        self.assertTrue(metrics["available"])
+        self.assertIn("owned by beta", terminal["transcript"])
         self.assertEqual(self._row()["status"], "running")
         self.assertEqual(asked_alpha, [], "the default provider was asked anyway")
+        self.assertEqual(alpha_operations, [])
+        self.assertEqual(
+            sorted(beta_operations), ["metrics", "runs", "secrets"]
+        )
+        self.assertEqual(self.alpha.transcript_reads, [])
+        self.assertEqual(
+            self.beta.transcript_reads[-1]["sandbox_id"], "sb-legacy"
+        )
         self.assertNotIn("sb-legacy", self.beta.terminated)
 
     def test_reconcile_still_terminalizes_when_the_owner_says_it_is_gone(self) -> None:
@@ -558,7 +593,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         # as proof beta's sandbox is gone: the wrong attempt killed, the real
         # one still billing behind a terminalized row.
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_beta_noid",
             project_id=self.project_id,
@@ -566,7 +601,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
             status="cleanup_pending",
             phase="cleanup_attempt_1",
         )
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_alpha_sibling",
             project_id=self.project_id,
@@ -586,7 +621,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
 
         self.beta.find_sandbox_id = beta_find  # type: ignore[method-assign]
 
-        self.app.sandboxes.lifecycle.terminate_vm(row=self._row("uid_beta_noid"))
+        self.app.sandbox_lifecycle.terminate_vm(row=self._row("uid_beta_noid"))
 
         # alpha's attempt is untouched: still alive, never terminated.
         self.assertEqual(self.alpha.terminated, [])
@@ -599,7 +634,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
     def test_a_parked_sibling_counts_as_one_that_may_still_exist(self) -> None:
         # The guard underneath the test above, in its own right.
         exp_id = self._experiment()
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_parked_sibling",
             project_id=self.project_id,
@@ -609,7 +644,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         )
 
         self.assertTrue(
-            self.app.sandboxes.repository.has_active_for_experiment(
+            self.app.sandbox_storage.has_active_for_experiment(
                 experiment_id=exp_id, exclude_sandbox_uid="uid_other"
             )
         )
@@ -620,7 +655,7 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         # gamma was dropped from MERV_EXECUTION_BACKENDS. No configured provider
         # can answer for its ids, and "nobody here has it" is not evidence.
         exp_id = self._legacy_row(provider="gamma", sandbox_id="sb-gamma")
-        lifecycle = self.app.sandboxes.lifecycle
+        lifecycle = self.app.sandbox_lifecycle
 
         self.assertIsNone(lifecycle.liveness(row=self._row()))
 

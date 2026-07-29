@@ -142,12 +142,8 @@ def load_modal_env_file() -> None:
     Values already present in the environment always win over file values, so an
     explicit ``export MODAL_TOKEN_ID=...`` is never overridden.
 
-    Control mode (cloud plan Phase 9, §3.4): user-machine ``.env`` discovery is
-    DISABLED — the control plane's provider credentials come from the process
-    env / a secret store only, never a checkout's ``.env``. An explicitly
-    configured ``MERV_MODAL_ENV_FILE`` is still honored (that IS the
-    secret-store seam: point it at a mounted secret file), but the implicit
-    package-root ``.env`` fallback is gated off in control mode.
+    Control mode disables implicit checkout ``.env`` discovery. An explicit
+    ``MERV_MODAL_ENV_FILE`` remains the mounted-secret seam.
     """
 
     configured = env_value("MERV_MODAL_ENV_FILE")

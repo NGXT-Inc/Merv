@@ -10,17 +10,14 @@ from merv.brain.sandbox.execution.backends.verda.config import (
     VerdaCloudConfig,
     VerdaSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.verda.sandbox_backend import VerdaSandboxBackend
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
+from merv.brain.sandbox.execution.backends.verda.sandbox_backend import (
+    VerdaSandboxBackend,
+)
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -219,18 +216,10 @@ class VerdaLivenessTest(unittest.TestCase):
             provisioned = backend.acquire(request=_request())
 
         self.assertTrue(backend.terminate(sandbox_id=provisioned.sandbox_id))
-        self.assertIn(
-            {"id": "inst-uuid-1", "action": "delete"}, client.actions
-        )
+        self.assertIn({"id": "inst-uuid-1", "action": "delete"}, client.actions)
 
 
 class VerdaCatalogTest(unittest.TestCase):
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend = _backend(FakeVerdaClient())
-        descriptor = sandbox_driver_descriptor("verda")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_options_join_availability_and_parse_string_prices(self) -> None:
         options = to_agent_options(INSTANCE_TYPES, AVAILABILITY)

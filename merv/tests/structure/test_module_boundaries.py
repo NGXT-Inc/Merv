@@ -442,7 +442,10 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
                 continue
             violations.add((importer, target))
             continue
-        if relative_target == "facade.py" or relative_target.startswith("ports/"):
+        if relative_target in {
+            "core.py",
+            "facade.py",
+        } or relative_target.startswith("ports/"):
             continue
         violations.add((importer, target))
     return violations

@@ -17,10 +17,7 @@ MGMT_SSH_USER = "mervmgmt"
 
 REC_SCRIPT = r"""#!/usr/bin/env bash
 [ -f /opt/merv/env ] && . /opt/merv/env
-# Credentials (HF_TOKEN, etc.) are NOT baked into user_data (plan Phase 9,
-# risk 16). They are written post-boot to /opt/merv/secrets.env over the
-# management channel and sourced here, so the cleartext token never lives in
-# the provider's user_data blob or its on-disk copy.
+# Secrets arrive over the management channel, never through provider user_data.
 [ -f /opt/merv/secrets.env ] && . /opt/merv/secrets.env
 RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
 RP_WORKDIR="${RP_WORKDIR:-/workspace/$RP_EXPERIMENT_ID}"
@@ -56,7 +53,7 @@ fi
 
 
 MGMT_EXEC_SCRIPT = r"""#!/usr/bin/env bash
-# merv management channel (generated; plan Phase 5).
+# Management commands bypass the caller's recording wrapper.
 exec bash -lc "${SSH_ORIGINAL_COMMAND:-bash -l}"
 """
 
@@ -72,7 +69,7 @@ def build_bootstrap_core(
     tokens: Mapping[str, str] | None = None,
     sshd_apply_command: str = "systemctl restart ssh || systemctl restart sshd || service ssh restart || true",
 ) -> str:
-    """Phase 1 VM bootstrap: workspace, SSH keys, and rec.sh."""
+    """Bootstrap workspace, separated SSH principals, and recording tools."""
     public_key_b64 = base64.b64encode(public_key.encode("utf-8")).decode("ascii")
     rec_script_b64 = base64.b64encode(REC_SCRIPT.encode("utf-8")).decode("ascii")
     merv_run_b64 = base64.b64encode(MERV_RUN_SCRIPT.encode("utf-8")).decode("ascii")
@@ -147,13 +144,7 @@ def build_standard_user_data(
     apt_packages: tuple[str, ...] = (),
     python_packages: tuple[str, ...] = (),
 ) -> str:
-    """Full two-phase user_data script for stock-Ubuntu VM providers.
-
-    Phase 1 (bootstrap core) makes the VM reachable and recorded fast; phase 2
-    installs the heavy toolchain the agents expect. Mirrors the Lambda Labs
-    script; providers whose images pre-bundle ML tooling lose nothing — every
-    phase-2 step is idempotent and tolerant of already-installed packages.
-    """
+    """Make SSH usable before installing the idempotent heavy toolchain."""
     apt = " ".join(shlex.quote(pkg) for pkg in apt_packages)
     python = " ".join(shlex.quote(pkg) for pkg in python_packages)
     bootstrap_core = build_bootstrap_core(
@@ -202,7 +193,6 @@ def build_runtime_env(
     sessions_dir: str,
     sandbox_data_dir: str,
 ) -> str:
-    """Render /opt/merv/env for the experiment currently attached to the box."""
     return "\n".join(
         [
             f"RP_WORKDIR={shlex.quote(workdir)}",

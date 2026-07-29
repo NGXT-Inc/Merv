@@ -12,9 +12,9 @@ from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import format_iso, now_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.repository import SandboxRepository
-from merv.brain.sandbox.sandbox_runs import SandboxRunLedger
-from merv.brain.sandbox.facade import SandboxFacade
+from merv.brain.sandbox.storage import SandboxStorage
+from merv.brain.sandbox.observation import SandboxRunLedger
+from merv.brain.sandbox.core import SandboxEngine
 
 
 PUBLIC_SIGNATURES = {
@@ -43,10 +43,10 @@ def _quiet_sample() -> dict:
     }
 
 
-class SandboxFacadeSignatureContractTest(unittest.TestCase):
+class SandboxEngineSignatureContractTest(unittest.TestCase):
     def test_public_signatures_and_defaults_are_exact(self) -> None:
         actual = {
-            name: str(inspect.signature(getattr(SandboxFacade, name)))
+            name: str(inspect.signature(getattr(SandboxEngine, name)))
             for name in PUBLIC_SIGNATURES
         }
         self.assertEqual(actual, PUBLIC_SIGNATURES)
@@ -93,7 +93,11 @@ class SandboxEventContractTest(unittest.TestCase):
 
     def _events(self) -> list[dict]:
         events = self.app.store.recent_events(project_id=self.project_id)["events"]
-        return list(reversed([event for event in events if event["type"].startswith("sandbox.")]))
+        return list(
+            reversed(
+                [event for event in events if event["type"].startswith("sandbox.")]
+            )
+        )
 
     def _assert_event(
         self,
@@ -106,26 +110,24 @@ class SandboxEventContractTest(unittest.TestCase):
         self.assertEqual(event["type"], event_type)
         self.assertEqual(set(event["payload"]), set(payload))
         self.assertEqual(
-            {key: value for key, value in event["payload"].items() if key not in volatile},
+            {
+                key: value
+                for key, value in event["payload"].items()
+                if key not in volatile
+            },
             {key: value for key, value in payload.items() if key not in volatile},
         )
 
     def test_create_persists_row_then_generation_then_event(self) -> None:
         experiment_id = self._experiment("create-order")
-        repository = self.app.sandboxes.repository
+        repository = self.app.sandbox_storage
         trace: list[str] = []
-        original_upsert = repository.upsert
-        original_generation = repository.record_generation
+        original_complete = repository.complete_provision
         original_emit = repository.emit_event
 
-        def upsert(**kwargs):
-            if kwargs.get("status") == "running":
-                trace.append("running-row")
-            return original_upsert(**kwargs)
-
-        def record_generation(**kwargs):
-            trace.append("generation")
-            return original_generation(**kwargs)
+        def complete_provision(**kwargs):
+            trace.append("running-row+generation")
+            return original_complete(**kwargs)
 
         def emit_event(**kwargs):
             if kwargs.get("event_type") == "sandbox.created":
@@ -133,13 +135,14 @@ class SandboxEventContractTest(unittest.TestCase):
             return original_emit(**kwargs)
 
         with (
-            patch.object(repository, "upsert", side_effect=upsert),
-            patch.object(repository, "record_generation", side_effect=record_generation),
+            patch.object(
+                repository, "complete_provision", side_effect=complete_provision
+            ),
             patch.object(repository, "emit_event", side_effect=emit_event),
         ):
             created = self._request(experiment_id)
 
-        self.assertEqual(trace, ["running-row", "generation", "event"])
+        self.assertEqual(trace, ["running-row+generation", "event"])
         self._assert_event(
             self._events()[-1],
             "sandbox.created",
@@ -162,7 +165,7 @@ class SandboxEventContractTest(unittest.TestCase):
             experiment_id=target,
             sandbox_uid=created["sandbox_uid"],
         )
-        self.app.sandboxes.repository.record_command_snapshot(
+        self.app.sandbox_storage.record_command_snapshot(
             sandbox_uid=created["sandbox_uid"],
             snapshot={"command_id": "cmd", "status": "running"},
             expected_project_id=self.project_id,
@@ -172,12 +175,15 @@ class SandboxEventContractTest(unittest.TestCase):
         )
         events = self._events()
 
-        self.assertEqual([event["type"] for event in events], [
-            "sandbox.created",
-            "sandbox.reused",
-            "sandbox.attached",
-            "sandbox.lifetime_extended",
-        ])
+        self.assertEqual(
+            [event["type"] for event in events],
+            [
+                "sandbox.created",
+                "sandbox.reused",
+                "sandbox.attached",
+                "sandbox.lifetime_extended",
+            ],
+        )
         self._assert_event(
             events[1],
             "sandbox.reused",
@@ -216,9 +222,9 @@ class SandboxEventContractTest(unittest.TestCase):
                 experiment_id = self._experiment(f"release-{outcome}")
                 created = self._request(experiment_id)
                 trace: list[str] = []
-                provisioner = self.app.sandboxes.provisioner
-                lifecycle = self.app.sandboxes.lifecycle
-                repository = self.app.sandboxes.repository
+                provisioner = self.app.sandbox_provisioner
+                lifecycle = self.app.sandbox_lifecycle
+                repository = self.app.sandbox_storage
                 original_cancel = provisioner.cancel
                 original_terminate = lifecycle.terminate_vm
                 original_apply = lifecycle.apply
@@ -248,7 +254,9 @@ class SandboxEventContractTest(unittest.TestCase):
                 terminate_patch = (
                     patch.object(self.backend, "terminate", return_value=False)
                     if outcome == "maybe_alive"
-                    else patch.object(self.backend, "terminate", wraps=self.backend.terminate)
+                    else patch.object(
+                        self.backend, "terminate", wraps=self.backend.terminate
+                    )
                 )
                 with (
                     terminate_patch,
@@ -300,8 +308,8 @@ class SandboxEventContractTest(unittest.TestCase):
         experiment_id = self._experiment("reconcile")
         created = self._request(experiment_id)
         self.backend.alive[created["sandbox_id"]] = False
-        lifecycle = self.app.sandboxes.lifecycle
-        repository = self.app.sandboxes.repository
+        lifecycle = self.app.sandbox_lifecycle
+        repository = self.app.sandbox_storage
         trace: list[str] = []
         original_mark = lifecycle.mark_terminated
         original_emit = repository.emit_event
@@ -330,7 +338,10 @@ class SandboxEventContractTest(unittest.TestCase):
         self._assert_event(
             self._events()[-1],
             "sandbox.expired",
-            {"sandbox_id": created["sandbox_id"], "sandbox_uid": created["sandbox_uid"]},
+            {
+                "sandbox_id": created["sandbox_id"],
+                "sandbox_uid": created["sandbox_uid"],
+            },
         )
 
     def test_expiry_and_idle_reap_event_payloads(self) -> None:
@@ -356,7 +367,7 @@ class SandboxEventContractTest(unittest.TestCase):
         idle = self._request(idle_exp)
         now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         idle_since = now - timedelta(hours=1)
-        self.app.sandboxes.repository.record_heartbeat(
+        self.app.sandbox_storage.record_heartbeat(
             experiment_id=idle_exp,
             sandbox_uid=idle["sandbox_uid"],
             expected_project_id=self.project_id,
@@ -389,7 +400,7 @@ class SandboxEventContractTest(unittest.TestCase):
     def test_stale_and_failed_provision_events_follow_terminal_write(self) -> None:
         stale_exp = self._experiment("stale")
         uid = "sbx_stale_contract"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id=stale_exp,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -405,7 +416,7 @@ class SandboxEventContractTest(unittest.TestCase):
             1,
         )
         self.assertEqual(
-            self.app.sandboxes.repository.get_by_uid(sandbox_uid=uid)["status"],
+            self.app.sandbox_storage.get_by_uid(sandbox_uid=uid)["status"],
             "failed",
         )
         self._assert_event(
@@ -429,7 +440,7 @@ class SandboxEventContractTest(unittest.TestCase):
         )
 
 
-class SandboxRepositoryEventContractScenarios:
+class SandboxStorageEventContractScenarios:
     """The same persistence/event transaction scenario for both SQL dialects."""
 
     store: StateStore
@@ -443,7 +454,7 @@ class SandboxRepositoryEventContractScenarios:
 
     def test_repository_event_uses_its_own_transaction(self) -> None:
         self._seed_project()
-        repository = SandboxRepository(store=self.store)
+        repository = SandboxStorage(store=self.store)
         transactions: list[str] = []
         original_transaction = self.store.transaction
 
@@ -471,7 +482,7 @@ class SandboxRepositoryEventContractScenarios:
 
     def test_run_finished_flag_and_event_share_one_transaction(self) -> None:
         self._seed_project()
-        repository = SandboxRepository(store=self.store)
+        repository = SandboxStorage(store=self.store)
         repository.upsert(
             experiment_id="",
             sandbox_uid="sbx_run_contract",
@@ -497,7 +508,9 @@ class SandboxRepositoryEventContractScenarios:
             observations.append(int(row["finished_event_emitted"]))
             return original_record_event(conn=conn, **kwargs)
 
-        with patch.object(self.store, "record_event", side_effect=observed_record_event):
+        with patch.object(
+            self.store, "record_event", side_effect=observed_record_event
+        ):
             ledger._record(
                 row={
                     "sandbox_uid": "sbx_run_contract",
@@ -531,8 +544,8 @@ class SandboxRepositoryEventContractScenarios:
         )
 
 
-class SqliteSandboxRepositoryEventContractTest(
-    SandboxRepositoryEventContractScenarios, unittest.TestCase
+class SqliteSandboxStorageEventContractTest(
+    SandboxStorageEventContractScenarios, unittest.TestCase
 ):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

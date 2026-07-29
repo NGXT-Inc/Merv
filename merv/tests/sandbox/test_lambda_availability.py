@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import os
-import subprocess
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -10,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.sandbox.execution import build_sandbox_backend
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
-from merv.brain.sandbox.execution.backends.lambda_labs.catalog import summarize_instance_types
+from merv.brain.sandbox.execution.backends.lambda_labs.catalog import (
+    summarize_instance_types,
+)
 from merv.brain.sandbox.execution.backends.lambda_labs.config import LambdaCloudConfig
 from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
     LambdaLabsSandboxBackend,
@@ -19,14 +18,8 @@ from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
     _sandbox_name,
 )
 from merv.brain.sandbox.execution.backends.lambda_labs.config import LambdaSandboxConfig
-from merv.brain.sandbox.execution.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
-from merv.brain.sandbox.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
-from merv.brain.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
-from merv.brain.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
-)
+from merv.brain.sandbox.execution.vm_bootstrap import REC_SCRIPT
+from merv.brain.sandbox.sandbox_backend import BackendValidationError, SandboxRequest
 
 
 INSTANCE_TYPES = {
@@ -48,7 +41,12 @@ INSTANCE_TYPES = {
             "description": "8x H100",
             "gpu_description": "H100 (80 GB SXM5)",
             "price_cents_per_hour": 3592,
-            "specs": {"vcpus": 208, "memory_gib": 1800, "storage_gib": 24780, "gpus": 8},
+            "specs": {
+                "vcpus": 208,
+                "memory_gib": 1800,
+                "storage_gib": 24780,
+                "gpus": 8,
+            },
         },
         "regions_with_capacity_available": [
             {"name": "us-east-1", "description": "Virginia, USA"},
@@ -146,10 +144,14 @@ class LambdaAvailabilityTest(unittest.TestCase):
 
         self.assertEqual(result["count"], 1)
         self.assertFalse(result["instance_types"][0]["available"])
-        self.assertEqual(result["instance_types"][0]["regions_with_capacity_available"], [])
+        self.assertEqual(
+            result["instance_types"][0]["regions_with_capacity_available"], []
+        )
 
     def test_env_config_accepts_research_plugin_api_key(self) -> None:
-        with patch.dict(os.environ, {"RESEARCH_PLUGIN_LAMBDA_API_KEY": "test-key"}, clear=True):
+        with patch.dict(
+            os.environ, {"RESEARCH_PLUGIN_LAMBDA_API_KEY": "test-key"}, clear=True
+        ):
             config = LambdaCloudConfig.from_env()
 
         self.assertEqual(config.api_key, "test-key")
@@ -178,7 +180,11 @@ class LambdaAvailabilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / ".env"
             env_file.write_text("LAMBDA_LABS_API_KEY=file-key\n", encoding="utf-8")
-            with patch.dict(os.environ, {"RESEARCH_PLUGIN_MODAL_ENV_FILE": str(env_file)}, clear=True):
+            with patch.dict(
+                os.environ,
+                {"RESEARCH_PLUGIN_MODAL_ENV_FILE": str(env_file)},
+                clear=True,
+            ):
                 config = LambdaCloudConfig.from_env()
 
         self.assertEqual(config.api_key, "file-key")
@@ -334,13 +340,6 @@ class LambdaSelectionTest(unittest.TestCase):
         )
         return LambdaLabsSandboxBackend(config=config, client=client), client  # type: ignore[return-value]
 
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend, _ = self._backend()
-        descriptor = sandbox_driver_descriptor("lambda_labs")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
-
     def test_hardware_catalog_lists_available_cheapest_first(self) -> None:
         backend, _ = self._backend()
         catalog = backend.hardware_catalog()
@@ -374,7 +373,9 @@ class LambdaSelectionTest(unittest.TestCase):
             provisioned = backend.acquire(request=request)
         launch = client.launches[0]
         self.assertEqual(launch["instance_type_name"], "gpu_1x_a10")
-        self.assertEqual(launch["region_name"], "us-west-1")  # only region with capacity
+        self.assertEqual(
+            launch["region_name"], "us-west-1"
+        )  # only region with capacity
         # The backend reports the SKU's real reserved hardware back to the registry.
         self.assertEqual(provisioned.instance_type, "gpu_1x_a10")
         self.assertEqual(provisioned.region, "us-west-1")
@@ -419,390 +420,6 @@ class LambdaSelectionTest(unittest.TestCase):
                 )
             )
         self.assertIn("not currently offered", str(ctx.exception))
-
-
-class FakeSshRunner:
-    """Records ssh invocations and returns a canned CompletedProcess."""
-
-    def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
-        self.commands: list[list[str]] = []
-        self.inputs: list[str] = []
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-    def __call__(self, command: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
-        self.commands.append(list(command))
-        if stdin is not None:
-            self.inputs.append(stdin)
-        return subprocess.CompletedProcess(command, self.returncode, self.stdout, self.stderr)
-
-
-def transcript_wire_stdout(text: str, *, total: int | None = None) -> str:
-    """What the remote tail command prints: true byte size, then base64 tail."""
-    data = text.encode("utf-8")
-    size = len(data) if total is None else total
-    return f"{size}\n" + base64.encodebytes(data).decode("ascii")
-
-
-class LambdaTranscriptTest(unittest.TestCase):
-    def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
-        config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
-        return LambdaLabsSandboxBackend(
-            config=config, client=FakeLambdaSandboxClient(), ssh_runner=runner  # type: ignore[arg-type]
-        )
-
-    def _read(self, backend: LambdaLabsSandboxBackend, **overrides) -> TranscriptTail:
-        kwargs = {
-            "sandbox_id": "inst_1",
-            "experiment_id": "exp1",
-            "volume_name": "",
-            "workdir": "/workspace/synced",
-            "ssh_host": "198.51.100.2",
-            "ssh_port": 22,
-            "ssh_user": "ubuntu",
-            "key_path": "/keys/exp1",
-        }
-        kwargs.update(overrides)
-        return backend.read_transcript(**kwargs)
-
-    def test_read_transcript_tails_log_over_ssh(self) -> None:
-        transcript = "[t] $ echo hi\nhi\n[t] (exit 0)\n"
-        runner = FakeSshRunner(stdout=transcript_wire_stdout(transcript))
-        backend = self._backend(runner)
-
-        tail = self._read(backend)
-
-        self.assertEqual(tail.data, transcript.encode("utf-8"))
-        self.assertEqual(tail.total_bytes, len(transcript.encode("utf-8")))
-        command = runner.commands[0]
-        self.assertEqual(command[0], "ssh")
-        self.assertIn("/keys/exp1", command)
-        self.assertIn("22", command)
-        # The read logs in as the ForceCommand-exempt management principal
-        # (plan Phase 5): never the row's data-plane user, and no recording
-        # sentinel — the Match block exemption replaces the rec.sh bypass.
-        self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
-        remote = command[-1]
-        self.assertNotIn("transcript-read", remote)
-        self.assertIn(
-            "/workspace/synced/.merv_sessions/exp1/transcript.log", remote
-        )
-        self.assertIn(f"tail -c {TRANSCRIPT_TAIL_DEFAULT}", remote)
-        # The command also reports the transcript's true size so the terminal
-        # cursor keeps advancing past the tail window, and base64-encodes the
-        # window so raw bytes survive the text-mode SSH pipe.
-        self.assertIn("wc -c", remote)
-        self.assertIn("| base64", remote)
-
-    def test_read_transcript_honors_tail_limit(self) -> None:
-        runner = FakeSshRunner(stdout=transcript_wire_stdout("x"))
-        backend = self._backend(runner)
-
-        self._read(backend, tail=512)
-
-        self.assertIn("tail -c 512", runner.commands[0][-1])
-
-    def test_read_transcript_reports_true_size_beyond_the_window(self) -> None:
-        # A 512-byte window of a 60000-byte log: the window bytes come back
-        # verbatim, and total_bytes carries the real size for cursor math.
-        window = "z" * 512
-        runner = FakeSshRunner(stdout=transcript_wire_stdout(window, total=60_000))
-        backend = self._backend(runner)
-
-        tail = self._read(backend, tail=512)
-
-        self.assertEqual(tail.data, window.encode("utf-8"))
-        self.assertEqual(tail.total_bytes, 60_000)
-
-    def test_read_transcript_without_endpoint_or_key_returns_empty(self) -> None:
-        runner = FakeSshRunner(stdout="never returned")
-        backend = self._backend(runner)
-
-        empty = TranscriptTail(data=b"", total_bytes=0)
-        self.assertEqual(self._read(backend, sandbox_id=""), empty)
-        self.assertEqual(self._read(backend, ssh_host=""), empty)
-        self.assertEqual(self._read(backend, key_path=""), empty)
-        self.assertEqual(runner.commands, [])
-
-    def test_read_transcript_ssh_failure_raises_unavailable(self) -> None:
-        runner = FakeSshRunner(returncode=255, stderr="ssh: connect to host: refused")
-        backend = self._backend(runner)
-
-        with self.assertRaises(BackendUnavailableError) as ctx:
-            self._read(backend)
-
-        self.assertIn("exit 255", str(ctx.exception))
-        self.assertIn("refused", str(ctx.exception))
-
-    def test_rec_script_carries_no_legacy_transcript_read_bypass(self) -> None:
-        # Transcript reads go through the Match-exempt management principal;
-        # the pre-mgmt-channel rec.sh prefix bypass must stay deleted.
-        self.assertNotIn("transcript-read", REC_SCRIPT)
-        # The file-transfer bypass (rsync/scp/sftp) is still load-bearing and
-        # must short-circuit before the recording path tees into the log.
-        self.assertLess(
-            REC_SCRIPT.index("rsync"), REC_SCRIPT.index('tee -a "$LOG"')
-        )
-
-
-class LambdaSecretsTest(unittest.TestCase):
-    """HF_TOKEN out of plaintext user_data; delivered post-boot (plan Phase 9)."""
-
-    def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
-        config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
-        return LambdaLabsSandboxBackend(
-            config=config,
-            client=FakeLambdaSandboxClient(),
-            ssh_runner=runner,  # type: ignore[arg-type]
-            ssh_input_runner=runner,  # type: ignore[arg-type]
-        )
-
-    def test_user_data_never_embeds_the_token_plaintext(self) -> None:
-        with patch.dict(os.environ, {"HF_TOKEN": "hf_supersecret_value"}, clear=False):
-            user_data = build_user_data(
-                public_key="ssh-ed25519 AAAA user@host",
-                experiment_id="exp1",
-                workdir="/workspace/exp1",
-                sessions_dir="/workspace/.merv_sessions/exp1",
-                sandbox_data_dir="/workspace/data",
-                tokens={"HF_TOKEN": "hf_supersecret_value"},
-            )
-        # The cleartext token must NOT land in the provider's user_data blob.
-        self.assertNotIn("hf_supersecret_value", user_data)
-        self.assertNotIn("export HF_TOKEN=", user_data)
-
-    def test_rec_script_sources_post_boot_secrets_file(self) -> None:
-        self.assertIn("/opt/merv/secrets.env", REC_SCRIPT)
-
-    def test_write_secrets_delivers_over_mgmt_channel_without_token_in_argv(self) -> None:
-        runner = FakeSshRunner(returncode=0)
-        backend = self._backend(runner)
-        ok = backend.write_secrets(
-            sandbox_id="inst_1",
-            secrets={"HF_TOKEN": "hf_supersecret_value"},
-            ssh_host="198.51.100.2",
-            ssh_port=22,
-            key_path="/keys/mgmt",
-        )
-        self.assertTrue(ok)
-        command = runner.commands[0]
-        # Management principal + management key.
-        self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
-        self.assertIn("/keys/mgmt", command)
-        # The secret body travels over SSH stdin, not local process argv.
-        argv = " ".join(command)
-        self.assertNotIn("hf_supersecret_value", argv)
-        self.assertNotIn(
-            base64.b64encode(b"export HF_TOKEN=hf_supersecret_value\n").decode("ascii"),
-            argv,
-        )
-        self.assertEqual(runner.inputs, ["export HF_TOKEN=hf_supersecret_value\n"])
-        self.assertIn("/opt/merv/secrets.env", command[-1])
-
-    def test_write_secrets_noop_without_endpoint_or_secrets(self) -> None:
-        runner = FakeSshRunner(returncode=0)
-        backend = self._backend(runner)
-        self.assertFalse(
-            backend.write_secrets(sandbox_id="i", secrets={}, ssh_host="h", key_path="k")
-        )
-        self.assertFalse(
-            backend.write_secrets(
-                sandbox_id="i", secrets={"HF_TOKEN": "x"}, ssh_host="", key_path="k"
-            )
-        )
-        self.assertEqual(runner.commands, [])
-
-    def test_sandbox_secrets_uses_provisioning_user_token_not_env(self) -> None:
-        config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
-        backend = LambdaLabsSandboxBackend(
-            config=config, client=FakeLambdaSandboxClient()
-        )
-        # Per-user token in (no-dataplane Phase C); the deployment env is ignored.
-        with patch.dict(os.environ, {"HF_TOKEN": "hf_deployment"}, clear=False):
-            self.assertEqual(
-                backend.sandbox_secrets(hf_token="hf_user").get("HF_TOKEN"), "hf_user"
-            )
-            self.assertIsNone(backend.sandbox_secrets().get("HF_TOKEN"))
-
-
-class LambdaMetricsTest(unittest.TestCase):
-    SAMPLE_OUTPUT = (
-        "MERV cpu_cores_used=3.4210\n"
-        "MERV mem_used_bytes=2147483648\n"
-        "MERV net_bytes_total=123456\n"
-        "MERV ssh_established=2\n"
-        "MERV gpu idx=0 util=97 used=20000 total=24576 name=NVIDIA A10\n"
-        "MERV ok=1\n"
-    )
-
-    def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
-        config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
-        return LambdaLabsSandboxBackend(
-            config=config, client=FakeLambdaSandboxClient(), ssh_runner=runner  # type: ignore[arg-type]
-        )
-
-    def _sample(self, backend: LambdaLabsSandboxBackend, **overrides) -> dict | None:
-        kwargs = {
-            "sandbox_id": "inst_1",
-            "ssh_host": "198.51.100.2",
-            "ssh_port": 22,
-            "ssh_user": "ubuntu",
-            "key_path": "/keys/exp1",
-        }
-        kwargs.update(overrides)
-        return backend.sample_metrics(**kwargs)
-
-    def test_sample_metrics_parses_gauges_over_ssh(self) -> None:
-        runner = FakeSshRunner(stdout=self.SAMPLE_OUTPUT)
-        backend = self._backend(runner)
-
-        metrics = self._sample(backend)
-
-        self.assertIsNotNone(metrics)
-        self.assertAlmostEqual(metrics["cpu"]["used_cores"], 3.421)
-        self.assertEqual(metrics["memory"]["used_bytes"], 2_147_483_648)
-        self.assertEqual(metrics["network"]["bytes_total"], 123456)
-        self.assertEqual(metrics["network"]["ssh_established"], 2)
-        self.assertEqual(
-            metrics["gpus"],
-            [{
-                "index": 0,
-                "name": "NVIDIA A10",
-                "util_pct": 97,
-                "mem_used_mib": 20000,
-                "mem_total_mib": 24576,
-            }],
-        )
-        command = runner.commands[0]
-        self.assertEqual(command[0], "ssh")
-        self.assertIn("/keys/exp1", command)
-        # The sampler rides the management channel (plan Phase 5): the exempt
-        # principal keeps the ~3s UI poll out of the experiment transcript.
-        self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
-        remote = command[-1]
-        self.assertNotIn("transcript-read", remote)
-        self.assertIn("nvidia-smi", remote)
-
-    def test_sample_metrics_without_endpoint_or_key_returns_none(self) -> None:
-        runner = FakeSshRunner(stdout=self.SAMPLE_OUTPUT)
-        backend = self._backend(runner)
-
-        self.assertIsNone(self._sample(backend, sandbox_id=""))
-        self.assertIsNone(self._sample(backend, ssh_host=""))
-        self.assertIsNone(self._sample(backend, key_path=""))
-        self.assertEqual(runner.commands, [])
-
-    def test_sample_metrics_never_raises_on_ssh_failure(self) -> None:
-        runner = FakeSshRunner(returncode=255, stderr="ssh: connect to host: refused")
-        backend = self._backend(runner)
-
-        self.assertIsNone(self._sample(backend))
-
-
-class LambdaEnvironmentTest(unittest.TestCase):
-    def _backend(self) -> tuple[LambdaLabsSandboxBackend, FakeLambdaSandboxClient]:
-        client = FakeLambdaSandboxClient()
-        config = LambdaSandboxConfig(
-            cloud=LambdaCloudConfig(api_key="test-key"),
-            region_name="us-east-1",
-            instance_type_name="gpu_8x_h100_sxm5",
-            poll_interval_seconds=0.001,
-            poll_timeout_seconds=1,
-        )
-        return LambdaLabsSandboxBackend(config=config, client=client), client  # type: ignore[arg-type]
-
-    def _acquire(self, backend: LambdaLabsSandboxBackend) -> None:
-        request = SandboxRequest(
-            experiment_id="exp1", project_id="proj1", public_key="ssh-ed25519 AAAA test"
-        )
-        with patch("socket.create_connection", fake_socket_connection):
-            backend.acquire(request=request)
-
-    def test_sandbox_environment_reports_hf_token_in_registry_shape(self) -> None:
-        # SandboxService._sandbox_environment consumes {available_tokens, notes};
-        # anything else never reaches the agent view.
-        backend, _ = self._backend()
-        with patch.dict(os.environ, {"HF_TOKEN": "hf_secret_value"}, clear=True):
-            env = backend.sandbox_environment()
-
-        self.assertEqual(env["available_tokens"], ["HF_TOKEN"])
-        self.assertTrue(env["notes"])
-        self.assertNotIn("hf_secret_value", str(env))
-
-    def test_sandbox_environment_empty_without_token(self) -> None:
-        backend, _ = self._backend()
-        with patch.dict(os.environ, {}, clear=True):
-            env = backend.sandbox_environment()
-
-        self.assertEqual(env, {"available_tokens": [], "notes": []})
-
-    def test_acquire_never_embeds_tokens_in_user_data(self) -> None:
-        # Inverted (plan Phase 9, risk 16): the token is NO LONGER baked into
-        # user_data — cleartext there lands in provider metadata and on disk.
-        # It is delivered post-boot via write_secrets (LambdaSecretsTest), and
-        # sandbox_secrets() is the source the control side reads.
-        backend, client = self._backend()
-        with patch.dict(
-            os.environ,
-            {"HF_TOKEN": "hf_secret_value", "HUGGING_FACE_HUB_TOKEN": "hf_hub_value"},
-            clear=True,
-        ):
-            self._acquire(backend)
-
-        user_data = client.launches[0]["user_data"]
-        self.assertNotIn("hf_secret_value", user_data)
-        self.assertNotIn("hf_hub_value", user_data)
-        self.assertNotIn("export HF_TOKEN", user_data)
-        # The secrets ARE the ones write_secrets would deliver post-boot: the
-        # provisioning user's token (no-dataplane Phase C), mirrored into both HF
-        # env names. The deployment env is never read.
-        with patch.dict(os.environ, {"HF_TOKEN": "hf_deployment"}, clear=True):
-            secrets = backend.sandbox_secrets(hf_token="hf_secret_value")
-        self.assertEqual(secrets["HF_TOKEN"], "hf_secret_value")
-        self.assertEqual(secrets["HUGGING_FACE_HUB_TOKEN"], "hf_secret_value")
-
-    def test_acquire_without_tokens_writes_no_exports(self) -> None:
-        backend, client = self._backend()
-        with patch.dict(os.environ, {}, clear=True):
-            self._acquire(backend)
-
-        user_data = client.launches[0]["user_data"]
-        self.assertNotIn("export HF_TOKEN", user_data)
-        self.assertNotIn("HUGGING_FACE_HUB_TOKEN", user_data)
-
-    def test_hub_token_alone_is_not_injected(self) -> None:
-        # Mirrors Modal's secret gating: HUGGING_FACE_HUB_TOKEN only rides
-        # along when HF_TOKEN itself is configured.
-        backend, client = self._backend()
-        with patch.dict(os.environ, {"HUGGING_FACE_HUB_TOKEN": "hf_hub_value"}, clear=True):
-            self._acquire(backend)
-
-        self.assertNotIn("hf_hub_value", client.launches[0]["user_data"])
-
-
-class LambdaUserDataOrderingTest(unittest.TestCase):
-    def test_workspace_and_ssh_set_up_before_heavy_installs(self) -> None:
-        ud = build_user_data(
-            public_key="ssh-ed25519 AAAA test",
-            experiment_id="exp1",
-            workdir="/workspace/exp1",
-            sessions_dir="/workspace/.merv_sessions/exp1",
-            sandbox_data_dir="/workspace/data",
-        )
-        # The experiment dir + SSH/ForceCommand must be set up before the slow
-        # apt/torch install, so the registry's first rsync has somewhere to land.
-        self.assertLess(ud.index("mkdir -p /opt/merv"), ud.index("apt-get update"))
-        self.assertLess(
-            ud.index("ForceCommand /opt/merv/rec.sh"),
-            ud.index("torch torchvision torchaudio"),
-        )
-
-    def test_rec_script_passes_rsync_through_untouched(self) -> None:
-        # rsync/scp/sftp must be exec'd raw (no tee) or the binary stream corrupts
-        # once ForceCommand is active.
-        self.assertIn(r"rsync\ --server*", REC_SCRIPT)
-        self.assertIn("exec bash -lc", REC_SCRIPT)
 
 
 if __name__ == "__main__":

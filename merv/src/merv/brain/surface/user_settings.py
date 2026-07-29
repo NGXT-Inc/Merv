@@ -3,7 +3,7 @@
 Currently just the per-user Hugging Face token: a member brings their own so no
 deployment-wide HF secret exists. The value is WRITE-ONLY — set or cleared here,
 never returned by any read — and is consumed only internally at sandbox
-provisioning (see ``SandboxFacade._resolve_hf_token``). The persistence lives on
+provisioning (see ``SandboxEngine._resolve_hf_token``). The persistence lives on
 the kernel record store (``user_hf_tokens``, KERNEL-owned); this surface facade
 is the write path the REST route and composition depend on.
 """

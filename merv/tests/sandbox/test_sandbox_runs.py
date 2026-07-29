@@ -66,7 +66,7 @@ class SandboxRunsTest(unittest.TestCase):
             {"project_id": self.project_id, "experiment_id": self.experiment_id},
         )
         self.sandbox_uid = view["sandbox_uid"]
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
         self.sandbox_id = str(row["sandbox_id"])
 
     def tearDown(self) -> None:
@@ -101,7 +101,7 @@ class SandboxRunsTest(unittest.TestCase):
         return self.app.call_tool("sandbox.runs", args)
 
     def _sweep(self) -> int:
-        return self.app.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        return self.app.sandbox_observer.observe_live(max_age_seconds=0.0)
 
     def test_runs_refuses_an_experiment_from_another_project(self) -> None:
         """A caller authorized for one project cannot read another's receipts.
@@ -218,12 +218,12 @@ class SandboxRunsTest(unittest.TestCase):
         """
         self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
         self._runs()
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
         with mock.patch.object(
-            self.app.sandboxes.lifecycle, "terminate_vm", return_value="maybe_alive"
+            self.app.sandbox_lifecycle, "terminate_vm", return_value="maybe_alive"
         ):
-            self.app.sandboxes.lifecycle.reap_row(row=row)
-        conn = self.app.sandboxes.store.connect()
+            self.app.sandbox_lifecycle.reap_row(row=row)
+        conn = self.app.store.connect()
         try:
             stamp = conn.execute(
                 "SELECT runs_final_observed_at FROM sandboxes WHERE sandbox_uid = ?",

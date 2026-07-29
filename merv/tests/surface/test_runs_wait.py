@@ -187,7 +187,7 @@ class WaitEndpointTest(unittest.TestCase):
             {"project_id": self.project_id, "experiment_id": self.experiment_id},
         )
         self.sandbox_uid = view["sandbox_uid"]
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
         self.sandbox_id = str(row["sandbox_id"])
         # Module singletons are process-wide by design; each test starts clean.
         runs_wait._ADMISSION = runs_wait._StreamAdmission()
@@ -221,7 +221,7 @@ class WaitEndpointTest(unittest.TestCase):
 
     def _mirror(self, *runs: dict) -> None:
         self.fake.run_listings[self.sandbox_id] = _listing(*runs)
-        self.app.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        self.app.sandbox_observer.observe_live(max_age_seconds=0.0)
 
     def _set_run_clock(self, *, label: str, updated_at: str) -> None:
         with self.app.store.transaction() as conn:
@@ -299,7 +299,7 @@ class WaitEndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 410)
 
     def test_a_forged_tag_never_reaches_the_database(self) -> None:
-        ledger = self.app.sandboxes.runs_ledger
+        ledger = self.app.sandbox_runs
         with patch.object(ledger, "wait_facts", side_effect=AssertionError("looked up")):
             response = self.client.get(self._url(label="seed0", sig="1" * 32))
         self.assertEqual(response.status_code, 410)
@@ -405,7 +405,7 @@ class WaitEndpointTest(unittest.TestCase):
             WAIT_HOLD_CAP_SECONDS=0.05,
         ):
             with patch.object(
-                self.app.sandboxes.runs_observer, "observe", return_value=True
+                self.app.sandbox_observer, "observe", return_value=True
             ) as observe:
                 self.client.get(self._url(label="seed0"))
         self.assertTrue(observe.call_args_list)
@@ -524,7 +524,7 @@ class WaitEndpointTest(unittest.TestCase):
         """wait_facts opens a synchronous connection (Postgres when hosted), so
         reading it inline would freeze every heartbeat in the process — and
         every unrelated request — for as long as one database is slow."""
-        ledger = self.app.sandboxes.runs_ledger
+        ledger = self.app.sandbox_runs
         answer = ledger.wait_facts
         readers: list[str] = []
 
@@ -590,7 +590,7 @@ class WaitEndpointTest(unittest.TestCase):
             finish.wait(5.0)
             return None
 
-        ledger = self.app.sandboxes.runs_ledger
+        ledger = self.app.sandbox_runs
 
         async def scenario() -> int:
             task = asyncio.create_task(self._endpoint(label="seed0"))
@@ -745,9 +745,9 @@ class RunsWaitUrlTest(unittest.TestCase):
         )["sandbox_uid"]
 
     def _mirror(self, sandbox_uid: str, *runs: dict) -> None:
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=sandbox_uid)
         self.fake.run_listings[str(row["sandbox_id"])] = _listing(*runs)
-        self.app.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        self.app.sandbox_observer.observe_live(max_age_seconds=0.0)
 
     def _legacy(self, **arguments: str) -> dict:
         response = self.client.post(
@@ -1012,11 +1012,11 @@ class WaitServerCompositionTest(unittest.TestCase):
             {"project_id": project_id, "experiment_id": experiment_id},
         )
         self.sandbox_uid = view["sandbox_uid"]
-        row = self.brain.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.brain.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
         self.fake.run_listings[str(row["sandbox_id"])] = _listing(
             {"label": "seed0", "exit_code": 0, "finished_at": "2026-07-27T10:05:00Z"}
         )
-        self.brain.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        self.brain.sandbox_observer.observe_live(max_age_seconds=0.0)
         # Module singletons are process-wide by design; each test starts clean.
         runs_wait._ADMISSION = runs_wait._StreamAdmission()
         runs_wait._BUCKET = runs_wait._TokenBucket(

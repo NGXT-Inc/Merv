@@ -24,19 +24,10 @@ def _float_or_zero(value: Any) -> float:
 
 
 def _float_or_none(value: Any) -> float | None:
-    """Money-safe coercion: an absent or malformed number stays UNKNOWN.
+    """Keep missing, malformed, negative, and NaN prices unknown.
 
-    Never use ``_float_or_zero`` for a price. A missing ``price_hourly`` coerced
-    to ``0.0`` reads downstream as "the provider quoted free", which sails past
-    every USD ceiling and spends a budget blind (audit SAN-04). ``None`` makes
-    the cost policy fail closed; a provider's own explicit ``0`` still comes
-    back as a known zero.
-
-    A NEGATIVE number is not a price either. It sorts to the front of the
-    agent's cheapest-first menu, passes any positive USD ceiling (admission
-    only rejects prices ABOVE the limit), and then SUBTRACTS from recorded
-    spend — one garbled feed value would hand a tenant an unbounded budget.
-    Unknown is the only safe reading.
+    Coercing any of them to zero would bypass spend ceilings; explicit provider
+    zero remains a known price.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -50,11 +41,7 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def price_sort_key(option: dict[str, Any]) -> tuple[bool, float, str]:
-    """Cheapest-first ordering that parks unpriced SKUs at the END.
-
-    An unknown price is not a cheap one — sorting ``None`` as ``0.0`` would put
-    every unpriced option at the top of the agent's menu.
-    """
+    """Cheapest first, with unknown prices last."""
     price = option.get("price_usd_per_hour")
     return (
         price is None,

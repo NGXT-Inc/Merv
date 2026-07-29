@@ -10,7 +10,7 @@ from fastapi.responses import Response
 
 from ....application.facade import EventTimelineQuery, ProjectDashboardQuery, StatusAndNextQuery
 from ....research_core.facade import ResearchProjects
-from ....sandbox.facade import SandboxFacade
+from ....sandbox.core import SandboxEngine
 from .shared import (
     JsonBody, conditional_json_from_signal, path_scoped_body,
     require_membership_author,
@@ -27,7 +27,7 @@ def build_router(
     dashboard: ProjectDashboardQuery,
     workflow: StatusAndNextQuery,
     timeline: EventTimelineQuery,
-    sandboxes: SandboxFacade,
+    sandboxes: SandboxEngine,
 ) -> APIRouter:
     api_router = APIRouter()
 

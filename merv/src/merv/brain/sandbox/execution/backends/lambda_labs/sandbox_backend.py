@@ -45,10 +45,7 @@ LAMBDA_APT_PACKAGES: tuple[str, ...] = (
 )
 
 class LambdaLabsSandboxBackend(VmSshSandboxBackend):
-    # Lambda Labs sells fixed machine SKUs (GPU + vCPU + RAM bundled), so the
-    # agent must pick an instance type — there are no independent cpu/memory
-    # knobs. ``requires_hardware_selection`` makes SandboxService return a live
-    # availability menu when ``sandbox.request`` arrives without an instance type.
+    # Lambda bundles GPU, CPU, and RAM, so requests choose a live machine SKU.
     capabilities = BackendCapabilities(
         name="lambda_labs",
         lifetime_extension_supported=True,
@@ -68,10 +65,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             ssh_runner=ssh_runner,
             ssh_input_runner=ssh_input_runner,
         )
-        # Resolve config/client lazily so the daemon can boot (and report health)
-        # with only an API key present — region/instance type are per-request,
-        # and a missing key surfaces at call time as a clean health error rather
-        # than crashing construction of the default backend.
+        # Missing credentials surface at call time instead of breaking startup.
         self._config = config
         self._client = client
 
@@ -99,9 +93,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
                 "into one machine). Call sandbox.options, or sandbox.request without "
                 "an instance_type, to see live availability, then pick a SKU."
             )
-        # The config's default region pairs with the config's default instance
-        # type. If the agent overrode the instance type, don't force that region
-        # onto it — auto-pick a region with capacity for the chosen SKU instead.
+        # A request-selected SKU must not inherit the default SKU's region.
         default_region = "" if request.instance_type else self.config.region_name
         self._notify(on_phase, "checking_capacity", instance_type)
         region, specs = self._resolve_placement(
@@ -119,8 +111,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
 
             self._notify(on_phase, "creating", f"{instance_type} in {region}")
             workdir = self._sandbox_workdir(request)
-            # No tokens are embedded; credentials are delivered post-boot over
-            # the management channel.
+            # Credentials arrive post-boot, never in provider user_data.
             user_data = self._standard_user_data(
                 request=request,
                 workdir=workdir,
@@ -201,12 +192,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any]:
-        """Live, agent-facing menu of currently-available Lambda machine SKUs.
-
-        Returns a compact, cheapest-first list of instance types with capacity
-        right now. The agent picks one and passes it back as
-        ``sandbox.request(instance_type=...)``.
-        """
+        """Cheapest-first machine SKUs with current capacity."""
         summary = summarize_instance_types(
             self.client.list_instance_types(),
             gpu=gpu,
@@ -226,12 +212,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
     def _resolve_placement(
         self, *, instance_type: str, region: str, requested_gpu: str | None
     ) -> tuple[str, dict[str, Any]]:
-        """Validate the SKU + capacity and pick a region; return (region, specs).
-
-        Region resolution: honor an explicit request, otherwise pick the
-        (sorted, deterministic) first region that currently has capacity for the
-        chosen instance type.
-        """
+        """Validate capacity; otherwise choose the first available region."""
         instance_types = self.client.list_instance_types()
         row = instance_types.get(instance_type)
         if not isinstance(row, dict):
@@ -286,8 +267,6 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             "gpus": _int_or_zero(specs_raw.get("gpus")),
             "vcpus": _int_or_zero(specs_raw.get("vcpus")),
             "memory_gib": _int_or_zero(specs_raw.get("memory_gib")),
-            # Cloud plan Phase 7: the price the catalog quoted for this SKU,
-            # captured here instead of being fetched-then-discarded.
             "price_usd_per_hour": float(option.get("price_usd_per_hour") or 0.0),
         }
         return chosen, specs

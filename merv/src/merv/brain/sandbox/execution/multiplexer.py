@@ -1,19 +1,7 @@
-"""Fan one SandboxBackend port out over several configured providers.
+"""Route one backend port across configured providers.
 
-`MultiplexingSandboxBackend` itself implements the `SandboxBackend` Protocol,
-so services keep exactly one backend reference. Routing is by data value only:
-
-  - ``acquire`` routes on ``request.provider`` (None = the default backend)
-    and returns ids prefixed ``"<provider>:<native_id>"``.
-  - Every id-addressed operation decodes that prefix and dispatches to the
-    owning backend. Un-prefixed ids (rows that predate the multiplexer) route
-    to the default backend; an id whose prefix is not a configured provider
-    RAISES instead of answering — asking the wrong provider about an id would
-    404 into "gone" and get a live, billing VM marked terminated.
-
-Single-backend deployments never construct this class (see
-``build_sandbox_backend``), so their ids stay un-prefixed and behavior is
-byte-identical.
+New IDs carry ``<provider>:``. Legacy native IDs use the row's provider;
+unknown owners raise rather than turning a wrong-provider 404 into ``gone``.
 """
 
 from __future__ import annotations
@@ -52,9 +40,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         self.backends = dict(backends)
         self.default = default
         self._aliases = dict(aliases or {})
-        # Mirror the default backend so top-level fields (options() "backend",
-        # catalog "provider") keep meaning "the default"; enforce_expiry is the
-        # conservative union — billing protection wins over any one backend.
+        # Preserve default-provider metadata; billing protection is the union.
         base = self.backends[default].capabilities
         self.capabilities = BackendCapabilities(
             name=base.name,
@@ -81,13 +67,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         return name
 
     def _decode(self, sandbox_id: str) -> tuple[SandboxBackend, str]:
-        """Owning backend + native id for a stored sandbox id.
-
-        No ':' = a legacy id from before the multiplexer — the default
-        backend's. A prefix that is not a configured provider raises (the
-        provider may have been removed from the config): no backend can answer
-        authoritatively for it, and a guessed answer risks a live VM.
-        """
+        """Decode an owned ID; unknown prefixes are unavailable, not absent."""
         prefix, sep, native = sandbox_id.partition(":")
         if not sep:
             return self.backends[self.default], sandbox_id
@@ -103,15 +83,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         return f"{provider}:{native_id}" if native_id else native_id
 
     def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
-        """Address a stored id to the provider the ROW says owns it.
-
-        Un-prefixed ids predate the multiplexer, so the id alone cannot name
-        its owner — and routing them to whatever is currently the default is
-        how a default-backend change turns a wrong-provider 404 into "gone"
-        and strands a live, billing VM behind a terminal row. The row's durable
-        ``provider`` column is the proof of ownership; when it names a provider
-        that is not configured we RAISE rather than let anyone else answer.
-        """
+        """Qualify legacy native IDs using the durable row owner."""
         sandbox_id = str(sandbox_id or "")
         prefix, sep, _native = sandbox_id.partition(":")
         if sep:
@@ -124,7 +96,6 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         recorded = str(provider or "").strip().lower()
         name = self._aliases.get(recorded, recorded)
         if not sandbox_id or not name:
-            # Nothing recorded owns it: legacy behavior, the default backend.
             return sandbox_id
         if name not in self.backends:
             raise BackendUnavailableError(
@@ -151,8 +122,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         backend = self.backends[name]
 
         def prefixed_on_created(sandbox_id: str, sandbox_name: str) -> None:
-            # The id is persisted the instant it exists (orphan recovery); it
-            # must already carry its owner so cleanup routes correctly.
+            # Persist ownership together with the early native ID.
             if on_created is not None:
                 on_created(self._encode(name, sandbox_id), sandbox_name)
 
@@ -264,7 +234,6 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
     # ---------- fleet-wide operations ----------
 
     def _lookup_targets(self, *, provider: str) -> dict[str, SandboxBackend]:
-        """The backends allowed to answer for a row, keyed by its owner."""
         recorded = str(provider or "").strip().lower()
         name = self._aliases.get(recorded, recorded)
         if not name:
@@ -279,25 +248,10 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
-        """Ask the provider the ROW records; only an ownerless row fans out.
+        """Ask only the recorded owner; ownerless legacy rows may fan out.
 
-        Deterministic sandbox names are derived from the experiment, so a
-        sibling attempt on ANOTHER provider answers to the same name. Taking
-        the first hit across the fleet therefore terminates that sibling's VM
-        and reads its answer as proof the recorded owner's sandbox is gone —
-        the wrong attempt destroyed while the real one keeps billing behind a
-        terminalized row (audit SAN-06). A row that records its owner is
-        answered by that owner ALONE, exactly as ``qualified_sandbox_id``
-        routes an id; an owner that is no longer configured RAISES, because
-        nobody left can answer for it.
-
-        Only a row with no recorded owner (pre-multiplexer) fans out, and
-        there the first hit is the only hit — nothing else could own it.
-
-        A provider outage does not mask the rest, but "nobody has it" is only
-        returned when every provider actually answered — otherwise the last
-        error propagates, so the caller does not read an unasked provider as
-        proof the sandbox is gone (audit SAN-06).
+        Deterministic names can collide across providers. Absence is returned
+        only if every eligible provider answered.
         """
         unreachable: Exception | None = None
         for name, backend in self._lookup_targets(provider=provider).items():
@@ -317,12 +271,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any] | None:
-        """One merged, cheapest-first menu; every option tagged with its provider.
-
-        Top-level ``provider`` keeps its legacy meaning (the default backend);
-        ``providers`` lists everything configured. A chosen option's
-        ``provider`` is what the agent passes back on ``sandbox.request``.
-        """
+        """Merge catalogs and tag each requestable option with its provider."""
         merged: list[dict[str, Any]] = []
         regions: set[str] = set()
         catalogs: dict[str, dict[str, Any]] = {}
@@ -341,7 +290,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
             return None
         merged.sort(
             key=lambda o: (
-                # Unpriced options are not the cheapest ones; they sort last.
+                # Unknown price sorts last.
                 o.get("price_usd_per_hour") is None,
                 float(o.get("price_usd_per_hour") or 0.0),
                 str(o.get("instance_type") or ""),

@@ -60,10 +60,10 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "application" / "experiments" / "presentation.py",
     SERVICES_ROOT / "permissions.py",
     BACKEND_ROOT / "application" / "workflow.py",
-    BACKEND_ROOT / "sandbox" / "facade.py",
+    BACKEND_ROOT / "sandbox" / "core.py",
     FEED_ROOT / "feed.py",
     FEED_ROOT / "feed_policy.py",
-    BACKEND_ROOT / "sandbox" / "sandbox_metrics.py",
+    BACKEND_ROOT / "sandbox" / "observation.py",
     SURFACE_ROOT / "control" / "record_core.py",
     SURFACE_ROOT / "control" / "control_app.py",
     SURFACE_ROOT / "control" / "control_runtime.py",
@@ -365,15 +365,19 @@ load("subprocess")
         )
         self.assertNotIn("repo_root", source)
 
-    def test_sandbox_views_do_not_import_execution(self) -> None:
-        # Remote directory names are projected without provider execution machinery.
-        path = BACKEND_ROOT / "sandbox" / "sandbox_views.py"
-        self.assertNotIn("execution", _import_segments(path))
+    def test_sandbox_core_does_not_import_provider_implementations(self) -> None:
+        path = BACKEND_ROOT / "sandbox" / "core.py"
+        self.assertFalse(
+            any(
+                segment.startswith("execution.backends.")
+                for segment in _import_segments(path)
+            )
+        )
 
     def test_sandbox_services_use_backend_port_not_execution_package(self) -> None:
         # Record/control sandbox services depend on the provider-neutral port,
         # while concrete provider machinery stays under execution/.
-        for name in ("sandbox_daemons.py", "sandbox_provisioner.py", "facade.py"):
+        for name in ("scheduler.py", "acquisition.py", "core.py"):
             with self.subTest(module=name):
                 self.assertNotIn(
                     "execution", _import_segments(BACKEND_ROOT / "sandbox" / name)
@@ -435,7 +439,7 @@ load("subprocess")
         imports = _import_segments(BACKEND_ROOT / "application" / "workflow.py")
         self.assertIn("facade", imports)
         self.assertIn("from .ports.sandbox import SandboxReads", source)
-        self.assertNotIn("from ..sandbox.facade import SandboxReads", source)
+        self.assertNotIn("from ..sandbox.core import SandboxReads", source)
         self.assertNotIn("from ..research_core.experiments", source)
         self.assertNotIn("reviews", imports)
         self.assertNotIn("sandboxes", imports)
@@ -597,12 +601,17 @@ load("subprocess")
             "GraphRefResolver(",
             "PermissionService(",
             "ProjectService(",
-            "QuotaService(",
             "ReviewService(",
             "ReflectionService(",
         ):
             self.assertNotIn(service_ctor, app_source)
             self.assertIn(service_ctor, record_source)
+        self.assertNotIn("QuotaService(", app_source)
+        self.assertNotIn("QuotaService(", record_source)
+        self.assertIn(
+            "QuotaService(",
+            (BACKEND_ROOT / "sandbox" / "core.py").read_text(encoding="utf-8"),
+        )
         for forbidden in (
             "local_runtime",
             "dataplane",

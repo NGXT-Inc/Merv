@@ -28,7 +28,7 @@ from merv.brain.sandbox.execution.run_receipts import (
 )
 
 
-class MervRunHarness(unittest.TestCase):
+class MervRunHarness:
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.experiment_dir = Path(self.tmp.name) / "exp"
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class MetaJsonBoundTest(MervRunHarness):
+class MetaJsonBoundTest(MervRunHarness, unittest.TestCase):
     """The launcher must bound the one field it records unbounded.
 
     ARG_MAX allows a command line into the megabytes, and the observer reads

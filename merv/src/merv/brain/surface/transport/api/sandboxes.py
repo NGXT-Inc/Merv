@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from ....application.facade import ComputeCostQuery
-from ....sandbox.facade import SandboxFacade
+from ....sandbox.core import SandboxEngine
 from .shared import conditional_json_from_signal
 
 from .context import ApiRouteContext
@@ -18,7 +18,7 @@ from .views import present, sandbox_list_view, sandbox_view
 def build_router(
     ctx: ApiRouteContext,
     *,
-    sandboxes: SandboxFacade,
+    sandboxes: SandboxEngine,
     cost_query: ComputeCostQuery,
 ) -> APIRouter:
     api_router = APIRouter()

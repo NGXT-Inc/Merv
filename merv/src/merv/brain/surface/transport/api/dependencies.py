@@ -28,7 +28,7 @@ from ....research_core.facade import (
     ResearchProjects,
     ResearchReviewDelivery,
 )
-from ....sandbox.facade import SandboxFacade
+from ....sandbox.core import SandboxEngine
 from ...observability import StructuredLogger
 from ...tools.tool_facade import ToolDispatcher
 
@@ -63,7 +63,7 @@ class HttpDependencies:
     reviews: ResearchReviewDelivery
     artifacts: Artifacts
     feed: FeedDelivery
-    sandboxes: SandboxFacade
+    sandboxes: SandboxEngine
     storage: ObjectStorage | None
     timeline: EventTimelineQuery
     activity: ActivityTelemetry

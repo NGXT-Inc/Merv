@@ -103,16 +103,16 @@ class EtagTest(ConditionalRequestTestBase):
         # The signal reads the sandbox rows directly (project_sandbox_signal);
         # the row-VIEW render is what a matching ETag must skip.
         etag = self.get("/sandboxes").headers["etag"]
-        original = self.app.sandboxes.rows
+        original = self.app.sandboxes.for_project
 
-        def fail_rows(*, project_id: str | None = None):
+        def fail_for_project(*, project_id: str):
             self.fail("matching sandbox ETag should not render the list body")
 
-        self.app.sandboxes.rows = fail_rows  # type: ignore[method-assign]
+        self.app.sandboxes.for_project = fail_for_project  # type: ignore[method-assign]
         try:
             response = self.get("/sandboxes", etag=etag)
         finally:
-            self.app.sandboxes.rows = original  # type: ignore[method-assign]
+            self.app.sandboxes.for_project = original  # type: ignore[method-assign]
         self.assertEqual(response.status_code, 304)
         self.assertEqual(response.content, b"")
 

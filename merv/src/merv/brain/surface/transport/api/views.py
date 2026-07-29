@@ -6,7 +6,7 @@ from typing import Any
 
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import NotFoundError
-from ....sandbox.facade import SandboxFacade
+from ....sandbox.core import SandboxEngine
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 
 _LOCAL_DATA_PLANE_RESPONSE_KEYS = frozenset(
@@ -158,26 +158,24 @@ def experiments_view(experiments: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def sandbox_view(
-    sandboxes: SandboxFacade,
+    sandboxes: SandboxEngine,
     *,
     project_id: str,
     experiment_id: str | None = None,
     sandbox_uid: str | None = None,
 ) -> dict[str, Any]:
-    row = sandboxes.get_row(
+    snapshot = sandboxes.snapshot(
         experiment_id=experiment_id, project_id=project_id, sandbox_uid=sandbox_uid
     )
-    if row is None:
+    if snapshot is None:
         return {
             "experiment_id": experiment_id or "",
             "sandbox_uid": sandbox_uid or "",
             "status": "none",
             "sandbox": None,
         }
-    return present(sandboxes.row_view(row=row))
+    return present(snapshot)
 
 
-def sandbox_list_view(sandboxes: SandboxFacade, *, project_id: str) -> dict[str, Any]:
-    return present(
-        {"sandboxes": [sandboxes.row_view(row=row) for row in sandboxes.rows(project_id=project_id)]}
-    )
+def sandbox_list_view(sandboxes: SandboxEngine, *, project_id: str) -> dict[str, Any]:
+    return present({"sandboxes": sandboxes.for_project(project_id=project_id)})

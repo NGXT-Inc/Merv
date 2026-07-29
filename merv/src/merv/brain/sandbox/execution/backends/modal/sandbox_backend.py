@@ -1,16 +1,4 @@
-"""Modal sandbox backend: procure SSH-wired sandboxes, no job protocol.
-
-Implements the SandboxBackend protocol. The registry (SandboxService) decides
-reuse-vs-create policy; this layer only knows how to:
-
-  - acquire(): create one Modal sandbox wired for SSH over an unencrypted tunnel,
-    with the agent's public key authorized;
-  - is_alive(): poll a sandbox by id;
-  - terminate(): stop a sandbox by id;
-  - read_transcript(): read the experiment's terminal transcript, live from the
-    sandbox;
-  - health(): is Modal reachable.
-"""
+"""Modal sandboxes with SSH tunnels and control-plane observation."""
 
 from __future__ import annotations
 
@@ -69,19 +57,12 @@ ActivityHook = Callable[[str, dict[str, Any]], None]
 
 SESSIONS_DIR_NAME = ".merv_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
-# Ceiling on one destructive control-plane call. Every other backend terminates
-# over HTTP with a request timeout; the Modal SDK has none, so a hung call would
-# otherwise pin a cleanup worker (and its claim on the row) indefinitely.
+# Modal SDK termination has no timeout; bound cleanup-claim occupancy here.
 TERMINATE_TIMEOUT_SECONDS = 60.0
 
 
 def _call_bounded(call: Callable[[], Any], *, timeout: float) -> bool:
-    """Run one blocking SDK call with a deadline. False if it did not finish.
-
-    The worker thread is left running rather than killed — Python cannot
-    interrupt it — but it is a daemon, so it never holds the process open, and
-    the caller is free the moment the deadline passes.
-    """
+    """Bound an uninterruptible SDK call in a disposable daemon thread."""
     done = threading.Event()
     ok: list[bool] = []
 
@@ -94,15 +75,7 @@ def _call_bounded(call: Callable[[], Any], *, timeout: float) -> bool:
     threading.Thread(target=run, daemon=True).start()
     return bool(done.wait(timeout=timeout) and ok)
 
-# The usage sampler script + parser live in src/merv/brain/sandbox/execution/usage_metrics.py,
-# shared with the Lambda backend (which runs the same probes over plain SSH).
-# Here it runs via `sandbox.exec` (control-plane exec, so it bypasses the sshd
-# ForceCommand transcript wrapper — same as the transcript reader).
-
-
-# Entrypoint baked into every sandbox image. Authorizes the registry-owned key,
-# generates host keys, writes an sshd_config whose ForceCommand is the transcript
-# wrapper, then execs sshd in the foreground (which keeps the container alive).
+# Image entrypoint configures keys, ForceCommand, and foreground sshd.
 BOOT_SCRIPT = r"""#!/usr/bin/env bash
 set -eu
 RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
@@ -280,8 +253,7 @@ class ModalSandboxBackend(SandboxBackendBase):
                     "project_id": request.project_id,
                 },
             )
-            # Hand the id back so the registry persists it before the slow tunnel
-            # wait. May raise to cancel.
+            # Persist the ID before the slow tunnel wait; the callback may cancel.
             self._notify(on_created, sandbox_id, name or "")
             self._notify(on_phase, "connecting", "waiting for ssh")
             host, port = self._ssh_endpoint(sandbox=sandbox)
@@ -305,15 +277,7 @@ class ModalSandboxBackend(SandboxBackendBase):
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
-        """Best-effort lookup of a sandbox we created for this experiment by name.
-
-        Used by the registry to reconcile a provisioning row whose daemon-side
-        job died before it recorded the sandbox id (e.g. a restart mid-provision)
-        — the orphan still holds the deterministic name, so we can find and adopt
-        or clean it up. Returns None only when Modal authoritatively says no such
-        sandbox exists; an outage propagates, exactly as ``is_alive`` does, so
-        the caller never reads "could not ask" as "nothing is there".
-        """
+        """Find a deterministic-name orphan; only Modal NotFound means absent."""
         name = _sandbox_name(sandbox_uid or experiment_id)
         if not name:
             return None
@@ -344,13 +308,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             raise
 
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
-        """Re-read the live SSH tunnel endpoint for an existing sandbox.
-
-        Lets the registry recover from a tunnel that moved without recreating
-        the sandbox (is_alive only proves the control plane is up, not that the
-        cached `rNNN.modal.host:port` still routes). Best-effort: returns None
-        if the sandbox is gone or its tunnel can't be read right now.
-        """
+        """Best-effort refresh for Modal's movable tunnel endpoint."""
         if not sandbox_id:
             return None
         try:
@@ -366,10 +324,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             sandbox = self._sandbox_from_id(sandbox_id)
         except Exception:  # noqa: BLE001
             return False
-        # Bounded: the Modal SDK call has no timeout of its own, and a cleanup
-        # worker blocked in it forever holds its claim on the row forever. A
-        # call that overruns simply reads as unconfirmed — the row parks and the
-        # sweep asks again, which is the safe answer for a VM that may be up.
+        # Timeout remains unconfirmed so lifecycle parks and retries the row.
         ok = _call_bounded(sandbox.terminate, timeout=TERMINATE_TIMEOUT_SECONDS)
         detach = getattr(sandbox, "detach", None)
         if callable(detach):
@@ -409,12 +364,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002
         key_path: str = "",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Sample live in-container usage (CPU/RAM/GPU) via a read-only exec.
-
-        Returns a parsed gauge dict, or None when the sandbox is unreachable or
-        the sampler produced nothing usable. Never raises — the registry treats
-        a None as "metrics unavailable" and the UI hides the strip.
-        """
+        """Sample usage via read-only control-plane exec."""
         if not sandbox_id:
             return None
         try:
@@ -438,11 +388,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002
         key_path: str = "",  # noqa: ARG002
     ) -> list[dict[str, Any]] | None:
-        """List merv_run receipts under the workdir's .runs/ via a read-only exec.
-
-        Returns parsed run records ([] when .runs is absent), or None when the
-        sandbox is unreachable — the observer treats None as "no news".
-        """
+        """List receipts via exec; ``None`` means no authoritative news."""
         if not sandbox_id or not workdir:
             return None
         try:
@@ -463,12 +409,7 @@ class ModalSandboxBackend(SandboxBackendBase):
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any]:
-        """Static catalog: Modal lets the agent set gpu/cpu/memory independently.
-
-        Unlike Lambda there is nothing to look up live — Modal composes the
-        machine from the request — so this just advertises the menu of GPU types
-        and compute tiers the agent can mix and match.
-        """
+        """Static menu because Modal composes GPU, CPU, and memory independently."""
         gpus = sorted(VALID_GPUS)
         if gpu:
             needle = gpu.strip().upper()
@@ -510,8 +451,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         base = workdir or remote_experiment_dir(
             experiment_id=experiment_id, root=self.config.remote_root
         )
-        # Sessions live outside the experiment folder; legacy sandboxes
-        # (pre-layout-change rows) kept them inside the synced workdir.
+        # Read both current and one-release legacy transcript locations.
         abs_path = PurePosixPath(
             remote_sessions_dir(experiment_id=experiment_id, root=remote_root_of(base)),
             TRANSCRIPT_FILENAME,
@@ -552,13 +492,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         return env
 
     def _sandbox_secrets(self, modal: Any, *, hf_token: str = "") -> list[Any]:
-        """Build Modal sandbox secrets for the provisioning user.
-
-        ``hf_token`` is the provisioning user's resolved Hugging Face token
-        (no-dataplane Phase C); the deployment-wide HF_TOKEN env fallback is
-        retired, so no shared secret enters any sandbox. Empty => no HF secret,
-        the sandbox runs with public models only.
-        """
+        """Build per-user secrets without a deployment-wide token fallback."""
         secrets: list[Any] = []
         if hf_token:
             secrets.append(
@@ -644,7 +578,6 @@ class ModalSandboxBackend(SandboxBackendBase):
         return self._cuda_image
 
     def _with_ssh(self, image: Any) -> Any:
-        """Bake the SSH entrypoint and transcript wrapper into the image."""
         return image.run_commands(
             "mkdir -p /opt/merv",
             _write_file_layer(BOOT_SCRIPT, "/opt/merv/boot.sh"),

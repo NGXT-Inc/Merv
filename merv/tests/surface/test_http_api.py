@@ -335,7 +335,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(delta["transcript"], "results.json\n")
         self.assertGreater(delta["cursor"], cursor)
 
-        self.app.sandboxes.transcript_cache.invalidate(sandbox_id=requested["sandbox_id"])
+        self.app.sandbox_transcripts.invalidate(sandbox_id=requested["sandbox_id"])
         self.backend.append_transcript(experiment_id=sandbox_uid, text="uid transcript\n")
         terminal_by_uid = self.request(
             "GET", f"/api/projects/{project_id}/sandboxes/{sandbox_uid}/terminal"

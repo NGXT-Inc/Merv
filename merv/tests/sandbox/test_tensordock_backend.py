@@ -16,16 +16,10 @@ from merv.brain.sandbox.execution.backends.tensordock.config import (
 from merv.brain.sandbox.execution.backends.tensordock.sandbox_backend import (
     TensorDockSandboxBackend,
 )
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
-    CapacityUnavailableError,
     SandboxRequest,
-)
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
 )
 
 
@@ -43,7 +37,11 @@ LOCATIONS = [
                 "displayName": "H100 SXM5 80GB",
                 "max_count": 8,
                 "price_per_hr": 2.2,
-                "resources": {"max_vcpus": 128, "max_ram_gb": 300, "max_storage_gb": 1000},
+                "resources": {
+                    "max_vcpus": 128,
+                    "max_ram_gb": 300,
+                    "max_storage_gb": 1000,
+                },
                 "pricing": {
                     "per_vcpu_hr": 0.003,
                     "per_gb_ram_hr": 0.002,
@@ -66,7 +64,11 @@ LOCATIONS = [
                 "displayName": "RTX 4090 24GB",
                 "max_count": 4,
                 "price_per_hr": 0.5,
-                "resources": {"max_vcpus": 32, "max_ram_gb": 128, "max_storage_gb": 2000},
+                "resources": {
+                    "max_vcpus": 32,
+                    "max_ram_gb": 128,
+                    "max_storage_gb": 2000,
+                },
                 "pricing": {
                     "per_vcpu_hr": 0.003,
                     "per_gb_ram_hr": 0.002,
@@ -174,7 +176,9 @@ class TensorDockAcquireTest(unittest.TestCase):
         # The 4090 host lacks dedicated IPs, so its shape is never offered.
         backend = _backend(FakeTensorDockClient())
         with self.assertRaisesRegex(BackendValidationError, "not offered"):
-            backend.acquire(request=_request(instance_type="1x-geforcertx4090-pcie-24gb"))
+            backend.acquire(
+                request=_request(instance_type="1x-geforcertx4090-pcie-24gb")
+            )
 
     def test_acquire_failure_deletes_the_instance(self) -> None:
         client = FakeTensorDockClient()
@@ -214,12 +218,6 @@ class TensorDockLivenessTest(unittest.TestCase):
 
 
 class TensorDockCatalogTest(unittest.TestCase):
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        backend = _backend(FakeTensorDockClient())
-        descriptor = sandbox_driver_descriptor("tensordock")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_options_filter_on_dedicated_ip_capability(self) -> None:
         options = to_agent_options(LOCATIONS)
@@ -240,11 +238,15 @@ class TensorDockCatalogTest(unittest.TestCase):
         self.assertEqual(eight_x["vcpus"], 64)
         self.assertEqual(eight_x["memory_gib"], 256)
         self.assertAlmostEqual(
-            one_x["price_usd_per_hour"], 2.2 + 0.003 * 8 + 0.002 * 32 + 0.00005 * 100, places=4
+            one_x["price_usd_per_hour"],
+            2.2 + 0.003 * 8 + 0.002 * 32 + 0.00005 * 100,
+            places=4,
         )
 
     def test_parse_instance_type_round_trip(self) -> None:
-        self.assertEqual(parse_instance_type("8x-h100-sxm5-80gb"), (8, "h100-sxm5-80gb"))
+        self.assertEqual(
+            parse_instance_type("8x-h100-sxm5-80gb"), (8, "h100-sxm5-80gb")
+        )
         self.assertIsNone(parse_instance_type("h100"))
 
     def test_catalog_mentions_prepaid_per_second_billing(self) -> None:

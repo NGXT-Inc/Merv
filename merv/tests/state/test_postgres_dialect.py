@@ -56,7 +56,7 @@ from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.facade import ResearchCoreFacade
 from tests.fakes import FakeBlobStore
 from tests.sandbox.test_sandbox_event_contract import (
-    SandboxRepositoryEventContractScenarios,
+    SandboxStorageEventContractScenarios,
 )
 
 
@@ -312,8 +312,8 @@ def _schema_without_feed_upload_tokens() -> str:
 
 
 @unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
-class PostgresSandboxRepositoryEventContractTest(
-    SandboxRepositoryEventContractScenarios, unittest.TestCase
+class PostgresSandboxStorageEventContractTest(
+    SandboxStorageEventContractScenarios, unittest.TestCase
 ):
     def setUp(self) -> None:
         self.store = PostgresStateStore(dsn=_reset_database())

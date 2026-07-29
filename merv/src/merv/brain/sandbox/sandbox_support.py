@@ -1,8 +1,4 @@
-"""Pure helpers, constants, and value types for the sandbox stack.
-
-Everything here is free of ``SandboxService`` state — module-level functions,
-tunables, and pure projection helpers.
-"""
+"""Pure Sandbox constants, value types, and projection helpers."""
 
 from __future__ import annotations
 
@@ -21,13 +17,9 @@ VALID_GPUS: frozenset[str] = frozenset(
     {"T4", "L4", "A10G", "L40S", "A100", "A100-80GB", "H100", "B200"}
 )
 ACTIVE_SANDBOX_STATUSES: frozenset[str] = frozenset({"running"})
-# A destroy attempt the provider never confirmed. Deliberately NOT terminal: no
-# sweep revisits a terminal row, so a live VM behind one bills forever (audit
-# SAN-05). The row stays visible and the retry sweep keeps asking.
+# Unconfirmed destruction remains visible and retryable, never terminal.
 CLEANUP_PENDING_STATUS = "cleanup_pending"
-# Reached the end of the line: the VM is gone and every attachment is closed.
 TERMINAL_SANDBOX_STATUSES: frozenset[str] = frozenset({"terminated", "failed"})
-# Statuses a fresh sandbox.request must not reuse the row of.
 UNREUSABLE_SANDBOX_STATUSES: frozenset[str] = TERMINAL_SANDBOX_STATUSES | {
     CLEANUP_PENDING_STATUS
 }
@@ -37,78 +29,43 @@ DEFAULT_TIME_LIMIT_SECONDS = 3600
 DEFAULT_CPU = 2.0
 DEFAULT_MEMORY_MB = 8192
 
-# How long sandbox.request waits for a fresh provision to finish before it
-# returns `provisioning` and tells the agent to poll. Kept safely under the MCP
-# client timeout (~60s) so the call never trips it.
+# Stay below the common ~60s MCP timeout.
 DEFAULT_REQUEST_WAIT_SECONDS = 45.0
-# sandbox.runs long-poll: the server re-lists .runs receipts every POLL seconds
-# and returns early on any terminal transition. The CAP is a server ceiling for
-# clients with generous tool timeouts; clients at the common ~60s MCP floor
-# (see DEFAULT_REQUEST_WAIT_SECONDS above) should pass wait_seconds<=45. The
-# HTTP MCP caller must allow the requested long-poll window.
+# Server cap for callers whose transport allows a long receipt poll.
 RUNS_WAIT_CAP_SECONDS = 300.0
 RUNS_WAIT_POLL_SECONDS = 5.0
-# Backstop: a `provisioning` row this old whose job is no longer in this process
-# (daemon restart, or a wedged acquire) is reconciled to `failed`.
+# Reconcile old provisioning rows whose local job vanished.
 DEFAULT_STALE_PROVISION_SECONDS = 15 * 60.0
-# Cadence hint handed to the agent while provisioning. Lambda VMs commonly
-# take 5-15 minutes to boot and bootstrap, so a tighter cadence just burns
-# calls without learning anything new.
+# Lambda cold boots make tighter polling wasteful.
 POLL_AFTER_SECONDS = 30
-# Live-usage samples are coalesced for this long so the fleet view and the
-# drill-in terminal (which both poll ~3s) don't double-exec into a sandbox.
 METRICS_CACHE_TTL_SECONDS = 2.0
-# How often the reaper checks for sandboxes past their expires_at deadline and
-# terminates them. Needed because Lambda VMs (unlike Modal sandboxes) have no
-# server-side lifetime enforcement, so without this an expired VM bills forever.
+# VM providers such as Lambda lack Modal's server-side lifetime enforcement.
 DEFAULT_REAPER_INTERVAL_SECONDS = 30.0
 DEFAULT_SANDBOX_IDLE_SECONDS = 3600.0
-# How long a `cleanup_pending` row waits before the sweep asks the provider
-# again, indexed by attempts already made. The last entry repeats forever: a
-# possibly-billing VM is never given up on, only asked about less often.
+# The final backoff repeats forever while a VM may still bill.
 CLEANUP_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 300.0, 900.0, 3600.0)
-# How long a claimed cleanup attempt may stay in flight before another worker
-# may reclaim the row. Sits comfortably above any bounded provider terminate
-# call, so only a worker that has actually died — or wedged past its own
-# timeout — is fenced out. The clock decides WHEN a row is reclaimable; the
-# token decides whether the old holder's late write still counts (it does not).
+# Longer than bounded provider termination; a replacement token fences late writes.
 CLEANUP_INFLIGHT_DEADLINE_SECONDS = 600.0
 _CLEANUP_ATTEMPT_PREFIX = "cleanup_attempt_"
 _CLEANUP_INFLIGHT_PREFIX = "cleanup_inflight_"
 
 
 def cleanup_attempt_phase(*, attempts: int) -> str:
-    """The `phase` marker of a PARKED cleanup_pending row: nobody holds it.
-
-    Piggybacks the existing free-text phase column so the count is durable
-    without a migration, and reads as a lifecycle phase to an operator.
-    """
+    """Store retry count in the existing phase column while nobody holds it."""
     return f"{_CLEANUP_ATTEMPT_PREFIX}{max(int(attempts), 1)}"
 
 
 def new_cleanup_token() -> str:
-    """A fresh ownership token for one cleanup attempt."""
     return secrets.token_hex(8)
 
 
 def cleanup_inflight_phase(*, attempts: int, token: str) -> str:
-    """The `phase` marker naming the worker that OWNS this cleanup attempt.
-
-    An EXPLICIT marker, because a timestamp can only be guessed at: a worker
-    that re-reads the row after the winner's claim sees a fresh `updated_at`
-    and no way to tell the winner's own stamp from a settled row's. The marker
-    says so outright — and the token in it is the fence every completion write
-    CASes on, so a holder that was reclaimed for being over the deadline
-    discovers it by failing that CAS rather than by settling a row it lost.
-    """
+    """Encode ownership so reclaimed workers fail their completion CAS."""
     return f"{_CLEANUP_INFLIGHT_PREFIX}{max(int(attempts), 1)}:{token}"
 
 
 def cleanup_attempts(*, phase: Any) -> int:
-    """Attempts already made on a cleanup_pending row; 0 when unmarked.
-
-    Reads both markers: an in-flight phase carries the attempt its holder took.
-    """
+    """Read retry count from parked or in-flight markers."""
     text = str(phase or "")
     for prefix in (_CLEANUP_ATTEMPT_PREFIX, _CLEANUP_INFLIGHT_PREFIX):
         if not text.startswith(prefix):
@@ -121,7 +78,6 @@ def cleanup_attempts(*, phase: Any) -> int:
 
 
 def cleanup_inflight_token(*, phase: Any) -> str:
-    """The ownership token a phase carries, or "" when the row is parked."""
     text = str(phase or "")
     if not text.startswith(_CLEANUP_INFLIGHT_PREFIX):
         return ""
@@ -137,36 +93,20 @@ def public_phase(*, phase: Any) -> str:
 
 
 def cleanup_claim_expired(*, claimed_at: datetime | None, now: datetime) -> bool:
-    """Whether an in-flight marker is old enough for another worker to reclaim.
-
-    An unstamped marker has nothing proving it is fresh, so it is reclaimable —
-    the same reading `cleanup_retry_due` gives a missing last-attempt clock.
-    """
+    """Treat an unstamped claim as reclaimable because freshness is unproven."""
     if claimed_at is None:
         return True
     return claimed_at <= cleanup_claim_cutoff(now=now)
 
 
 def cleanup_claim_cutoff(*, now: datetime) -> datetime:
-    """The newest claim stamp already past the deadline.
-
-    The reader's half of `cleanup_claim_expired`, expressed as a bound the
-    reclaim's WHERE clause can carry — so the check the caller makes and the
-    check the database re-makes are the same deadline, not two of them.
-    """
+    """Return the same reclaim boundary used by both reader and database CAS."""
     return now - timedelta(seconds=CLEANUP_INFLIGHT_DEADLINE_SECONDS)
 
 
 @dataclass(frozen=True, slots=True)
 class CleanupClaim:
-    """Whether this worker owns the next cleanup attempt, and under which fence.
-
-    ``phase`` is the exact in-flight marker the claim wrote; every write that
-    finishes the attempt asserts it, so a holder fenced out by a stale-claim
-    reclaim lands a no-op instead of a second settlement. It is empty when no
-    fence applies — a row that is not parked has a single owner established
-    elsewhere (a live job, the reaper's own re-read), so nothing to CAS on.
-    """
+    """Cleanup ownership plus the exact phase fence completion must assert."""
 
     granted: bool
     token: str = ""
@@ -178,14 +118,12 @@ class CleanupClaim:
 
 
 CLEANUP_CLAIM_REFUSED = CleanupClaim(granted=False)
-# Granted with no fence: the row was never parked, so no claim was needed.
 CLEANUP_CLAIM_UNFENCED = CleanupClaim(granted=True)
 
 
 def cleanup_retry_due(
     *, attempts: int, last_attempt_at: datetime | None, now: datetime
 ) -> bool:
-    """Whether a cleanup_pending row's backoff window has elapsed."""
     if last_attempt_at is None:
         return True
     index = min(max(attempts, 1), len(CLEANUP_RETRY_BACKOFF_SECONDS)) - 1
@@ -195,24 +133,19 @@ def cleanup_retry_due(
 
 
 def _safe_name(identity: str) -> str:
-    """Filesystem-safe key/conn filename for a sandbox identity."""
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in identity) or "sandbox"
 
 
-# Markers the in-sandbox rec.sh ForceCommand wrapper writes to the transcript:
+# ``rec.sh`` writes:
 #   command start: "[<ts>] $ <command>"
 #   command exit:  "[<ts>] (exit <code>)"   (rc captured via PIPESTATUS[0])
-# Parsing them lets `terminal` report a structured exit status, so an agent can
-# tell when a command finished and whether it succeeded instead of busy-polling
-# the transcript tail. Best-effort: a sandbox created before the marker landed,
-# an empty log, or a read taken mid-command simply yields None / False.
+# Old or partial transcripts degrade to unknown.
 _EXIT_MARKER_RE = re.compile(r"^\[([^\]]*)\] \(exit (-?\d+)\)[ \t]*$", re.MULTILINE)
 _CMD_MARKER_RE = re.compile(r"^\[([^\]]*)\] \$ (.*)$", re.MULTILINE)
 COMMAND_OUTPUT_TAIL_CHARS = 2000
 
 
 def parse_terminal_snapshot(transcript: str) -> dict[str, Any]:
-    """Extract structured status for the latest command in a transcript."""
     empty = {
         "command_id": None,
         "command": "",
@@ -258,12 +191,7 @@ def parse_terminal_snapshot(transcript: str) -> dict[str, Any]:
 
 
 def parse_terminal_markers(transcript: str) -> tuple[int | None, str | None, bool]:
-    """Extract ``(last_exit_code, last_command_finished_at, command_running)``.
-
-    ``command_running`` is True when the most recent command-start marker has no
-    following exit marker — i.e. a command is still in flight. A transcript with
-    no markers (old sandbox, empty log) degrades to ``(None, None, False)``.
-    """
+    """Report a running command when its latest start has no following exit."""
     if not transcript:
         return None, None, False
     last_exit_code: int | None = None
@@ -291,11 +219,7 @@ def validate_request_inputs(
     norm_gpu: str | None = None
     if gpu not in (None, ""):
         norm_gpu = str(gpu).upper()
-        # On configurable backends (Modal) `gpu` names a concrete attachable GPU,
-        # so validate it against the supported set. On bundled-hardware backends
-        # (Lambda Labs) `gpu` is only a free-form filter over live instance types
-        # — the real selector is `instance_type` — so accept any string here and
-        # let capacity resolution reject a genuinely unavailable choice.
+        # Modal accepts a GPU directly; bundled-hardware providers select by SKU.
         if configurable_resources and norm_gpu not in VALID_GPUS:
             raise ValidationError(
                 f"invalid gpu: {gpu}; allowed: {', '.join(sorted(VALID_GPUS))}"

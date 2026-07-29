@@ -165,7 +165,7 @@ class HttpGatewayTest(unittest.TestCase):
 
 
 class _Sandboxes:
-    """Fake SandboxFacade recording the control-path calls a key makes."""
+    """Fake SandboxEngine recording the control-path calls a key makes."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []

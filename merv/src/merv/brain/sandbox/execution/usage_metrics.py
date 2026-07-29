@@ -1,16 +1,7 @@
-"""Shared live-usage sampler for SSH-accessible compute environments.
+"""Read-only live-usage probe shared by Modal exec and VM SSH.
 
-Both execution backends run the same read-only probe script and parse the same
-``MERV <key>=<value>`` line protocol:
-
-  - Modal executes it via control-plane ``sandbox.exec`` (inside a gVisor
-    container, where the cgroup files scope to the container).
-  - Lambda Labs executes it over plain SSH through the rec.sh transcript-read
-    bypass (on a full VM, where the root cgroup files scope to the whole
-    machine — which is exactly the gauge we want for a dedicated VM).
-
-Every probe degrades to silence rather than failing, so a CPU-only machine
-(no nvidia-smi) still returns what it can.
+Missing gauges degrade independently, so CPU-only machines still report what
+they can.
 """
 
 from __future__ import annotations
@@ -21,21 +12,11 @@ from typing import Any
 METRICS_EXEC_TIMEOUT = 15
 
 
-# Emits machine-parseable `MERV <key>=<value>` lines for the usage gauges:
-# CPU cores in use (a two-point cgroup delta), memory in use (anonymous RSS
-# from /proc/meminfo — the reclaimable page cache a memory-mapped dataset
-# inflates "used" with is deliberately excluded, and under gVisor the
-# cgroup/meminfo limits are host-level and unusable as denominators, so no
-# limit is emitted from these files), cumulative network bytes + SSH sessions,
-# and per-GPU utilization + VRAM via nvidia-smi.
+# Emits CPU, non-cache memory, network, SSH-session, and GPU gauges.
 METRICS_SCRIPT = r"""
 set -u
 now_ns() { date +%s%N; }
-# Cumulative CPU time in microseconds (cgroup v2 usage_usec, else v1 cpuacct in
-# ns / 1000). NOTE: the sandbox's awk is mawk, whose printf "%d" is 32-bit and
-# silently clamps at INT_MAX (2147483647) — a cumulative counter blows past that
-# in well under an hour, which would clamp BOTH samples to the same value and
-# report 0 cores. Use %.0f (double-backed) for the conversion to stay exact.
+# Use double-backed %.0f: mawk's 32-bit %d clamps cumulative CPU counters.
 cpu_usage_usec() {
   if [ -r /sys/fs/cgroup/cpu.stat ]; then
     awk '/^usage_usec/{print $2; exit}' /sys/fs/cgroup/cpu.stat
@@ -56,14 +37,8 @@ if [ -r /sys/fs/cgroup/cpu.max ]; then
     awk -v q="$q" -v p="$p" 'BEGIN{ if(p>0) printf "MERV cpu_cores_limit=%.4f\n", q/p }'
   fi
 fi
-# Memory used. Modal runs sandboxes under gVisor, where the per-container memory
-# cgroup is NOT projected in (the root cgroup and /proc/meminfo report host-level
-# totals), so cgroup usage/limit are useless here. Derive "used" as anonymous +
-# unreclaimable memory = MemTotal - MemFree - Buffers - Cached - SReclaimable.
-# This deliberately excludes the reclaimable page cache that a memory-mapped
-# dataset inflates "used" with (it would otherwise read as ~all of host RAM and
-# isn't real memory pressure). The denominator is the reserved request, which the
-# backend supplies — we intentionally do NOT emit a limit from these host files.
+# gVisor exposes host-level cgroup totals. Derive non-cache memory from meminfo;
+# the backend supplies the reserved denominator.
 if [ -r /proc/meminfo ]; then
   awk '
     /^MemTotal:/      {t=$2}
@@ -118,7 +93,6 @@ def _to_int(value: str | None) -> int | None:
 
 
 def _parse_gpu(body: str) -> dict[str, Any] | None:
-    """Parse one `idx=.. util=.. used=.. total=.. name=..` GPU line."""
     name = ""
     head = body
     if " name=" in body:
@@ -141,7 +115,6 @@ def _parse_gpu(body: str) -> dict[str, Any] | None:
 
 
 def parse_metrics(output: str) -> dict[str, Any] | None:
-    """Turn `MERV key=value` sampler lines into a structured gauge dict."""
     cpu_used = cpu_limit = None
     mem_used = mem_limit = None
     net_bytes = ssh_established = None

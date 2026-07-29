@@ -42,28 +42,16 @@ BASELINE_APT_PACKAGES: tuple[str, ...] = (
 )
 
 
-# Shared command-execution core for the sshd ForceCommand wrapper (rec.sh).
+# ForceCommand runs non-transfer commands in detached tmux so SSH loss stops
+# viewing, not work. It streams output and returns the real exit code.
 #
-# Runs every non-bypassed SSH command inside a detached tmux session so the
-# command's lifetime is anchored to the VM, not to the SSH channel: a dropped
-# connection or a timed-out agent tool call stops the *viewing*, never the
-# *work*. The foreground side streams the output file back byte-for-byte and
-# returns the real exit code, so short commands behave exactly like a plain
-# `ssh host 'cmd'`.
-#
-# Contract kept with the daemon's transcript parser (sandbox.terminal):
+# Transcript parser contract:
 #   [<ts>] $ <command>   - written by the foreground wrapper at start
-#   [<ts>] (exit <rc>)   - written by the tmux side when the command ends,
-#                          so it lands even if nobody is connected.
+#   [<ts>] (exit <rc>)   - written by tmux even without a viewer.
 #
-# Expects the surrounding script to have set: $LOG, $RP_WORKDIR,
-# $RP_SANDBOX_DATA_DIR, a ts() helper, and $SSH_ORIGINAL_COMMAND. Every path
-# ends in `exit`. If tmux is unavailable or fails to start, falls back open to
-# the legacy attached execution (work then dies with the channel, as before).
-#
-# The command's stdin is /dev/null: agents pass input as in-command heredocs
-# (`python3 - <<'PY' ... PY`), which the remote bash evaluates from the
-# command string itself; rsync/scp/sftp bypass this core entirely.
+# Requires LOG, RP_WORKDIR, RP_SANDBOX_DATA_DIR, ts(), and
+# SSH_ORIGINAL_COMMAND. Transfer protocols bypass it; tmux failure falls back
+# to attached execution.
 REC_EXEC_CORE = r"""rp_exec_attached() {
   bash -lc "$SSH_ORIGINAL_COMMAND" 2>&1 | tee -a "$LOG"
   rc=${PIPESTATUS[0]}
@@ -119,11 +107,6 @@ while :; do
   fi
   sleep 0.2
 done"""
-
-# Provider-specific package tuples live inside each adapter (e.g.
-# execution/backends/<provider>/sandbox_backend.py) — this module carries only
-# the provider-neutral baseline they compose from.
-
 
 ML_PYTHON_PACKAGES: tuple[str, ...] = (
     "transformers",

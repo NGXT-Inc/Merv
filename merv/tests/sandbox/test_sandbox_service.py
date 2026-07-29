@@ -12,11 +12,11 @@ from pathlib import Path
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.mlflow import CentralMlflowService
-from merv.brain.sandbox.sandbox_backend import BackendCapabilities, SandboxRequest
+from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
 
 
-class SandboxServiceTest(unittest.TestCase):
+class SandboxEngineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
@@ -43,7 +43,7 @@ class SandboxServiceTest(unittest.TestCase):
         return self.app.call_tool(tool, kwargs)
 
     def _record_running_command(self, *, sandbox_uid: str) -> None:
-        self.app.sandboxes.repository.record_command_snapshot(
+        self.app.sandbox_storage.record_command_snapshot(
             sandbox_uid=sandbox_uid,
             expected_project_id=self.project_id,
             snapshot={
@@ -131,7 +131,7 @@ class SandboxServiceTest(unittest.TestCase):
             for path in paths
         ]
         with mock.patch(
-            "merv.brain.sandbox.facade.shlex.quote", wraps=shlex.quote
+            "merv.brain.sandbox.core.shlex.quote", wraps=shlex.quote
         ) as quote:
             pulled = self.call(
                 "sandbox.pull_outputs",
@@ -181,9 +181,7 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_pull_outputs_rejects_paths_outside_experiment_dir(self) -> None:
         exp_id = self._experiment()
-        self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-        )
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
 
         for path in ("../escape", "results/../../escape", "/tmp/escape"):
             with self.subTest(path=path), self.assertRaises(ValidationError):
@@ -196,9 +194,7 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_pull_outputs_rejects_remote_shell_unsafe_paths(self) -> None:
         exp_id = self._experiment()
-        self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-        )
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
 
         unsafe_paths = (
             "results/$(touch${IFS}/tmp/pwn)",
@@ -316,7 +312,7 @@ class SandboxServiceTest(unittest.TestCase):
             "sandbox.request", project_id=self.project_id, experiment_id=source
         )
         uid = created["sandbox_uid"]
-        old_key = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=uid)
+        old_key = self.app.sandbox_keys.key_path(sandbox_uid=uid)
         self.assertTrue(old_key.exists())
 
         attached = self.call(
@@ -334,7 +330,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(attached["workdir"], created["workdir"])
         self.assertNotIn("command", attached["ssh"])
 
-        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=uid)
+        row = self.app.sandbox_storage.get_by_uid(sandbox_uid=uid)
         self.assertEqual(row["mgmt_key_ref"], uid)
         self.assertEqual(
             self.call(
@@ -494,7 +490,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(first["workdir"], second["workdir"])
         self.assertIn(second["sandbox_uid"][:12], second["workdir"])
 
-        rows = self.app.sandboxes.repository.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandbox_storage.list_by_experiment(experiment_id=exp_id)
         self.assertEqual(
             {row["sandbox_uid"] for row in rows},
             {first["sandbox_uid"], second["sandbox_uid"]},
@@ -555,7 +551,7 @@ class SandboxServiceTest(unittest.TestCase):
         primary = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
-        pending_uid = self.app.sandboxes.repository.create_sandbox(
+        pending_uid = self.app.sandbox_storage.create_sandbox(
             experiment_id=exp_id,
             project_id=self.project_id,
             status="provisioning",
@@ -606,7 +602,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(released["released_count"], 2)
         self.assertIn(first["sandbox_id"], self.backend.terminated)
         self.assertIn(second["sandbox_id"], self.backend.terminated)
-        rows = self.app.sandboxes.repository.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandbox_storage.list_by_experiment(experiment_id=exp_id)
         self.assertEqual(rows, [])
 
     def test_reaper_does_not_change_experiment_status(self) -> None:
@@ -802,7 +798,7 @@ class SandboxServiceTest(unittest.TestCase):
             name="Tenant Sandbox", tenant_id="tenant_a"
         )["id"]
         sandbox_uid = "uid_tenant"
-        self.app.sandboxes.repository.upsert(
+        self.app.sandbox_storage.upsert(
             experiment_id="exp_tenant",
             sandbox_uid=sandbox_uid,
             project_id=project_id,
@@ -976,7 +972,7 @@ class SandboxServiceTest(unittest.TestCase):
         # the user key, which stays data-plane-only.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
+        row = self.app.sandbox_storage.load_row(experiment_id=exp_id)
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         read = self.backend.transcript_reads[-1]
         self.assertEqual(read["ssh_host"], "sandbox.modal.test")
@@ -1238,7 +1234,7 @@ class SandboxServiceTest(unittest.TestCase):
             "finished_at": None,
             "output_tail": "loss 0.1",
         }
-        result = self.app.sandboxes.repository.record_command_snapshot(
+        result = self.app.sandbox_storage.record_command_snapshot(
             sandbox_uid=uid, snapshot=stale, expected_project_id=self.project_id
         )
         self.assertEqual(result["status"], "succeeded")
@@ -1334,7 +1330,7 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_extend_can_target_sandbox_uid_with_smaller_increment(self) -> None:
         created = self.call("sandbox.request", project_id=self.project_id)
-        self.app.sandboxes.repository.record_heartbeat(
+        self.app.sandbox_storage.record_heartbeat(
             experiment_id="",
             sandbox_uid=created["sandbox_uid"],
             expected_project_id=self.project_id,
@@ -1732,16 +1728,64 @@ class SandboxServiceTest(unittest.TestCase):
         final = self._await_sandbox_status(started["sandbox_uid"], "terminated")
         self.assertEqual(final["status"], "terminated")
 
+    def test_release_wins_the_final_publish_race_without_resurrection(self) -> None:
+        exp_id = self._experiment()
+        entered = threading.Event()
+        publish = threading.Event()
+        original = self.app.sandbox_storage.complete_provision
+
+        def delayed_publish(**kwargs):
+            entered.set()
+            publish.wait(timeout=5)
+            return original(**kwargs)
+
+        result: list[dict] = []
+        with mock.patch.object(
+            self.app.sandbox_storage,
+            "complete_provision",
+            side_effect=delayed_publish,
+        ):
+            worker = threading.Thread(
+                target=lambda: result.append(
+                    self.app.sandboxes.request(
+                        project_id=self.project_id,
+                        experiment_id=exp_id,
+                        public_key=_PUBKEY,
+                    )
+                )
+            )
+            worker.start()
+            self.assertTrue(entered.wait(timeout=5))
+            released = self.app.sandboxes.release(
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                confirm_retained=True,
+            )
+            publish.set()
+            worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(released["status"], "terminated")
+        self.assertEqual(result[0]["status"], "terminated")
+        with self.app.store.transaction() as conn:
+            generations = conn.execute(
+                "SELECT COUNT(*) AS n FROM sandbox_generations "
+                "WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+        self.assertEqual(int(generations["n"]), 0)
+
     def test_get_reconciles_orphaned_provisioning(self) -> None:
         # A provisioning row with no in-flight job (daemon restart mid-provision)
         # must reconcile to failed so a polling agent doesn't wait forever.
         exp_id = self._experiment()
-        self.app.sandboxes.provisioner.begin_provisioning_row(
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
+            sandbox_uid="uid_orphaned_provision",
             project_id=self.project_id,
-            req=SandboxRequest(
-                experiment_id=exp_id, project_id=self.project_id, public_key="k"
-            ),
+            status="provisioning",
+            phase="starting",
+            provision_started_at="2026-01-01T00:00:00Z",
         )
         result = self.call(
             "sandbox.get", project_id=self.project_id, experiment_id=exp_id
@@ -1756,7 +1800,9 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(result["status"], "none")
 
 
-_PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 a@b"
+_PUBKEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 a@b"
+)
 
 
 class SandboxHfAndAttributionTest(unittest.TestCase):
@@ -1832,6 +1878,24 @@ class SandboxHfAndAttributionTest(unittest.TestCase):
         self.app.sandboxes.request(project_id=self.project_id, public_key=_PUBKEY)
         self.assertIsNone(self._latest_generation()["key_id"])
 
+    def test_failed_post_boot_secret_delivery_retries_without_disclosure(self) -> None:
+        self.backend.sandbox_secrets = mock.Mock(
+            return_value={"HF_TOKEN": "hf_write_only"}
+        )
+        self.backend.write_secrets = mock.Mock(side_effect=[False, True])
+        result = self.app.sandboxes.request(
+            project_id=self.project_id,
+            public_key=_PUBKEY,
+        )
+
+        self.app.sandboxes.get(
+            project_id=self.project_id,
+            sandbox_uid=result["sandbox_uid"],
+        )
+
+        self.assertEqual(self.backend.write_secrets.call_count, 2)
+        self.assertNotIn("HF_TOKEN", result)
+
 
 class SandboxRequestToctouGuardTest(unittest.TestCase):
     """no-dataplane Phase C: concurrent same-experiment requests provision once."""
@@ -1854,6 +1918,8 @@ class SandboxRequestToctouGuardTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_two_concurrent_requests_provision_a_single_sandbox(self) -> None:
+        from merv.brain.sandbox.core import SandboxEngine
+
         exp_id = self.app.call_tool(
             "experiment.create",
             {"project_id": self.project_id, "name": "race", "intent": "x"},
@@ -1861,12 +1927,19 @@ class SandboxRequestToctouGuardTest(unittest.TestCase):
         # Hold the first provision inside acquire so the second request overlaps
         # it in the 'provisioning' state — the exact TOCTOU window.
         self.backend.gate = threading.Event()
+        peer = SandboxEngine(
+            store=self.app.store,
+            backend=self.backend,
+            mgmt_keys=self.app.sandbox_keys,
+            attachment_check=self.app.sandboxes.attachment_check,
+        )
+        self.addCleanup(peer.shutdown)
         results: dict[str, dict] = {}
         errors: list[Exception] = []
 
-        def worker(tag: str) -> None:
+        def worker(tag: str, engine) -> None:
             try:
-                results[tag] = self.app.sandboxes.request(
+                results[tag] = engine.request(
                     project_id=self.project_id,
                     experiment_id=exp_id,
                     public_key=_PUBKEY,
@@ -1874,12 +1947,12 @@ class SandboxRequestToctouGuardTest(unittest.TestCase):
             except Exception as exc:  # noqa: BLE001 — surfaced via the list
                 errors.append(exc)
 
-        first = threading.Thread(target=worker, args=("a",))
+        first = threading.Thread(target=worker, args=("a", self.app.sandboxes))
         first.start()
         deadline = time.monotonic() + 5
         while not self.backend.acquired and time.monotonic() < deadline:
             time.sleep(0.01)
-        second = threading.Thread(target=worker, args=("b",))
+        second = threading.Thread(target=worker, args=("b", peer))
         second.start()
         time.sleep(0.1)  # let the second reach the single-flight join
         self.backend.gate.set()

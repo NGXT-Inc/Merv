@@ -229,13 +229,13 @@ class ControlAppTest(unittest.TestCase):
             )
             self.addCleanup(app.shutdown)
 
-            self.assertIsInstance(app.sandboxes.mgmt_keys, MountedMgmtKeyStore)
+            self.assertIsInstance(app.sandboxes._keys, MountedMgmtKeyStore)
             self.assertEqual(
-                app.sandboxes.mgmt_keys.ensure(sandbox_uid="sb_1"),
+                app.sandboxes._keys.ensure(sandbox_uid="sb_1"),
                 "ssh-ed25519 AAAAmanaged",
             )
             self.assertEqual(
-                app.sandboxes.mgmt_keys.key_path(sandbox_uid="sb_1"), key_path
+                app.sandboxes._keys.key_path(sandbox_uid="sb_1"), key_path
             )
 
     def test_control_app_rejects_partial_management_key_config(self) -> None:
@@ -349,7 +349,7 @@ class ControlAppTest(unittest.TestCase):
                 "experiment.create",
                 {"project_id": project_id, "name": "exp", "intent": "measure"},
             )["id"]
-            app.sandboxes.repository.upsert(
+            app.sandboxes._storage.upsert(
                 experiment_id=exp_id,
                 sandbox_uid="uid_control_metrics",
                 project_id=project_id,

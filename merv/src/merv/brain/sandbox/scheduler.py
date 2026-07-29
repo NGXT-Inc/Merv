@@ -1,9 +1,6 @@
-"""Background sandbox daemons: expiration, idle reaping, cleanup retries.
+"""Scheduling for expiration, observation, idle detection, and cleanup.
 
-Pure scheduling: the loops decide *when* to sweep; every terminate/mark
-decision belongs to `SandboxLifecycle` (expiry + idle rows, and the retry of
-any cleanup the provider never confirmed) and the provisioner's stale-provision
-reaper (wedged pre-running rows).
+Lifecycle and acquisition own the decisions; this module owns cadence.
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from .sandbox_backend import SandboxBackend
 from ..kernel.env import env_bool, env_float, env_raw
 from ..kernel.ports.sandbox_lifecycle import ProvisionReaper
 from .sandbox_lifecycle import SandboxLifecycle
-from .repository import SandboxRepository
+from .storage import SandboxStorage
 from .sandbox_support import (
     DEFAULT_REAPER_INTERVAL_SECONDS,
     DEFAULT_SANDBOX_IDLE_SECONDS,
@@ -34,32 +31,23 @@ from .sandbox_heartbeat import (
 )
 
 
-# This process owns exactly one timer, and low-frequency housekeeping that
-# would otherwise need an external cron rides it rather than growing a second
-# one. Hourly is far below the reaper's own cadence and self-bounding: the
-# callback is expected to do its own batching.
+# Low-frequency housekeeping shares the process's one timer.
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 3600.0
 
 LOGGER = logging.getLogger(__name__)
 
 
 class PeriodicMaintenance(Protocol):
-    """Self-bounding housekeeping the reaper's tick carries for the composition.
-
-    Deliberately opaque: this loop is a clock, not a subsystem that knows what
-    retention is.
-    """
+    """Opaque housekeeping; the scheduler supplies only a clock."""
 
     def __call__(self) -> object: ...
 
 
-class SandboxDaemons:
-    """Owns control-plane background loops and composes their policies."""
-
+class SandboxScheduler:
     def __init__(
         self,
         *,
-        repository: SandboxRepository,
+        repository: SandboxStorage,
         backend: SandboxBackend,
         provisioner: ProvisionReaper,
         lifecycle: SandboxLifecycle,
@@ -76,24 +64,13 @@ class SandboxDaemons:
         self.backend = backend
         self.provisioner = provisioner
         self.lifecycle = lifecycle
-        # merv_run observation piggybacks the existing sweep cadence: each pass
-        # mirrors .runs receipts for live sandboxes and emits run.finished.
         self.reconcile_runs = reconcile_runs
-        # Cost governance (cloud plan Phase 7): the hosted control composition
-        # passes True — the cloud holds the provider keys and pays for every
-        # VM, so an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 must not be
-        # able to leave billing VMs unreaped. Local/daemon compositions pass
-        # False and keep the env off-switch (the user owns their own bill).
+        # Hosted control cannot disable expiry because it owns provider billing.
         self.force_expiry_reaper = bool(force_expiry_reaper)
-        # Composition-supplied and deliberately opaque: this loop is a clock,
-        # not a subsystem that knows what retention is. Set to the tool-call
-        # ledger's bounded prune by the brain composition.
         self.periodic_maintenance = periodic_maintenance
         self._maintenance_interval = float(maintenance_interval_seconds)
         self._maintenance_due = 0.0  # first tick runs it
-        # A callback that reports a failure is the composition's only warning
-        # that housekeeping has stopped happening, so it is counted and logged
-        # rather than discarded with the return value.
+        # Preserve callback failures for operator visibility.
         self.maintenance_failures = 0
         self.last_maintenance: object = None
         self.heartbeat = SandboxHeartbeatMonitor(
@@ -124,9 +101,6 @@ class SandboxDaemons:
     # ---------- expiration reaper ----------
 
     def _daemon_enabled(self) -> bool:
-        # Housekeeping counts as a reason to run: a composition with expiry and
-        # idle reaping both off (a local no-expiry backend) still has to prune,
-        # and this thread is the only timer the process owns.
         return (
             self._reaper_enabled()
             or self._idle_reap_threshold() > 0
@@ -134,9 +108,6 @@ class SandboxDaemons:
         )
 
     def _reaper_enabled(self) -> bool:
-        # With force_expiry_reaper (hosted control) the env off-switch is
-        # IGNORED; otherwise it is honored. enforce_expiry still gates by
-        # backend (the in-memory fake opts out).
         if not self.force_expiry_reaper:
             if not env_bool("RESEARCH_PLUGIN_SANDBOX_REAPER", default=True):
                 return False
@@ -157,51 +128,31 @@ class SandboxDaemons:
             self.sweep_once(stale_deadline_seconds=stale_deadline)
 
     def sweep_once(self, *, stale_deadline_seconds: float) -> None:
-        """One reaper tick, in the order the sweeps depend on each other.
-
-        Split out of the loop so the ORDER is testable without a thread: it is
-        not incidental, and getting it wrong terminates live work.
-        """
+        """Run one tick in safety-critical dependency order."""
         expiry_enabled = self._reaper_enabled()
         with suppress(Exception):  # the reaper must never die
             if expiry_enabled:
                 self.lifecycle.reap_expired()
-        # Receipts BEFORE the idle decision, never after. The idle sweep reads
-        # the `sandbox_runs` mirror to see work the CPU/GPU gauges cannot;
-        # running it first would judge a box against a mirror that is one whole
-        # tick stale, and a merv_run launched since the last pass would be
-        # invisible at exactly the moment it is reaped.
+        # Refresh receipts before idle judgment; gauges miss detached work.
         with suppress(Exception):  # the reaper must never die
             if self.reconcile_runs is not None:
                 self.reconcile_runs()
         with suppress(Exception):  # the reaper must never die
             self.reap_idle(threshold_seconds=self._idle_reap_threshold())
-        # The reaper handles `running` rows by expires_at; a provision that
-        # wedged before reaching `running` (daemon crash mid-provision) has
-        # no expires_at, so without this its billing VM would leak until the
-        # agent happened to re-poll. In local mode this thread is the only
-        # proactive billing backstop (CleanupService runs only in the cloud).
+        # Pre-running rows have no expiry, so reap wedged provisions separately.
         with suppress(Exception):  # the reaper must never die
             if expiry_enabled:
                 self.provisioner.reap_stale_provisions(
                     now=datetime.now(tz=UTC),
                     deadline_seconds=stale_deadline_seconds,
                 )
-        # A terminate the provider never confirmed parks its row as
-        # cleanup_pending; nothing else revisits those, and each one may be
-        # a live VM still billing. Own backoff, so this is cheap per tick.
+        # Parked rows may still bill; lifecycle owns their backoff.
         with suppress(Exception):  # the reaper must never die
             self.lifecycle.retry_cleanup_pending(now=datetime.now(tz=UTC))
         self.maintenance_tick(now=time.monotonic())
 
     def maintenance_tick(self, *, now: float) -> bool:
-        """Run the composition's housekeeping callback when its interval is due.
-
-        Returns whether it ran, so the cadence is testable without threads. The
-        callback's own verdict is kept and logged: housekeeping that reports
-        ``ok: False`` every hour is a subsystem that has quietly stopped, and
-        swallowing the return value is what makes that invisible.
-        """
+        """Run due housekeeping and retain failures for operator visibility."""
         if self.periodic_maintenance is None or now < self._maintenance_due:
             return False
         self._maintenance_due = now + self._maintenance_interval

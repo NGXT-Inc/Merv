@@ -23,7 +23,7 @@ from ...research_core.facade import (
     ResearchProjects,
     ResearchReviewDelivery,
 )
-from ...sandbox.facade import SandboxFacade
+from ...sandbox.core import SandboxEngine
 from ..artifacts import ArtifactTools
 from .contracts import TOOL_MANIFEST, available_tool_names
 from .tool_facade import ToolHandler
@@ -40,7 +40,7 @@ def build_control_tool_handlers(
     storage: ObjectStorage | None,
     reviews: ResearchReviewDelivery,
     review_session: StartReviewSession,
-    sandboxes: SandboxFacade,
+    sandboxes: SandboxEngine,
     feed: FeedDelivery,
     experiment_transition: TransitionExperiment,
     experiment_exhibit: ExperimentExhibits,

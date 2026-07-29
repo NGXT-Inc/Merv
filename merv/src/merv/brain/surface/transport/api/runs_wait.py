@@ -37,7 +37,7 @@ from ....kernel.secret_tokens import (
     wait_signature_matches,
 )
 from ....kernel.utils import parse_iso
-from ....sandbox.facade import SandboxFacade
+from ....sandbox.core import SandboxEngine
 
 
 MAX_STREAMS_ENV_VAR = "MERV_WAIT_MAX_STREAMS"
@@ -253,16 +253,15 @@ def _verdict(*, facts: dict | None, now: datetime) -> _Verdict:
     )
 
 
-def _observe(*, sandboxes: SandboxFacade, sandbox_uid: str) -> None:
+def _observe(*, sandboxes: SandboxEngine, sandbox_uid: str) -> None:
     """One reconciliation attempt for a held run. Blocking; never raises.
 
     A skipped cycle is exactly a failed read: the mirror stays as it was and
     the next poll asks again.
     """
     try:
-        row = sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
-        sandboxes.runs_observer.observe(
-            row=row,
+        sandboxes.observe_run(
+            sandbox_uid=sandbox_uid,
             max_age_seconds=WAIT_OBSERVE_MAX_AGE_SECONDS,
             acquire_timeout=WAIT_OBSERVE_ACQUIRE_SECONDS,
         )
@@ -271,7 +270,7 @@ def _observe(*, sandboxes: SandboxFacade, sandbox_uid: str) -> None:
 
 
 async def _facts(
-    *, sandboxes: SandboxFacade, sandbox_uid: str, label: str
+    *, sandboxes: SandboxEngine, sandbox_uid: str, label: str
 ) -> dict | None:
     """The ledger read every wait makes, off the loop and time-bounded.
 
@@ -282,7 +281,7 @@ async def _facts(
     return await asyncio.wait_for(
         loop.run_in_executor(
             _WAIT_POOL,
-            lambda: sandboxes.runs_ledger.wait_facts(
+            lambda: sandboxes.run_wait_facts(
                 sandbox_uid=sandbox_uid, label=label
             ),
         ),
@@ -291,7 +290,7 @@ async def _facts(
 
 
 def build_router(
-    *, sandboxes: SandboxFacade, secret: bytes | None = None
+    *, sandboxes: SandboxEngine, secret: bytes | None = None
 ) -> APIRouter:
     """Mount the wait route, but only for a composition that named a key.
 

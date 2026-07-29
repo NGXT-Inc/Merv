@@ -80,7 +80,7 @@ class ControlPlaneServer:
         self.app = app
         # Broader cleanup sweeps are built but NOT scheduled here — a managed
         # cron or sidecar tick calls ``cleanup.run_all(now=...)``. The owned
-        # expiry reaper lives in the composition-owned SandboxRuntime, and
+        # expiry reaper lives in the composition-owned SandboxEngine, and
         # tool-call retention rides its tick, so the one horizon that must hold
         # without an operator does not depend on that cron existing.
         self.cleanup = cleanup
@@ -157,7 +157,7 @@ def build_control_app(
         structured_logging=not local_deployment,
     )
     # A brain restart with live VMs must re-acquire reaping. ControlApp has
-    # already started its SandboxRuntime; this reconciles rows left running.
+    # already started its SandboxEngine; this reconciles rows left running.
     _resume_active_sandboxes(app=app)
     return app
 
@@ -369,13 +369,13 @@ def _validate_sandbox_backend_requirement(
 def _resume_active_sandboxes(*, app: ControlApp) -> None:
     """Reconcile rows left running/provisioning after a control restart.
 
-    The reaper thread is already running (ControlApp started SandboxRuntime);
+    The reaper thread is already running (ControlApp started SandboxEngine);
     a one-shot reconcile pass on startup makes the resumed reaper truthful
     about rows that may have expired while the control plane was down.
     Best-effort — a reconcile failure must not block startup or the reaper.
     """
     with suppress(Exception):  # startup must not hinge on recovery
-        had_running = bool(app._sandbox_runtime.repository.list_running_rows())
+        had_running = app.sandboxes.has_running_rows()
         app.sandboxes.reconcile_running_rows()
         if had_running:
             # Kick the resumed reaper once so anything already past its deadline

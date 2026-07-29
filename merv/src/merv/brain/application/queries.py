@@ -131,9 +131,7 @@ class ExperimentFigureQuery:
     experiment_state: RecordQuery
     review_snapshot: RecordQuery
     open_reviews: RecordsQuery
-    sandbox_row: Callable[..., Record | None]
-    sandbox_view: RecordQuery
-    sandbox_status_active: Callable[[str], bool]
+    sandbox_snapshot: Callable[..., tuple[Record | None, bool]]
 
     def __call__(self, *, project_id: str, experiment_id: str) -> Record:
         experiment = self.experiment_state(
@@ -145,8 +143,9 @@ class ExperimentFigureQuery:
                 snapshot_id=str(review.get("target_snapshot_id") or "")
             )
             review_attempts[str(review.get("id"))] = int(snapshot.get("attempt_index") or 0)
-        row = self.sandbox_row(experiment_id=experiment_id, project_id=project_id)
-        sandbox = self.sandbox_view(row=row) if row is not None else None
+        sandbox, sandbox_active = self.sandbox_snapshot(
+            experiment_id=experiment_id, project_id=project_id
+        )
         return build_experiment_figure(
             experiment=experiment,
             review_attempts=review_attempts,
@@ -154,10 +153,7 @@ class ExperimentFigureQuery:
                 project_id=project_id, experiment_id=experiment_id
             ),
             sandbox=sandbox,
-            sandbox_active=bool(
-                sandbox
-                and self.sandbox_status_active(str(sandbox.get("status") or ""))
-            ),
+            sandbox_active=sandbox_active,
         )
 
 

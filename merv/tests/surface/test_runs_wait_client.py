@@ -805,12 +805,12 @@ class RunsWaitEndToEndTest(unittest.TestCase):
             "sandbox.request",
             {"project_id": self.project_id, "experiment_id": experiment_id},
         )["sandbox_uid"]
-        row = self.brain.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.brain.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
         self.fake.run_listings[str(row["sandbox_id"])] = _listing(
             {"label": "seed0", "exit_code": 0, "finished_at": "2026-07-27T10:05:00Z"},
             {"label": "seed1"},
         )
-        self.brain.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        self.brain.sandbox_observer.observe_live(max_age_seconds=0.0)
         self.base = self._serve()
 
     def _serve(self) -> str:

@@ -7,17 +7,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from merv.brain.sandbox.execution.driver_registry import sandbox_driver_descriptor
-from merv.brain.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
+from merv.brain.sandbox.sandbox_backend import (
+    BackendUnavailableError,
+    BackendValidationError,
+)
 from merv.brain.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
 from merv.brain.sandbox.execution.backends.modal.config import ModalConfig
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import ModalSandboxBackend
-from tests.fakes import FakeProcess
-from tests.sandbox.driver_conformance import (
-    assert_catalog_envelope,
-    assert_driver_surface,
+from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+    ModalSandboxBackend,
 )
-
+from tests.fakes import FakeProcess
 
 # --- fake modal SDK ---------------------------------------------------------
 
@@ -128,7 +127,10 @@ class FakeSecret:
 
     @staticmethod
     def from_local_environ(keys):
-        return {"local_environ": list(keys), "secret": {key: os.environ[key] for key in keys}}
+        return {
+            "local_environ": list(keys),
+            "secret": {key: os.environ[key] for key in keys},
+        }
 
 
 class FakeApp:
@@ -216,12 +218,6 @@ class ModalSandboxBackendTest(unittest.TestCase):
             time_limit=1234,
         )
 
-    def test_shared_driver_contract_with_injected_client(self) -> None:
-        descriptor = sandbox_driver_descriptor("modal")
-
-        assert_driver_surface(self, descriptor=descriptor, backend=self.backend)
-        assert_catalog_envelope(self, descriptor=descriptor, backend=self.backend)
-
     def test_acquire_wires_ssh_tunnel(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         self.assertEqual(provisioned.ssh_host, "sandbox.modal.test")
@@ -240,7 +236,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertNotIn("volumes", kwargs)
         self.assertEqual(provisioned.sync_dir, kwargs["workdir"])
         self.assertEqual(provisioned.unsynced_dir, self.backend.config.sandbox_data_dir)
-        self.assertEqual(provisioned.sandbox_data_dir, self.backend.config.sandbox_data_dir)
+        self.assertEqual(
+            provisioned.sandbox_data_dir, self.backend.config.sandbox_data_dir
+        )
         self.assertEqual(provisioned.volume_name, "")
         self.assertNotIn("secrets", kwargs)
         self.assertEqual(kwargs["workdir"], "/workspace/exp1")
@@ -248,7 +246,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(
             kwargs["env"]["RP_SESSION_DIR"], "/workspace/.merv_sessions/exp1"
         )
-        self.assertEqual(kwargs["env"]["RP_SANDBOX_DATA_DIR"], self.backend.config.sandbox_data_dir)
+        self.assertEqual(
+            kwargs["env"]["RP_SANDBOX_DATA_DIR"], self.backend.config.sandbox_data_dir
+        )
         self.assertEqual(kwargs["env"]["RP_EXPERIMENT_ID"], "exp1")
         self.assertNotIn("MLFLOW_TRACKING_URI", kwargs["env"])
         self.assertNotIn("MLFLOW_EXPERIMENT_NAME", kwargs["env"])
@@ -307,7 +307,10 @@ class ModalSandboxBackendTest(unittest.TestCase):
     def test_boot_script_has_no_sandbox_mlflow_or_tensorboard_server(self) -> None:
         # The image layering writes the boot script as a heredoc into the
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
-        from merv.brain.sandbox.execution.backends.modal.sandbox_backend import BOOT_SCRIPT, REC_SCRIPT
+        from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+            BOOT_SCRIPT,
+            REC_SCRIPT,
+        )
 
         self.assertNotIn("mlflow server", BOOT_SCRIPT)
         self.assertNotIn("backend-store-uri", BOOT_SCRIPT)
@@ -361,7 +364,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         # No token from the provisioning user => public models only, no crash,
         # and no deployment env is read even when HF_TOKEN is set in the process.
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_deployment"}, clear=False):
-            self.backend.acquire(request=self._request())  # _request carries no hf_token
+            self.backend.acquire(
+                request=self._request()
+            )  # _request carries no hf_token
         secrets = FakeSandboxClass.created[-1]["kwargs"].get("secrets", [])
         self.assertNotIn("HF_TOKEN", str(secrets))
         self.assertNotIn("hf_deployment", str(secrets))
@@ -466,7 +471,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         metrics = self.backend.sample_metrics(sandbox_id=provisioned.sandbox_id)
         self.assertIsNotNone(metrics)
         self.assertEqual(metrics["cpu"], {"used_cores": 1.5, "limit_cores": 2.0})
-        self.assertEqual(metrics["memory"], {"used_bytes": 2147483648, "limit_bytes": 8589934592})
+        self.assertEqual(
+            metrics["memory"], {"used_bytes": 2147483648, "limit_bytes": 8589934592}
+        )
         self.assertEqual(
             metrics["network"], {"bytes_total": 98765, "ssh_established": 0}
         )
@@ -476,6 +483,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(gpu["mem_used_mib"], 1024)
         self.assertEqual(gpu["mem_total_mib"], 40960)
         self.assertIn("A100", gpu["name"])
+
 
 if __name__ == "__main__":
     unittest.main()

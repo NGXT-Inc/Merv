@@ -105,17 +105,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> TranscriptTail:
-        """Tail the rec.sh transcript over the management SSH channel.
-
-        Returns the tail window plus the transcript's true byte size, so the
-        service can keep byte-offset cursors valid past the window.
-
-        ``key_path`` is the per-sandbox management private key (plan Phase 5,
-        fixed decision 4); the read logs in as the dedicated management
-        principal, which bootstrap exempts from the rec.sh ForceCommand — so
-        polling the transcript is never itself recorded as a command and never
-        depends on the caller's machine. The row's caller ``ssh_user`` is ignored.
-        """
+        """Tail exact bytes without recording the management read itself."""
         return read_transcript_via_mgmt_ssh(
             ssh_runner=self._ssh_runner,
             sandbox_id=sandbox_id,
@@ -137,14 +127,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> dict[str, Any] | None:
-        """Sample live VM usage (CPU/RAM/GPU) over the management SSH channel.
-
-        Runs the shared sampler script as the ForceCommand-exempt management
-        principal (``key_path`` is the management key, plan Phase 5), so the
-        ~3s UI poll never spams the experiment transcript. Returns a parsed
-        gauge dict, or None when the VM is unreachable or the sampler produced
-        nothing usable; never raises.
-        """
+        """Sample gauges without recording management polling."""
         return sample_metrics_via_mgmt_ssh(
             ssh_runner=self._ssh_runner,
             sandbox_id=sandbox_id,
@@ -163,11 +146,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> list[dict[str, Any]] | None:
-        """List merv_run receipts under workdir/.runs over the management channel.
-
-        Same principal and never-raises contract as sample_metrics: [] means
-        the box answered with no runs, None means the box did not answer.
-        """
+        """Return receipts; ``[]`` is empty and ``None`` means no news."""
         return read_runs_via_mgmt_ssh(
             ssh_runner=self._ssh_runner,
             sandbox_id=sandbox_id,
@@ -178,12 +157,6 @@ class VmSshSandboxBackend(SandboxBackendBase):
         )
 
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:
-        """The credentials to deliver to a fresh VM post-boot (HF tokens).
-
-        ``hf_token`` is the provisioning user's resolved token (no-dataplane
-        Phase C); the control side hands these to write_secrets. Empty when the
-        user set no token — the sandbox simply runs without HF access.
-        """
         return sandbox_tokens(hf_token=hf_token)
 
     def _wait_for_ssh(self, *, host: str, port: int = 22) -> None:
@@ -209,13 +182,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,
         key_path: str = "",
     ) -> bool:
-        """Deliver provider credentials post-boot over the management channel.
-
-        Writes ``/opt/merv/secrets.env`` (sourced by rec.sh) as ``export NAME=...``
-        lines over SSH stdin, replacing the cleartext-in-user_data embed (plan
-        Phase 9, risk 16). Best-effort: returns False on any failure and never
-        raises — provisioning must not fail because a token write was flaky.
-        """
+        """Deliver secrets after boot; failure cannot fail provisioning."""
         return write_secrets_via_mgmt_ssh(
             ssh_runner=self._ssh_input_runner,
             sandbox_id=sandbox_id,

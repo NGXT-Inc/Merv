@@ -110,11 +110,7 @@ def read_runs_via_mgmt_ssh(
     ssh_port: int,
     key_path: str,
 ) -> list[dict[str, Any]] | None:
-    """List merv_run receipts under workdir/.runs over the management channel.
-
-    [] means "no runs"; None means unreachable/failed ("no news") so the
-    observer never mistakes a dead channel for an empty runs dir.
-    """
+    """Return receipts, or ``None`` when the channel supplied no news."""
     if not sandbox_id or not ssh_host or not key_path or not workdir:
         return None
     try:
@@ -174,9 +170,7 @@ def write_secrets_via_mgmt_ssh(
 
 def sandbox_tokens(*, hf_token: str = "") -> dict[str, str]:
     tokens: dict[str, str] = {}
-    # HF is per-user now (no-dataplane Phase C): the facade resolves the
-    # provisioning user's token and passes it here; the deployment-wide HF_TOKEN
-    # env fallback is retired. No token => public models only, no crash.
+    # The caller supplies the provisioning user's token; there is no global fallback.
     if hf_token:
         tokens["HF_TOKEN"] = hf_token
         tokens["HUGGING_FACE_HUB_TOKEN"] = hf_token
