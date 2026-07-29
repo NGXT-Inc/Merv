@@ -591,14 +591,14 @@ class SandboxSweepOrderTest(unittest.TestCase):
 
 
 class SandboxHeartbeatEnvTest(unittest.TestCase):
-    def _daemons(self) -> SandboxScheduler:
+    def _scheduler(self) -> SandboxScheduler:
         return SandboxScheduler(
             sweep=lambda **_kwargs: None,
             enforce_expiry=True,
         )
 
     def test_idle_threshold_zero_or_empty_disables_idle_reaping(self) -> None:
-        daemons = self._daemons()
+        scheduler = self._scheduler()
         for value in ("0", ""):
             with self.subTest(value=value):
                 with patch.dict(
@@ -606,7 +606,7 @@ class SandboxHeartbeatEnvTest(unittest.TestCase):
                     {"RESEARCH_PLUGIN_SANDBOX_IDLE_SECONDS": value},
                     clear=False,
                 ):
-                    self.assertEqual(daemons._idle_reap_threshold(), 0)
+                    self.assertEqual(scheduler._idle_reap_threshold(), 0)
 
 
 if __name__ == "__main__":

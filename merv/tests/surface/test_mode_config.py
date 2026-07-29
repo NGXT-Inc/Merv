@@ -22,7 +22,7 @@ from merv.brain.surface.config import (
     resolve_storage_secret_access_key,
     storage_feature_enabled,
 )
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.utils import ValidationError
@@ -317,7 +317,8 @@ class HostedControlSurfaceTest(unittest.TestCase):
         backend.alive["sbx_primary"] = True
         backend.alive["sbx_extra"] = True
         for uid, sid in (("uid_primary", "sbx_primary"), ("uid_extra", "sbx_extra")):
-            self.app.sandbox_storage.upsert(
+            seed_sandbox(
+                self.app.sandbox_storage,
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 project_id=project_id,

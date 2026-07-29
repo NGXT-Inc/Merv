@@ -376,23 +376,6 @@ class SandboxStorage:
         )
         return int(getattr(cursor, "rowcount", 0))
 
-    def upsert(
-        self,
-        *,
-        experiment_id: str,
-        sandbox_uid: str,
-        expected_project_id: str = "",
-        **fields: Any,
-    ) -> None:
-        with self.store.transaction() as conn:
-            self._upsert(
-                conn=conn,
-                experiment_id=experiment_id,
-                sandbox_uid=sandbox_uid,
-                expected_project_id=expected_project_id,
-                **fields,
-            )
-
     def _upsert(
         self,
         *,

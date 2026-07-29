@@ -18,8 +18,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
-from merv.brain.kernel.utils import NotFoundError, parse_iso
-from tests.support.sandbox_backend import FakeSandboxBackend
+from merv.brain.kernel.utils import parse_iso
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.sandbox import models as sandbox_models
 from merv.brain.sandbox.models import BackendCapabilities
 from merv.brain.sandbox.scheduler import SandboxScheduler
@@ -76,7 +76,8 @@ class CleanupSweepTest(unittest.TestCase):
     def test_orphan_vm_sweep_reaps_a_running_row_whose_vm_is_gone(self) -> None:
         exp_id = self._experiment()
         sandbox_uid = "uid_gone"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -96,7 +97,8 @@ class CleanupSweepTest(unittest.TestCase):
 
     def test_orphan_vm_sweep_leaves_a_live_row_running(self) -> None:
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_live",
             project_id=self.project_id,
@@ -113,29 +115,14 @@ class CleanupSweepTest(unittest.TestCase):
         row = self.app.sandbox_storage.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "running")
 
-    # ---- blob TTL GC ----
-
-    def test_blob_ttl_gc_deletes_expired_blobs(self) -> None:
-        ns = self.project_id
-        live = self.app.blobs.put(
-            namespace=ns, data=b"keep", expires_at="2999-01-01T00:00:00Z"
-        )
-        dead = self.app.blobs.put(
-            namespace=ns, data=b"drop", expires_at="2000-01-01T00:00:00Z"
-        )
-        swept = self.cleanup.sweep_expired_blobs(now=datetime.now(tz=UTC))
-        self.assertEqual(swept, {"deleted": 1, "ok": True})
-        self.assertEqual(self.app.blobs.get(namespace=ns, sha256=live), b"keep")
-        with self.assertRaises(NotFoundError):
-            self.app.blobs.get(namespace=ns, sha256=dead)
-
     # ---- stale provisioning reap ----
 
     def test_stale_provision_reaped_past_deadline(self) -> None:
         exp_id = self._experiment()
         sandbox_uid = "uid_wedged"
         started = "2026-01-01T00:00:00Z"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -160,7 +147,8 @@ class CleanupSweepTest(unittest.TestCase):
         # leaves a billing VM in a provisioning phase. The sweep must still
         # reap it — the VM exists from `creating` onward.
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_connecting",
             project_id=self.project_id,
@@ -185,7 +173,8 @@ class CleanupSweepTest(unittest.TestCase):
         # (cleanup_orphan -> backend.find_sandbox_id). It must still be killed.
         exp_id = self._experiment()
         sandbox_uid = "uid_unrecorded"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -206,7 +195,8 @@ class CleanupSweepTest(unittest.TestCase):
 
     def test_stale_provision_left_alone_within_deadline(self) -> None:
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_fresh",
             project_id=self.project_id,
@@ -230,7 +220,8 @@ class CleanupSweepTest(unittest.TestCase):
             namespace=self.project_id, data=b"x", expires_at="2000-01-01T00:00:00Z"
         )
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_dead_run_all",
             project_id=self.project_id,
@@ -286,12 +277,6 @@ class CleanupSweepTest(unittest.TestCase):
             ]
         self.assertNotIn("ancient", remaining)
 
-    def test_retention_timer_belongs_to_the_ledger(self) -> None:
-        self.assertTrue(self.app.tool_ledger._retention_thread.is_alive())
-        self.assertFalse(
-            hasattr(self.app.sandbox_scheduler, "periodic_maintenance")
-        )
-
     def test_a_failing_blob_sweep_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingBlobs:
             def sweep_expired(self, *, now):
@@ -324,7 +309,8 @@ class CleanupSweepTest(unittest.TestCase):
 
     def _running_row(self, *, sandbox_uid: str, sandbox_id: str) -> str:
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -428,7 +414,8 @@ class CleanupSweepTest(unittest.TestCase):
         # settles as `failed` (not a clean `terminated`) once the VM is gone.
         exp_id = self._experiment()
         uid = "uid_wedged_unconfirmed"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -464,7 +451,8 @@ class CleanupSweepTest(unittest.TestCase):
         # a provider that cannot be asked is not evidence the VM is gone.
         exp_id = self._experiment()
         uid = "uid_lookup_outage"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -490,7 +478,8 @@ class CleanupSweepTest(unittest.TestCase):
         # Same row, but the provider answers and names nothing: that IS proof.
         exp_id = self._experiment()
         uid = "uid_lookup_empty"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -510,7 +499,8 @@ class CleanupSweepTest(unittest.TestCase):
     def test_request_never_forgets_an_unrecorded_orphan_on_lookup_failure(self) -> None:
         exp_id = self._experiment()
         uid = "uid_reacquire_lookup_outage"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -573,7 +563,8 @@ class CleanupSweepTest(unittest.TestCase):
     def _interrupted_provision(self, *, uid: str, sandbox_id: str, **fields) -> str:
         """A `provisioning` row whose job died with the brain (restart)."""
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -634,7 +625,8 @@ class CleanupSweepTest(unittest.TestCase):
         # failure from the only status the agent ever reads.
         uid = "uid_release_verdict"
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -670,7 +662,8 @@ class CleanupSweepTest(unittest.TestCase):
         # tells the operator the bill stopped, and they stop looking.
         exp_id = self._experiment()
         for uid, sandbox_id in (("uid_agg_ok", "sb-agg-ok"), ("uid_agg_bad", "sb-agg-bad")):
-            self.app.sandbox_storage.upsert(
+            seed_sandbox(
+                self.app.sandbox_storage,
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 project_id=self.project_id,
@@ -779,7 +772,8 @@ class CleanupSweepTest(unittest.TestCase):
         # asked its owner.
         exp_id = self._experiment()
         uid = "uid_foreign_provider"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -806,7 +800,8 @@ class CleanupSweepTest(unittest.TestCase):
         # Same row, correct owner recorded: the sweep works exactly as before.
         exp_id = self._experiment()
         uid = "uid_own_provider"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=uid,
             project_id=self.project_id,

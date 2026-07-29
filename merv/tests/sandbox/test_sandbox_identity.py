@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import NotFoundError, ValidationError
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 
 
 class SandboxIdentityTest(unittest.TestCase):
@@ -106,7 +106,8 @@ class SandboxIdentityTest(unittest.TestCase):
         uid_b = str(self.app.sandbox_storage.load_row(experiment_id=exp_b)["sandbox_uid"])
 
         self.assertNotEqual(uid_a, uid_b)
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_a, sandbox_uid=uid_a, detail="refreshed"
         )
         self.assertEqual(
@@ -131,7 +132,7 @@ class SandboxIdentityTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(row)
         # The MCP contract never carried the field either, so the tool refuses
-        # it before the facade is even reached.
+        # it before the engine is reached.
         with self.assertRaises(ValidationError):
             self.app.call_tool(
                 "sandbox.request",
@@ -153,7 +154,8 @@ class SandboxIdentityTest(unittest.TestCase):
         )["id"]
 
         with self.assertRaises(ValidationError) as ctx:
-            self.app.sandbox_storage.upsert(
+            seed_sandbox(
+                self.app.sandbox_storage,
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 project_id=other,
@@ -263,7 +265,8 @@ class SandboxIdentityTest(unittest.TestCase):
             "mark_terminated": lambda: repository.mark_terminated(
                 experiment_id=exp_id, sandbox_uid=uid, expected_project_id=other
             ),
-            "upsert": lambda: repository.upsert(
+            "upsert": lambda: seed_sandbox(
+                repository,
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 expected_project_id=other,

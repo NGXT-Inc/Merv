@@ -1,12 +1,12 @@
-"""Chaos scenarios for the split topology (cloud plan Phase 9).
+"""Crash-recovery scenarios for Sandbox resources.
 
-No docker — the fakes stand in for the provider and the daemon. Each scenario
-exercises a failure the split design must survive:
+No docker — the fake stands in for the provider. Each scenario exercises a
+failure the durable control plane must survive:
 
 - daemon dies mid-provision  ⇒ the stale-provision reap (Step 2)
   terminates the billing sandbox so a dead daemon never leaves a VM running with
   no owner (risk 8).
-- control restart             ⇒ the crash-recovery scan (Phase 8) resumes the
+- control restart             ⇒ the crash-recovery scan resumes the
   reaper, and the cleanup sweeps then reconcile/terminate as expected (risk 6).
 """
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from tests.support.brain import TestBrain
 from merv.brain.surface.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.sandbox.models import BackendCapabilities
 from merv.brain.application.maintenance import CleanupService
 
@@ -79,7 +79,8 @@ class DaemonDiesMidProvisionTest(_Base):
         # the daemon died — the row is wedged before running.
         exp_id = self._experiment()
         sandbox_uid = "uid_billing"
-        self.app.sandboxes._storage.upsert(
+        seed_sandbox(
+            self.app.sandboxes._storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -157,7 +158,8 @@ class ControlRestartTest(unittest.TestCase):
             {"project_id": project_id, "name": "exp-x", "intent": "y"},
         )["id"]
         sandbox_uid = "uid_dead_restart"
-        first.sandboxes._storage.upsert(
+        seed_sandbox(
+            first.sandboxes._storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=project_id,
@@ -173,7 +175,7 @@ class ControlRestartTest(unittest.TestCase):
 
         # Restart the control app over the SAME staging dir (same SQLite store).
         # The VM is NOT marked alive in the fresh backend, so the provider says
-        # it's gone. The restart's crash-recovery scan (Phase 8) reconciles the
+        # it's gone. The restart's crash-recovery scan reconciles the
         # running rows and resumes the reaper; the orphan-cleanup sweep is the
         # belt-and-suspenders that finishes the job. Either way the dead VM's row
         # must end up terminated — a control restart orphans nothing (risk 6).

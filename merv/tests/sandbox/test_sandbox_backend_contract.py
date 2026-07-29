@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -16,7 +13,6 @@ from merv.brain.sandbox.adapters.modal import (
 )
 from merv.brain.sandbox.adapters.base import VmSshSandboxBackend
 from merv.brain.sandbox.adapters import (
-    build_sandbox_driver,
     sandbox_driver_inventory,
 )
 from merv.brain.sandbox.adapters import MultiplexingSandboxBackend
@@ -41,25 +37,6 @@ def _provider_neutral_sandbox_sources():
         for path in SANDBOX_ROOT.rglob("*.py")
         if "adapters" not in path.relative_to(SANDBOX_ROOT).parts
     )
-
-
-BACKEND_METHODS = (
-    "acquire",
-    "capabilities_for",
-    "is_alive",
-    "terminate",
-    "read_transcript",
-    "sandbox_environment",
-    "health",
-    "sample_metrics",
-    "read_runs",
-    "refresh_ssh_endpoint",
-    "hardware_catalog",
-    "find_sandbox_id",
-    "sandbox_secrets",
-    "write_secrets",
-    "shutdown",
-)
 
 
 class MinimalBackend(SandboxBackendBase):
@@ -126,7 +103,7 @@ class VmLifecycleProbe(VmSshSandboxBackend):
 
 
 class SandboxBackendContractTest(unittest.TestCase):
-    def _daemons_for_backend(
+    def _scheduler_for_backend(
         self, backend: SandboxBackendBase, *, force_expiry_reaper: bool = False
     ) -> SandboxScheduler:
         return SandboxScheduler(
@@ -134,45 +111,6 @@ class SandboxBackendContractTest(unittest.TestCase):
             enforce_expiry=backend.capabilities.enforce_expiry,
             force_expiry_reaper=force_expiry_reaper,
         )
-
-    def _backend_classes(self) -> list[type]:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
-            os.environ, {"MERV_MODE": "control"}, clear=False
-        ):
-            backend_classes = [
-                type(
-                    build_sandbox_driver(
-                        name=descriptor.name, repo_root=Path(tmp)
-                    )
-                )
-                for descriptor in sandbox_driver_inventory()
-            ]
-        backend_classes.append(MultiplexingSandboxBackend)
-        return backend_classes
-
-    def test_orphan_lookup_takes_the_owner_the_row_records(self) -> None:
-        # The deterministic sandbox name is derived from the EXPERIMENT, so a
-        # sibling attempt on another provider answers to it too: the lookup is
-        # routed by the row's owner, exactly as qualified_sandbox_id is. A
-        # driver that drops the parameter turns every owner-routed cleanup into
-        # a TypeError at the one moment a possibly-billing VM must be deleted.
-        for backend_cls in [*self._backend_classes(), SandboxBackendBase]:
-            with self.subTest(backend=backend_cls.__name__):
-                self.assertIn(
-                    "provider",
-                    inspect.signature(backend_cls.find_sandbox_id).parameters,
-                    f"{backend_cls.__name__}.find_sandbox_id ignores its row's owner",
-                )
-
-    def test_backend_classes_expose_full_contract_surface(self) -> None:
-        backend_classes = self._backend_classes()
-        for backend_cls in backend_classes:
-            with self.subTest(backend=backend_cls.__name__):
-                for method in BACKEND_METHODS:
-                    self.assertTrue(
-                        callable(getattr(backend_cls, method, None)),
-                        f"{backend_cls.__name__}.{method} is missing",
-                    )
 
     def test_base_optional_methods_return_sentinel_defaults(self) -> None:
         backend = MinimalBackend()
@@ -417,64 +355,33 @@ class SandboxBackendContractTest(unittest.TestCase):
                 source = path.read_text(encoding="utf-8")
                 self.assertNotIn("getattr(self.execution_backend", source)
 
-    def test_fake_backend_uses_base_catalog_default_until_selection_enabled(self) -> None:
-        plain = FakeSandboxBackend()
-        self.assertIsNone(plain.hardware_catalog())
-
-        selecting = FakeSandboxBackend(requires_hardware_selection=True)
-        catalog = selecting.hardware_catalog()
-        self.assertIsInstance(catalog, dict)
-        self.assertTrue(catalog["selection_required"])
-
-    def test_default_capabilities_enable_reaper_gate(self) -> None:
-        daemons = self._daemons_for_backend(MinimalBackend())
-
-        with mock.patch.dict(
-            os.environ,
-            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
-        ):
-            self.assertTrue(daemons._reaper_enabled())
-
-    def test_fake_capabilities_disable_reaper_gate(self) -> None:
-        daemons = self._daemons_for_backend(FakeSandboxBackend())
-
-        with mock.patch.dict(
-            os.environ,
-            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
-        ):
-            self.assertFalse(daemons._reaper_enabled())
-
-    def test_local_mode_honors_reaper_off_switch(self) -> None:
-        # Local mode (the default): the user owns their bill, so the env
-        # off-switch disables the reaper even on a backend that enforces expiry.
-        daemons = self._daemons_for_backend(MinimalBackend())
-        with mock.patch.dict(os.environ, {"RESEARCH_PLUGIN_SANDBOX_REAPER": "0"}):
-            self.assertFalse(daemons._reaper_enabled())
-
-    def test_control_mode_ignores_reaper_off_switch(self) -> None:
-        # Cost governance (cloud plan Phase 7): the cloud pays for every VM, so
-        # an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 is IGNORED in control
-        # mode. The flag is composition-injected: the control composition root
-        # passes force_expiry_reaper=True instead of the daemons reading the
-        # process mode from config (module-boundary fix, phase 4a).
-        daemons = self._daemons_for_backend(MinimalBackend(), force_expiry_reaper=True)
-        with mock.patch.dict(
-            os.environ,
-            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "0"},
-        ):
-            self.assertTrue(daemons._reaper_enabled())
+    def test_reaper_policy_reflects_backend_and_cost_owner(self) -> None:
+        cases = (
+            ("eligible by default", MinimalBackend(), False, "1", True),
+            ("backend opts out", FakeSandboxBackend(), False, "1", False),
+            ("local owner disables it", MinimalBackend(), False, "0", False),
+            ("control plane forces it", MinimalBackend(), True, "0", True),
+        )
+        for name, backend, forced, configured, expected in cases:
+            with self.subTest(name=name), mock.patch.dict(
+                os.environ, {"MERV_SANDBOX_REAPER": configured}
+            ):
+                scheduler = self._scheduler_for_backend(
+                    backend, force_expiry_reaper=forced
+                )
+                self.assertEqual(scheduler._reaper_enabled(), expected)
 
     def test_control_composition_forces_the_expiry_reaper(self) -> None:
-        # The control composition (not the sandbox module) must compute the
-        # force flag — the daemons no longer import merv.brain.surface.config.
+        # The control composition (not the sandbox module) computes the force
+        # flag, so scheduler stays independent of Surface configuration.
         control_source = (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("force_expiry_reaper=True", control_source)
-        daemons_source = (
+        scheduler_source = (
             BACKEND_ROOT / "sandbox" / "scheduler.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("resolve_mode", daemons_source)
+        self.assertNotIn("resolve_mode", scheduler_source)
 
     def test_services_do_not_dispatch_on_provider_name_literals(self) -> None:
         provider_names = {

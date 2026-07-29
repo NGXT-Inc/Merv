@@ -57,7 +57,6 @@ class SandboxArchitectureTest(unittest.TestCase):
             "lifecycle",
             "provisioner",
             "metrics",
-            "daemons",
             "quotas",
             "store",
             "backend",

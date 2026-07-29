@@ -31,7 +31,7 @@ from merv.brain.mlflow.config import (
     MLFLOW_TRACKING_URI_ENV_VAR,
 )
 from merv.brain.mlflow import CentralMlflowService
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.state import StateStore
@@ -349,7 +349,8 @@ class ControlAppTest(unittest.TestCase):
                 "experiment.create",
                 {"project_id": project_id, "name": "exp", "intent": "measure"},
             )["id"]
-            app.sandboxes._storage.upsert(
+            seed_sandbox(
+                app.sandboxes._storage,
                 experiment_id=exp_id,
                 sandbox_uid="uid_control_metrics",
                 project_id=project_id,

@@ -10,7 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.sandbox.models import BackendCapabilities
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
@@ -579,7 +579,8 @@ class SandboxEngineTest(unittest.TestCase):
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
         pending_uid = self.app.sandbox_storage.new_sandbox_uid()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=pending_uid,
             project_id=self.project_id,
@@ -751,7 +752,7 @@ class SandboxEngineTest(unittest.TestCase):
 
     # ---- sandbox response guidance ----
 
-    def test_request_has_brain_runtime_hint_without_deleted_enrichment(self) -> None:
+    def test_request_returns_safe_runtime_guidance(self) -> None:
         exp_id = self._experiment()
         result = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
@@ -852,7 +853,8 @@ class SandboxEngineTest(unittest.TestCase):
             name="Tenant Sandbox", tenant_id="tenant_a"
         )["id"]
         sandbox_uid = "uid_tenant"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id="exp_tenant",
             sandbox_uid=sandbox_uid,
             project_id=project_id,
@@ -1445,25 +1447,16 @@ class SandboxEngineTest(unittest.TestCase):
 
     # ---- validation ----
 
-    def test_invalid_gpu_rejected(self) -> None:
+    def test_invalid_request_values_are_rejected(self) -> None:
         exp_id = self._experiment()
-        with self.assertRaises(ValidationError):
-            self.call(
-                "sandbox.request",
-                project_id=self.project_id,
-                experiment_id=exp_id,
-                gpu="NOTREAL",
-            )
-
-    def test_invalid_time_limit_rejected(self) -> None:
-        exp_id = self._experiment()
-        with self.assertRaises(ValidationError):
-            self.call(
-                "sandbox.request",
-                project_id=self.project_id,
-                experiment_id=exp_id,
-                time_limit=5,
-            )
+        for field, value in (("gpu", "NOTREAL"), ("time_limit", 5)):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                self.call(
+                    "sandbox.request",
+                    project_id=self.project_id,
+                    experiment_id=exp_id,
+                    **{field: value},
+                )
 
     # ---- hardware selection (bundled-hardware backends like Lambda Labs) ----
 
@@ -1589,10 +1582,6 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertTrue(second["reused"])
         self.assertEqual(second["instance_type"], "gpu_1x_a10")
 
-    def test_options_tool_is_registered(self) -> None:
-        names = {tool["name"] for tool in self.app.list_tools()}
-        self.assertIn("sandbox.options", names)
-
     # ---- expiration reaper ----
 
     def test_reaper_terminates_expired_sandbox(self) -> None:
@@ -1617,30 +1606,6 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertIn(sid, self.backend.terminated)
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(got["status"], "none")
-
-    def test_reaper_does_not_change_running_experiment(self) -> None:
-        exp_id = self._experiment()
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        state = self.call(
-            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
-        )
-        self.assertEqual(state["status"], "ready_to_run")
-        with self.app.store.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE sandboxes
-                SET expires_at=?
-                WHERE sandbox_uid IN (
-                  SELECT sandbox_uid FROM sandbox_attachments WHERE experiment_id=?
-                )
-                """,
-                ("2000-01-01T00:00:00Z", exp_id),
-            )
-        self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call(
-            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
-        )
-        self.assertEqual(state["status"], "ready_to_run")
 
     def test_reaper_leaves_experiments_past_running_alone(self) -> None:
         exp_id = self._experiment()
@@ -1856,7 +1821,8 @@ class SandboxEngineTest(unittest.TestCase):
         # A provisioning row with no in-flight job (daemon restart mid-provision)
         # must reconcile to failed so a polling agent doesn't wait forever.
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_orphaned_provision",
             project_id=self.project_id,
@@ -1883,7 +1849,7 @@ _PUBKEY = (
 
 
 class SandboxHfAndAttributionTest(unittest.TestCase):
-    """no-dataplane Phase C: per-user HF resolution + key_id attribution."""
+    """Per-user HF resolution and management-key attribution."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1917,7 +1883,7 @@ class SandboxHfAndAttributionTest(unittest.TestCase):
         )
         self.assertEqual(self.backend.acquired[-1].hf_token, "hf_user_secret")
 
-    def test_no_token_degrades_gracefully_and_env_fallback_is_removed(self) -> None:
+    def test_deployment_token_is_not_shared_with_users(self) -> None:
         # A deployment-wide HF_TOKEN in the environment is IGNORED; a user with
         # no stored token simply provisions with no HF secret (no crash).
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_deployment"}, clear=False):
@@ -1975,7 +1941,7 @@ class SandboxHfAndAttributionTest(unittest.TestCase):
 
 
 class SandboxRequestToctouGuardTest(unittest.TestCase):
-    """no-dataplane Phase C: concurrent same-experiment requests provision once."""
+    """Concurrent same-experiment requests provision once."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

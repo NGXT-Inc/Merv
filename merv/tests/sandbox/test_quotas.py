@@ -891,7 +891,17 @@ class UnpricedAdapterSkuAdmissionTest(unittest.TestCase):
             tenant_id="tenant_budgeted", usd_budget=500.0
         )
 
-    def test_a_listed_but_unpriced_sku_is_refused_under_a_spend_policy(self) -> None:
+    def test_a_listed_unpriced_sku_depends_on_spend_policy(self) -> None:
+        self.assertEqual(
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("unpriced-permissive"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_unpriced",
+            )["status"],
+            "running",
+        )
+
         self._budget()
         with self.assertRaises(PermissionDeniedError) as ctx:
             self.app.sandboxes.request(
@@ -911,17 +921,6 @@ class UnpricedAdapterSkuAdmissionTest(unittest.TestCase):
                 experiment_id=self._experiment("priced-sibling"),
                 public_key=DEFAULT_PUBLIC_KEY,
                 instance_type="gpu_1x_priced",
-            )["status"],
-            "running",
-        )
-
-    def test_the_unpriced_sku_stays_allowed_without_a_spend_policy(self) -> None:
-        self.assertEqual(
-            self.app.sandboxes.request(
-                project_id=self.project_id,
-                experiment_id=self._experiment("unpriced-permissive"),
-                public_key=DEFAULT_PUBLIC_KEY,
-                instance_type="gpu_1x_unpriced",
             )["status"],
             "running",
         )

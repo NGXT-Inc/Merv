@@ -16,7 +16,7 @@ from merv.brain.sandbox.adapters.lambda_labs import LambdaLabsSandboxBackend
 from merv.brain.sandbox.adapters.thunder_compute import (
     ThunderComputeSandboxBackend,
 )
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.sandbox.models import (
     BackendCapabilities,
     BackendUnavailableError,
@@ -271,7 +271,7 @@ class MultiplexerTest(unittest.TestCase):
         self.assertTrue(health["backends"]["alpha"]["ok"])
 
     def test_environment_and_secrets_merge_across_backends(self) -> None:
-        # Post-Phase-C the facade threads the provisioning user's HF token; the
+        # The engine threads the provisioning user's HF token; the
         # multiplexer forwards it to each backend.
         self.alpha.sandbox_secrets = lambda *, hf_token="": {"A": hf_token or "1"}  # type: ignore[method-assign]
         self.beta.sandbox_secrets = lambda *, hf_token="": {"B": "2"}  # type: ignore[method-assign]
@@ -460,7 +460,8 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         alive_on: FakeSandboxBackend | None = None,
     ) -> str:
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -603,7 +604,8 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         # as proof beta's sandbox is gone: the wrong attempt killed, the real
         # one still billing behind a terminalized row.
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_beta_noid",
             project_id=self.project_id,
@@ -611,7 +613,8 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
             status="cleanup_pending",
             phase="cleanup_attempt_1",
         )
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_alpha_sibling",
             project_id=self.project_id,
@@ -644,7 +647,8 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
     def test_a_parked_sibling_counts_as_one_that_may_still_exist(self) -> None:
         # The guard underneath the test above, in its own right.
         exp_id = self._experiment()
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=exp_id,
             sandbox_uid="uid_parked_sibling",
             project_id=self.project_id,

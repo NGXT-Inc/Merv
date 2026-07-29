@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 from merv.brain.kernel.state.store import StateStore
 from tests.support.brain import TestBrain
+from tests.support.sandbox_backend import seed_sandbox
 
 
 class CountingStateStore(StateStore):
@@ -122,7 +123,8 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
                 "intent": "Remain private to the other project.",
             },
         )["id"]
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=other_experiment,
             sandbox_uid="sb_other_project",
             project_id=other_project,

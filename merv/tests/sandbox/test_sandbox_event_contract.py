@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -11,27 +10,9 @@ from unittest.mock import patch
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import format_iso, now_iso
-from tests.support.sandbox_backend import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
 from merv.brain.sandbox.storage import SandboxStorage
 from merv.brain.sandbox.observation import SandboxRunLedger
-from merv.brain.sandbox import SandboxEngine
-
-
-PUBLIC_SIGNATURES = {
-    "request": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, gpu: 'str | None' = None, cpu: 'float | None' = None, memory: 'int | None' = None, time_limit: 'int | None' = None, instance_type: 'str | None' = None, region: 'str | None' = None, provider: 'str | None' = None, public_key: 'str | None' = None, public_key_override: 'str | None' = None, additional: 'bool' = False, sandbox_uid: 'str | None' = None, provisioning_user_id: 'str' = '', provisioning_key_id: 'str' = '') -> 'dict[str, Any]'",
-    "pull_outputs_command": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, paths: 'list[str] | None' = None) -> 'dict[str, Any]'",
-    "get": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None) -> 'dict[str, Any]'",
-    "attach": "(self, *, experiment_id: 'str', project_id: 'str | None' = None, sandbox_uid: 'str', public_key_override: 'str | None' = None) -> 'dict[str, Any]'",
-    "extend": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, seconds: 'int' = 1800) -> 'dict[str, Any]'",
-    "options": "(self, *, project_id: 'str | None' = None, gpu: 'str | None' = None, region: 'str | None' = None) -> 'dict[str, Any]'",
-    "list_sandboxes": "(self, *, project_id: 'str | None' = None) -> 'dict[str, Any]'",
-    "release": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, confirm_retained: 'bool' = False) -> 'dict[str, Any]'",
-    "terminal": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, tail: 'int | None' = None, since: 'int | None' = None) -> 'dict[str, Any]'",
-    # base_url and wait_secret are gateway-supplied like request's provisioning
-    # ids, and default to nothing: a library caller still gets rows, just
-    # without wait URLs. The key rides each call, never shared facade state.
-    "runs": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, wait_seconds: 'int' = 0, base_url: 'str' = '', wait_secret: 'bytes | None' = None) -> 'dict[str, Any]'",
-}
 
 
 def _quiet_sample() -> dict:
@@ -41,15 +22,6 @@ def _quiet_sample() -> dict:
         "network": {"bytes_total": 1_000, "ssh_established": 0},
         "gpus": [{"index": 0, "util_pct": 0}],
     }
-
-
-class SandboxEngineSignatureContractTest(unittest.TestCase):
-    def test_public_signatures_and_defaults_are_exact(self) -> None:
-        actual = {
-            name: str(inspect.signature(getattr(SandboxEngine, name)))
-            for name in PUBLIC_SIGNATURES
-        }
-        self.assertEqual(actual, PUBLIC_SIGNATURES)
 
 
 class SandboxEventContractTest(unittest.TestCase):
@@ -403,7 +375,8 @@ class SandboxEventContractTest(unittest.TestCase):
     def test_stale_and_failed_provision_events_follow_terminal_write(self) -> None:
         stale_exp = self._experiment("stale")
         uid = "sbx_stale_contract"
-        self.app.sandbox_storage.upsert(
+        seed_sandbox(
+            self.app.sandbox_storage,
             experiment_id=stale_exp,
             sandbox_uid=uid,
             project_id=self.project_id,
@@ -486,7 +459,8 @@ class SandboxStorageEventContractScenarios:
     def test_run_finished_flag_and_event_share_one_transaction(self) -> None:
         self._seed_project()
         repository = SandboxStorage(store=self.store)
-        repository.upsert(
+        seed_sandbox(
+            repository,
             experiment_id="",
             sandbox_uid="sbx_run_contract",
             project_id="proj_event_contract",

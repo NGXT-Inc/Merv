@@ -22,6 +22,25 @@ from merv.brain.sandbox.remote.transcript_wire import TRANSCRIPT_TAIL_DEFAULT
 from merv.brain.sandbox.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
 
 
+def seed_sandbox(
+    storage: Any,
+    *,
+    experiment_id: str,
+    sandbox_uid: str,
+    expected_project_id: str = "",
+    **fields: Any,
+) -> None:
+    """Create test state without adding a test-only method to production API."""
+    with storage.store.transaction() as conn:
+        storage._upsert(  # noqa: SLF001 - intentionally centralized test seeding
+            conn=conn,
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            expected_project_id=expected_project_id,
+            **fields,
+        )
+
+
 # In-memory test adapter
 
 class FakeSandboxBackend(SandboxBackendBase):
