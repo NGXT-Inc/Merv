@@ -34,8 +34,8 @@ There is no linking step and no `connect` action. Use
 - Load `research-workflow` for experiment work and `project-reflection` for a
   five-lens reflection wave.
 - Use a sandbox for long or expensive work; lightweight checks may run locally.
-  Do not assume a provider. Inspect `sandbox.options` when hardware selection is
-  needed, then use the response's provider-shaped fields.
+  Load `sandbox-operation` before requesting or operating one. Do not assume a
+  provider; choose from `sandbox.options` when hardware selection is needed.
 - For quantitative work, retain compact machine-readable result files and
   figures under the experiment folder, then submit them as result evidence.
 
@@ -56,21 +56,6 @@ This is a practical workflow boundary, not cryptographic proof of independence.
 
 ## Sandbox loop
 
-The visible sandbox tools are `sandbox.options`, `sandbox.request`, `sandbox.get`,
-`sandbox.attach`, `sandbox.terminal`, `sandbox.runs`, `sandbox.pull_outputs`,
-`sandbox.extend`, `sandbox.release`, and `sandbox.list`. Pass the key-bound
-`project_id` on these as with any project-scoped tool; `sandbox.health` is an
-internal/UI tool hidden from the agent catalog.
-
-The caller generates and owns the SSH keypair. Pass only its public key to
-`sandbox.request`; caller private-key material never enters brain state. Brain
-management/transcript keys are separate operational credentials. A request may
-return `provisioning`; poll with `sandbox.get` rather than requesting again. The
-response provides SSH facts, and the agent constructs and runs the SSH command.
-
-Use `merv_run <label> -- <command>` for long commands and inspect receipts with
-`sandbox.runs`. Pull compact retained outputs with `sandbox.pull_outputs` — it
-returns a filled rsync command that you run yourself with your own SSH key — or
-upload heavy files with storage tools when that optional feature is present. `sandbox.extend` is provider-dependent.
-`sandbox.release` is two-step: the first call returns a retention checklist;
-only re-call with `confirm_retained=true` after everything valuable is retained.
+Load `sandbox-operation` before requesting or operating a sandbox. It owns the
+provider-selection, caller-key, durable-run observation, retention, extension,
+recovery, and two-step release procedure.

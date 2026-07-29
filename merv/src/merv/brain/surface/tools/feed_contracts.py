@@ -26,8 +26,9 @@ class FeedRegisterInput(ProjectScopedInput):
     role: Literal["main", "reviewer", "lens"] = Field(
         default="main",
         description=(
-            "Your role. Only 'main' agents are ever nudged to post; reviewer and "
-            "lens agents may post but are never prompted."
+            "Your role, used for author attribution. feed.list is not "
+            "handle-scoped, so reviewer and lens agents should treat any "
+            "posting nudge as addressed to the main agent."
         ),
     )
     session_id: str = Field(

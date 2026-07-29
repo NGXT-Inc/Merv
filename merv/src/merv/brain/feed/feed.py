@@ -896,9 +896,10 @@ class FeedService:
     def _posting_nudge(self, *, project_id: str, conn: Any) -> dict[str, Any] | None:
         """A soft 'consider posting' hint, or None when nothing needs saying.
 
-        Backup only: fires when a main agent has been silent for an extended
-        stretch (both event-count AND elapsed-time thresholds crossed). Never
-        blocks — the feed is ungated by design.
+        Backup only: fires when the agent feed has been silent for an extended
+        stretch (both event-count AND elapsed-time thresholds crossed). The
+        listing call has no caller identity, so clients decide whether the hint
+        applies to their role. Never blocks — the feed is ungated by design.
         """
         signal = self._cadence_signal(project_id=project_id, conn=conn)
         events = signal["events_since_last_post"]

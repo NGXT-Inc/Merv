@@ -157,8 +157,8 @@ never runs. Claude Code copies a plugin's whole `source` tree on install (there
 is no `.claudeignore`), so clients should install a *slim* bundle instead.
 
 [`scripts/build_client_bundle.py`](../scripts/build_client_bundle.py) assembles
-that bundle (42 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
-and `bin/merv-runs-wait` + their self-contained `src/merv/{client,shared}`, and
+that bundle (skills, agents, manifests, `.mcp.json`, `bin/merv-client` and
+`bin/merv-runs-wait` plus their self-contained `src/merv/{client,shared}`, and
 the conformance probe) from
 the real sources — nothing is duplicated in git, and
 `tests/surface/test_client_bundle.py` fails if the backend or tests ever leak in
@@ -251,7 +251,7 @@ codex plugin marketplace add NGXT-Inc/Merv
 codex plugin add merv@rapidreview
 ```
 
-All six `merv:` skills are then discoverable in Codex sessions (verified with
+All bundled `merv:` skills are then discoverable in Codex sessions (verified with
 `codex exec`). The plugin registers the hosted `/mcp` endpoint, but Codex does
 not carry the manifest's `Authorization` header wiring — the server shows as
 "Not logged in" until auth is added per machine, either the key route:

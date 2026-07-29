@@ -1,134 +1,80 @@
 # Reflection artifacts
 
-A reflection wave produces fan-out reflection docs plus three reviewed reflection
-artifacts. Only the envelopes below are enforced; everything else is your
-design.
+Use these shapes when authoring reflection documents. Let the artifact and
+reflection tool contracts supply field limits, upload mechanics, and gate
+errors.
 
-## 1. Reflections — `reflections/<syn_id>/reflections/<lens_id>.md`
+## Lens reflection
 
-One markdown file per lens, written and submitted by that lens's subagent
-(role `reflection_lens_doc`). Submit it with the roster's explicit `lens_id`;
-the `submit_reflections` gate matches coverage on that field. The file must be
-non-empty and contain a non-empty `## Summary` section. That authored summary
-is the lens's TLDR in macro reflection views.
-
-A reflection that serves the synthesizer well usually states: what the lens
-examined (with ids/paths), what it found, what surprised it, and what it
-could not verify. The `avoid` lens should center its ledger table:
+Each lens agent writes and submits its own Markdown document as
+`reflection_lens_doc` with the roster's exact `lens_id`.
 
 ```markdown
-## Summary
+# <Lens title>
 
-Two or three plain-language sentences stating the lens's most important
-finding, what it changes about the project view, and the main uncertainty.
+## Summary
+Two or three plain-language sentences stating the most important finding, what
+it changes about the project view, and the main uncertainty.
 
 ## Analysis
+The evidence examined, the lens-specific interpretation, contradictions or
+surprises, and anything that could not be verified. Cite record ids or paths.
 
-| direction tested | setting | what happened | why it failed | what would have to change |
+## Implications
+What the project should preserve, stop, test, or reconsider from this lens.
+```
+
+For the `avoid` lens, include a cumulative negative-knowledge ledger:
+
+```markdown
+| direction tested | setting | what happened | why it failed | retry only if |
 |---|---|---|---|---|
-| longer warmup    | exp_a, attempt 2 | no effect beyond noise | LR floor dominated | retry only with a lower LR floor |
+| <direction> | <evidence> | <result> | <cause> | <changed condition> |
 ```
 
-The ledger is cumulative across waves: re-verify still-binding rows from the
-previous wave's `avoid` reflection and carry them forward, so the current
-table stands alone.
+Re-verify inherited rows so the current ledger stands alone.
 
-## 2. The project logic graph — e.g. `project/logic_graph.json` (role `project_graph`)
+## Project logic graph
 
-One **living** JSON file for the whole project, edited in place each wave.
-Same envelope as experiment graphs (see
-`skills/research-workflow/graph-template.md`): valid JSON `version: 1`,
-unique node ids with non-empty labels, **at most 16 nodes**, acyclic edges,
-under 16 KB.
+Submit the reconciled project state as `project_graph`. Start from the prior
+published graph returned by `reflection.get` when one exists; otherwise author
+the first graph. Follow
+[the graph template](../research-workflow/graph-template.md) for the enforced
+JSON envelope.
 
-It is the project's current logic state, not a log: nodes are lessons,
-themes, dead-end patterns, open questions — whatever the story needs, in
-your vocabulary. Prune freely; each published wave pins the version it
-shipped, so history is never lost by editing. Use node `refs` to keep nodes
-brief: `exp_…`, `claim_…`, `rev_…`, `syn_…` ids and repo-relative paths
-(reflections, reports) all resolve to links in the UI.
+Represent the current logic—not chronology or dataflow—with brief lessons,
+dead-end patterns, established beliefs, and open questions. Use references for
+detail. Prune or combine stale nodes to make the new story coherent within the
+graph budget.
 
-```json
-{
-  "version": 1,
-  "title": "Project logic — wave 3",
-  "nodes": [
-    { "id": "anchor", "kind": "established", "label": "LR schedule dominates batch effects",
-      "refs": ["claim_…", "exp_…"] },
-    { "id": "wall", "kind": "dead_end_pattern", "label": "Optimizer swaps: three failures, same cause",
-      "refs": ["reflections/syn_…/reflections/avoid.md"] },
-    { "id": "next", "kind": "open_question", "label": "Does the anchor hold at 10x scale?",
-      "refs": ["syn_…"] }
-  ],
-  "edges": [
-    { "from": "anchor", "to": "next", "label": "raises" },
-    { "from": "wall", "to": "next", "label": "constrains" }
-  ]
-}
-```
+## Reflection document
 
-## 3. Reflection document — e.g. `project/reflection.md` (role `reflection_doc`)
-
-This markdown file is the orchestrator's concise scientific reading of the
-five reflections. It is not a long report and not a paste-up of the five
-subagent outputs. Keep it under 16 KB. Make it visual-friendly: use compact
-tables, bullets, and one or two visual elements when they help a scientist
-scan the project state quickly.
-
-Required headings:
+Submit a concise Markdown `reflection_doc`:
 
 ```markdown
 # Reflection
 
 ## Summary
-One short paragraph stating what the wave changes about the project state.
+What this wave changes about the project's current understanding.
 
 ## Critical reading
-Two to five paragraphs or bullets that reconcile the lenses against the
-actual project records: what holds up, what remains uncertain, what was
-ruled out, and where the lenses disagree.
+What survives verification, what was ruled out, what remains uncertain, and
+where the lenses disagreed.
 
 ## Decision / future directions
-One short paragraph explaining why the change spec's next experiment wave is
-the right course for the project.
+Why the proposed claim changes and next experiments follow from that reading.
 ```
 
-Optional figures should be relative markdown image links to files next to the
-reflection document. Use the available image-generation capability when a
-generated visual would make the reflection clearer: for example, a compressed
-project-state map, a claim/evidence heatmap, a dead-end ledger visual, or a
-future-direction decision diagram. Save generated images under a local
-`figures/` folder next to the reflection document, then link them like this:
+Do not paste together the five lens documents. Use compact tables, bullets, or
+evidence-bearing figures only when they make the scientific argument easier to
+inspect.
 
-```markdown
-![compressed project graph](figures/project_graph.png)
-```
+## Change spec
 
-Every relative image link must resolve to a local file under 5 MB. Save the
-image file, then submit the reflection doc with artifact.submit (role
-`reflection_doc`) and run the returned upload command; the upload response
-returns one follow-up command per linked image — run each to push the figure
-bytes. If you add or change a figure later, resubmit the reflection doc for
-fresh figure uploads. Do not
-add decorative visuals; every image should carry project reasoning that the
-text would otherwise make slow to inspect.
-
-## 4. Change spec — e.g. `project/change_spec.json` (role `change_spec`)
-
-This JSON file is the reviewed **belief-state update** for the project. The
-server validates that it can be materialized, and
-`reflection.transition(publish)` applies it only after the
-`reflection_reviewer` has passed the wave.
-
-The decision is always `create_experiments`: update/create claims, then
-create the approved planned experiments as real project experiments. Include
-1-3 experiments; when the wave has more than one, give each a `parallelism`
-note explaining why it can run independently of the rest. Stopping the
-project is not in the spec's vocabulary — winding down is the researcher's
-call, made outside the workflow.
-
-Use claim `key`s when a newly-created claim is referenced by a proposed
-experiment in the same change spec.
+Submit the belief-state update as `change_spec`. Use new-claim `key` values when
+an experiment in the same spec tests a claim being created. Propose one to
+three experiments; when proposing more than one, explain why each can run
+independently.
 
 ```json
 {
@@ -139,35 +85,31 @@ experiment in the same change spec.
       "claim_id": "claim_existing",
       "status": "supported",
       "confidence": "high",
-      "rationale": "Reviewed experiments exp_a and exp_b agree within the registered decision rules."
+      "rationale": "The reviewed evidence that warrants this change."
     },
     {
       "op": "create",
-      "key": "claim_scale_transfer",
-      "statement": "The LR schedule effect transfers at 10x scale.",
-      "scope": "Same model family and dataset family as the current project.",
+      "key": "new_claim_key",
+      "statement": "A testable project belief.",
+      "scope": "Where the belief is intended to hold.",
       "confidence": "medium",
-      "rationale": "The project graph now identifies scale transfer as the live uncertainty."
+      "rationale": "Why the project should now track it."
     }
   ],
   "decision": {
     "type": "create_experiments",
     "experiments": [
       {
-        "key": "scale_transfer",
-        "name": "scale-transfer",
-        "intent": "Test whether the LR schedule effect transfers at 10x scale.",
-        "tested_claim_refs": ["claim_scale_transfer"],
-        "parallelism": "Independent scale axis; can run beside mechanism-probe because it only depends on the published reflection."
-      },
-      {
-        "key": "mechanism_probe",
-        "name": "mechanism-probe",
-        "intent": "Test whether the gain comes from clipping interaction rather than the schedule itself.",
-        "tested_claim_refs": ["claim_scale_transfer"],
-        "parallelism": "Independent mechanism axis; no dependency on the scale-transfer result."
+        "key": "experiment_key",
+        "name": "folder-safe-name",
+        "intent": "The precise question this experiment will test.",
+        "tested_claim_refs": ["new_claim_key"],
+        "parallelism": "Why this experiment does not depend on another proposed result."
       }
     ]
   }
 }
 ```
+
+The reflection proposes the next wave; it does not create experiments directly
+or decide to terminate the project. Publication materializes the reviewed spec.
