@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Private value coercions shared by provider catalogs and backends."""
 
 from __future__ import annotations

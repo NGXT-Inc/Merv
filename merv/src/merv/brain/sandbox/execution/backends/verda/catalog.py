@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Shape Verda instance types + availability into the agent selection menu.
 
 ``/v1/instance-types`` carries specs and $/hr (as strings);

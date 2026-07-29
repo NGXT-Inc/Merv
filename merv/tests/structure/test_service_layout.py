@@ -706,6 +706,24 @@ class ServiceLayoutTest(unittest.TestCase):
             "CREATE TABLE IF NOT EXISTS feed_upload_tokens", persistence_source
         )
 
+    def test_feed_documentation_is_bounded_and_required_by_sources(self) -> None:
+        documentation = FEED_ROOT / "feed.md"
+        self.assertLessEqual(
+            len(documentation.read_text(encoding="utf-8").splitlines()),
+            100,
+            "feed.md must remain at most 100 lines",
+        )
+        maintenance_header = (
+            "# If you update this file, you must consult feed.md to see whether "
+            "feed.md needs to be updated. feed.md must not exceed 100 lines."
+        )
+        for path in sorted(FEED_ROOT.glob("*.py")):
+            with self.subTest(path=path.name):
+                self.assertEqual(
+                    path.read_text(encoding="utf-8").splitlines()[0],
+                    maintenance_header,
+                )
+
     def test_experiment_names_are_domain_policy(self) -> None:
         self.assertEqual(
             _import_module_names(RESEARCH_CORE_DOMAIN / "experiment_names.py"),

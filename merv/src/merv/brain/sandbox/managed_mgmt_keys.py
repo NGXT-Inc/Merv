@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Managed-secret management key custody adapter.
 
 Control deployments should receive management SSH keys from their orchestrator

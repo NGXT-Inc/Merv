@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Shape TensorDock locations into the agent selection menu.
 
 TensorDock composes machines (GPU model + count, vCPU, RAM, storage) per

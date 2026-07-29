@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Shape Voltage Park instant-deploy presets into the agent selection menu.
 
 Each option is one deploy preset (its uuid IS the ``instance_type`` passed

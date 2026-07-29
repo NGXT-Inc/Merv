@@ -1,3 +1,4 @@
+# If you update this file, you must consult artifacts.md to see whether artifacts.md needs to be updated. artifacts.md must not exceed 100 lines.
 """Passive values exchanged by the Artifacts component.
 
 These types describe the evidence lifecycle but perform no I/O and own no

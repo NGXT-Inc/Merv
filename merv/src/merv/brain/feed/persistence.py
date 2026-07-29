@@ -1,3 +1,4 @@
+# If you update this file, you must consult feed.md to see whether feed.md needs to be updated. feed.md must not exceed 100 lines.
 """Feed-owned tables and compatibility upgrades.
 
 This module is deliberately narrow: it installs the rows used by FeedService

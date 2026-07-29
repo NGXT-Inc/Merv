@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Route one backend port across configured providers.
 
 New IDs carry ``<provider>:``. Legacy native IDs use the row's provider;

@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Small stdlib client for the Verda (DataCrunch) API.
 
 Auth is OAuth2 client-credentials: the client mints a bearer token lazily,

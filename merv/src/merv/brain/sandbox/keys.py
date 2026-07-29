@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Write-only, process-local Sandbox secret custody.
 
 Provider credentials never enter sandbox rows, events, snapshots, or logs.

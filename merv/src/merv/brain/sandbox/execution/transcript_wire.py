@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Byte-safe transcript tails over text transports.
 
 Management SSH and Modal exec decode text with replacement, so the remote

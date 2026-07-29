@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Configuration for the DigitalOcean API and GPU droplet access."""
 
 from __future__ import annotations

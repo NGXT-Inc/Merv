@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Shape Lambda Cloud `/instance-types` data into selection catalogs.
 
 One place owns the messy mapping from Lambda's raw API payload to the two

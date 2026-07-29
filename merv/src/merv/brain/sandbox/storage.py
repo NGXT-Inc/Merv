@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Durable Sandbox rows, attachments, accounting, and atomic transitions.
 
 This module performs no provider or remote I/O.

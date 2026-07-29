@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Scheduling for expiration, observation, idle detection, and cleanup.
 
 Lifecycle and acquisition own the decisions; this module owns cadence.

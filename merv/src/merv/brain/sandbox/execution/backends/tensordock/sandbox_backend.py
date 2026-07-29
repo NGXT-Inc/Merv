@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """TensorDock VM sandbox backend.
 
 Provisions a marketplace VM with a DEDICATED public IP (mandatory — the

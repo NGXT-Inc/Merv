@@ -1,3 +1,4 @@
+# If you update this file, you must consult feed.md to see whether feed.md needs to be updated. feed.md must not exceed 100 lines.
 """Feed authors, posts, replies, reactions, history, and advisories.
 
 Posts are editorial, append-only observations rather than events or artifacts.

@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Sandbox backend factory and compatibility exports.
 
 The backend port lives in ``merv.brain.sandbox.sandbox_backend``. Backend implementations

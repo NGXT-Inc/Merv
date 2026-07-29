@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Shape DigitalOcean sizes into the agent selection menu.
 
 Only sizes carrying ``gpu_info`` are offered — this backend exists for GPU

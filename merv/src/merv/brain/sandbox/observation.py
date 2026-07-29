@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Remote receipts, transcripts, metrics, and their concurrency gates.
 
 Receipt reads serialize per sandbox and share a process-wide permit pool.

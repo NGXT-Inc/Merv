@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Small stdlib client for the TensorDock v2 API.
 
 The v2 API is JSON:API-flavored: writes wrap attributes in a ``data``

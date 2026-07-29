@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Provider liveness, cleanup fencing, and destructive transitions.
 
 Provider errors mean ``unknown``, never ``gone``. Only confirmed absence may

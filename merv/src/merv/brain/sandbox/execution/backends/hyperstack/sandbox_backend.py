@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Hyperstack (NexGen Cloud) VM sandbox backend.
 
 Provisions a Hyperstack VM inside the configured environment and returns SSH

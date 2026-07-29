@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Read-only live-usage probe shared by Modal exec and VM SSH.
 
 Missing gauges degrade independently, so CPU-only machines still report what

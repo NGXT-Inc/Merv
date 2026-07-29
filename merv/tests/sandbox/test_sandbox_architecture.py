@@ -11,9 +11,27 @@ from merv.brain.sandbox.core import SandboxEngine
 
 ROOT = Path(__file__).parents[2] / "src" / "merv" / "brain"
 SANDBOX = ROOT / "sandbox"
+GUIDE = SANDBOX / "sandbox.md"
+MAINTENANCE_HEADER = (
+    "# If you update this file, you must consult sandbox.md to see whether "
+    "sandbox.md needs to be updated. sandbox.md must not exceed 100 lines."
+)
 
 
 class SandboxArchitectureTest(unittest.TestCase):
+    def test_module_guide_is_bounded_and_named_by_every_source_file(self) -> None:
+        self.assertLessEqual(
+            len(GUIDE.read_text(encoding="utf-8").splitlines()),
+            100,
+        )
+        missing = [
+            str(path.relative_to(SANDBOX))
+            for path in sorted(SANDBOX.rglob("*.py"))
+            if path.read_text(encoding="utf-8").splitlines()[0]
+            != MAINTENANCE_HEADER
+        ]
+        self.assertEqual(missing, [])
+
     def test_engine_is_the_only_public_control_object(self) -> None:
         self.assertEqual(SandboxEngine.__module__, "merv.brain.sandbox.core")
         for obsolete in (

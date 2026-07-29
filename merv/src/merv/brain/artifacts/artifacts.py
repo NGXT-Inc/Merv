@@ -1,3 +1,4 @@
+# If you update this file, you must consult artifacts.md to see whether artifacts.md needs to be updated. artifacts.md must not exceed 100 lines.
 """Typed artifact records, blob uploads, figures, and immutable history.
 
 Bytes are stored before rows point at them. Research supplies target facts;

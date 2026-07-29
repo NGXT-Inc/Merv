@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Immutable lazy inventory for sandbox provider drivers.
 
 Descriptors contain only metadata and an import string. Importing this module

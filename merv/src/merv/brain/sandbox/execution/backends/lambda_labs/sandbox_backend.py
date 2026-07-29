@@ -1,3 +1,4 @@
+# If you update this file, you must consult sandbox.md to see whether sandbox.md needs to be updated. sandbox.md must not exceed 100 lines.
 """Lambda Labs VM sandbox backend.
 
 This backend provisions a Lambda Cloud VM and returns SSH details to the agent.
