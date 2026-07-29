@@ -35,14 +35,15 @@ contract for capabilities, hardware discovery, acquire, liveness, endpoint
 refresh, and termination. It exposes a `SandboxManagementTransport` for the
 operational paths that read transcripts, usage metrics, and `merv_run`
 receipts or deliver post-boot secrets. `SandboxBackend` remains the flattened
-compatibility facade consumed by existing services.
+provider-neutral capability consumed by `SandboxEngine`.
 
 `sandbox/adapters/__init__.py` holds lightweight descriptors and a
 runtime inventory exposed by `sandbox_driver_inventory()`. Descriptors contain
 an import string rather than an imported factory, so listing providers does not
 load their configuration, credentials, implementation modules, or optional
-SDKs. Composition imports and builds only the selected providers. Aliases,
-factory; there is no provider-name dispatch chain in the factory or services.
+SDKs. Composition imports and builds only the selected providers. Aliases and
+builders live in the registry; services contain no provider-name dispatch
+chain.
 
 The two real driver shapes stay explicit:
 

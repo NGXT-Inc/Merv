@@ -76,22 +76,19 @@ curl -s http://127.0.0.1:8787/api/projects
 
 ## Point the agent client at localhost
 
-Every agent client connects directly to the brain's `POST /mcp` endpoint,
-authenticated by a project-scoped key. For local development, export the key and
-write a machine configuration pointing at the local brain:
+Every agent client connects directly to the brain's `POST /mcp` endpoint.
+Local mode is authentication-free by default; point the machine configuration
+at the local brain:
 
 ```bash
-export MERV_MCP_KEY=<project-scoped key>
-
 "$RESEARCH_PLUGIN/bin/merv-client" configure \
   --control-url http://127.0.0.1:8787
 ```
 
 `merv-client env` then prints the `.mcp.json` HTTP snippet: a `type:"http"`
 entry whose `url` is `http://127.0.0.1:8787/mcp` and whose
-`headers.Authorization` is `Bearer ${MERV_MCP_KEY}`. The key is read from the
-environment and is never inlined into a committed file — export it in your shell
-and keep it out of version control.
+`headers.Authorization` references `MERV_MCP_KEY`. Local auth ignores the
+header; hosted deployments require a real scoped credential.
 
 ## Register the plugin
 
@@ -102,14 +99,12 @@ local marketplace and enable `merv` in the target workspace.
 Open the research checkout in the agent client. The first calls should be:
 
 ```text
-project(action="current")
+project(action="list")
 workflow.status_and_next(project_id)
 ```
 
-The key already carries its own scope, so
-`project(action="current")` resolves it directly and returns its id. Pass that
-id as `project_id` explicitly on project-scoped calls; the brain receives only
-the project id, never the folder path.
+Choose a returned project and pass its id explicitly on project-scoped calls;
+the brain receives only the project id, never the folder path.
 
 ## Start the UI
 

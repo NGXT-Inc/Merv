@@ -79,33 +79,22 @@ Any member can manage members (two-trusted-users model; no roles).
   account-scoped key discovers the ids with `project(action="list")`, and a
   project-scoped key may only pass its one bound project. Project membership
   controls authorization in both cases.
-## Rollout runbook (hosted VM)
+## Hosted configuration
 
-1. **Rotate the Supabase JWT secret and service-role key first** (both leaked
-   into RapidReview git history). Coordinated change: rotation signs out live
-   RapidReview sessions.
-2. Set env on the VM: `SUPABASE_URL`, `SUPABASE_JWT_SECRET`,
-   `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY`,
-   `MERV_REQUIRE_AUTH=1`,
-   `MERV_UI_BASE_URL=https://rapidreview.io/merv`. Restart the brain.
-3. Backfill membership for existing projects (one insert per project):
-   ```sql
-   INSERT INTO project_members (project_id, user_id, added_at)
-   SELECT id, '<founder auth.users uuid>', NOW() FROM projects
-   ON CONFLICT DO NOTHING;
-   ```
-4. Each user: sign in on the UI; mint a project-scoped key in RapidReview,
-   export it as `MERV_MCP_KEY`, and drop the `.mcp.json` http snippet
-   (`merv-client env`) on each machine.
-5. Bump `MIN_PROXY_VERSION` once clients have upgraded, so pre-auth clients
-   get the actionable 426 instead of a bare 401.
-6. Assign projects to the second user via the members endpoint above.
+Set `SUPABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_KEY`,
+`SUPABASE_ANON_KEY`, and `MERV_REQUIRE_AUTH=1`. Existing databases must contain
+one `project_members` row for each authorized user/project pair. Users then
+sign in through the UI or mint a scoped key and export it as `MERV_MCP_KEY`.
+
+Keep Supabase secrets and service credentials in managed secret storage. Rotate
+them through the Supabase and deployment runbooks, not through application
+code.
 
 ## Notes
 
 - SSE under auth: EventSource cannot send the header; the hosted stream 401s
   and the UI's ETag-polling fallback carries updates (~3s latency). Stream
   tickets are a known follow-up if realtime matters.
-- `/api/admin/*` requires authentication but not membership — acceptable for
-  a small trusted user set; revisit with roles if that changes.
+- `/api/admin/*` is an operator surface and should remain network-restricted
+  even when authentication is enabled.
 - Same accounts ≠ SSO: users sign in once per product origin.

@@ -18,7 +18,7 @@ git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
 That is the whole install — every agent client connects directly to the brain's
 `/mcp` HTTP endpoint, so nothing runs on your machine to broker it and there are
 no pip packages. Sandbox SSH and agent-run output pulls use the system OpenSSH
-client and `rsync`, and presigned artifact and storage transfers use `curl`. The
+client and `rsync`, and tokenized artifact/storage transfers use `curl`. The
 `merv-client` CLI, `merv-http`, the brain, and backend tests run on Python 3.11+.
 Then:
 
@@ -96,7 +96,6 @@ off cloud providers.
 ## Documentation
 
 - [docs/CLIENTS.md](docs/CLIENTS.md) - per-client install and reviewer handoff
-- [docs/AGENT_ANYWHERE.md](docs/AGENT_ANYWHERE.md) - five-platform setup matrix
 - [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md) - hosted setup
 - [docs/AUTH.md](docs/AUTH.md) - hosted authentication and project membership
 - [docs/STARTUP_CHEATSHEET.md](docs/STARTUP_CHEATSHEET.md) - local startup flow
@@ -105,8 +104,8 @@ off cloud providers.
 - [docs/MCP_SERVER_CONTRACT.md](docs/MCP_SERVER_CONTRACT.md) - MCP tools and contracts
 - [docs/WORKFLOW_AND_REVIEW.md](docs/WORKFLOW_AND_REVIEW.md) - workflow gates and reviews
 - [docs/REVIEW_IDENTITY.md](docs/REVIEW_IDENTITY.md) - reviewer session and capability boundary
-- [docs/ARTIFACT_MODEL.md](docs/ARTIFACT_MODEL.md) - typed submitted-artifact model
-- [docs/STORAGE_MODEL.md](docs/STORAGE_MODEL.md) - optional heavy-object storage
+- [src/merv/brain/artifacts/artifacts.md](src/merv/brain/artifacts/artifacts.md) - submitted-artifact lifecycle
+- [src/merv/brain/object_storage/object_storage.md](src/merv/brain/object_storage/object_storage.md) - durable heavy-object storage
 - [docs/UI_API.md](docs/UI_API.md) - frontend HTTP API
 - [docs/CONTROL_PLANE_OPERATIONS.md](docs/CONTROL_PLANE_OPERATIONS.md) - hosted operations and security boundary
 - [deploy/README.md](deploy/README.md) - reference control-plane deploy

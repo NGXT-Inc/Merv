@@ -92,9 +92,9 @@ workflow gate.
 
 ## Agent contract
 
-Pass the key-bound `project_id` explicitly (learned once from
-`project(action="current")`); the gateway enforces that it equals the key's
-bound project. Use:
+Pass `project_id` explicitly. Discover reachable projects with
+`project(action="list")`; a single-project credential can also use
+`project(action="current")`. Use:
 
 ```text
 mlflow.context(project_id="proj_...")
@@ -243,11 +243,3 @@ MLflow is best-effort in the experiment workflow:
   when `TRACKING_URI` is absent.
 - A quantitative run without usable MLflow should retain fallback result files
   in the experiment folder and explain the gap in its report.
-
-## Legacy `rp/` namespace
-
-Deployments that predate the Merv rename may still hold experiments under the
-MLflow `rp/` folder. `scripts/migrate_mlflow_namespace.py` renames them to
-`merv/` in place; it supports `--dry-run`, and a second live run is a no-op
-(idempotent), so it is safe to re-run after partial migrations. Production ran
-this migration on 2026-07-18.

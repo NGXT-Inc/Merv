@@ -10,7 +10,7 @@ the active deployment.
 The brain is the authority for durable research state and workflow policy. Every
 agent client — local Claude Code, cloud Codex, Replit, browser-driven — connects
 the same way: directly to the brain's stateless `POST /mcp` HTTP endpoint,
-authenticated by a project-scoped key sent as `Authorization: Bearer <key>`. The
+authenticated by a scoped bearer credential. The
 committed config files (`.mcp.json`, `.mcp.codex.json`, `mcp.json`) use
 `type:"http"`, `url:"https://experiments.rapidreview.io/mcp"`, and
 `headers.Authorization:"Bearer ${MERV_MCP_KEY}"`; the key is read from the
@@ -18,7 +18,8 @@ committed config files (`.mcp.json`, `.mcp.codex.json`, `mcp.json`) use
 
 A key is scoped either to one project or to its owner's whole account. Either
 way the caller names the project per call; ids come from
-`project(action="list")`, whose actions are list / current / create / overview.
+`project(action="list")`. The tool's actions are `list`, `current`, `create`,
+and `overview`.
 The gateway does not inject or hide
 `project_id`: agents pass `project_id` explicitly on every project-scoped tool,
 and the gateway enforces that it equals the key-bound project — a mismatched
@@ -28,18 +29,15 @@ never send `repo_root`; the brain never receives a checkout root.
 The normal session bootstrap is:
 
 ```text
-project(action="current")            # returns the bound project; its id is project.id
+project(action="list")               # choose one reachable project
 workflow.status_and_next(project_id, experiment_id?)
 ```
 
-`project(action="current")` is the one tool that resolves the project from the
-key without a `project_id` argument: it returns the bound project, whose id is
-the result's `project.id` field.
-Learn that id once, then pass it explicitly on every subsequent project-scoped
-tool. `action="overview"` returns the bound project's full claim and experiment
-history. The action enum is exactly `current | create | overview`;
-`action="create"` is forbidden to a project-bound key, because projects are
-created in the UI before a key is minted.
+For a credential confined to one project, `action="current"` returns that
+project without a `project_id`. An account-scoped credential has no single
+current project and receives its reachable list instead. Pass the selected id
+explicitly thereafter. `action="overview"` returns the selected project's
+macro context. `action="create"` is forbidden to a project-bound key.
 
 ## Tool catalog
 
@@ -64,11 +62,9 @@ sandbox.runs                 sandbox.terminal
 feed.register                feed.list
 ```
 
-Every available tool is served by the brain over the hosted HTTP MCP surface.
-`storage.submit`, `storage.fetch`, and `feed.post` are brain tools that
-return a one-line command the agent runs to move bytes over a presigned URL;
-`sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs` are served by the
-brain.
+Every available tool is served by the brain over HTTP MCP. Byte operations
+return one-line commands: Storage uses provider-presigned URLs, Artifact and
+Feed use bounded one-time endpoints, and Sandbox output pulls use `rsync`.
 
 Storage is optional. When no object store is configured, every `storage.*` tool
 is omitted instead of advertising an unavailable feature.
@@ -309,9 +305,9 @@ or expiry destroys anything not explicitly retained.
 ## HTTP transport and errors
 
 The brain exposes `/mcp/tools` and `/mcp/call`, plus the stateless `/mcp`
-endpoint every agent client connects to. It rejects `repo_root` context. Byte transfers no
-longer ride MCP: a tool returns a command that hits a one-time token endpoint
-(`/api/artifacts/*`, `/api/storage/u/*`, `/api/feed/u/*`) directly.
+endpoint every agent client connects to. It rejects `repo_root` context. Byte
+payloads do not ride MCP: tools return commands for one-time Artifact/Feed
+endpoints, provider-presigned Storage transfers, or Sandbox `rsync`.
 
 Tool responses are tool-specific dictionaries; there is no universal mutation
 envelope. Domain validation and workflow failures remain MCP protocol errors.
@@ -335,5 +331,5 @@ The checkout never contains the brain database. There is no machine-local routin
 state; project files remain ordinary checkout files until explicitly submitted.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md),
-[WORKFLOW_AND_REVIEW.md](WORKFLOW_AND_REVIEW.md), and
-[ARTIFACT_MODEL.md](ARTIFACT_MODEL.md) for the corresponding system contracts.
+[WORKFLOW_AND_REVIEW.md](WORKFLOW_AND_REVIEW.md), and the live
+[Artifacts guide](../src/merv/brain/artifacts/artifacts.md).

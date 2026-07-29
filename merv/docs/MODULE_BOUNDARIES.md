@@ -48,7 +48,7 @@ The exact component import matrix is:
 | Importer | May import |
 |---|---|
 | Kernel | Kernel |
-| Research | Research, Artifact ports, Kernel |
+| Research | Research, Artifacts, Kernel |
 | Artifacts | Artifacts, Kernel |
 | Sandbox | Sandbox, Kernel |
 | Feed | Feed, Kernel |
@@ -58,13 +58,12 @@ The exact component import matrix is:
 | Surface | any component; its independent layer classification still applies |
 
 Outside bootstrap, code enters another component only through its declared
-package root, `api.py`, `facade.py`, or `ports/**` entrypoint. A module named
+package root or a genuinely independent `ports/**` capability. A module named
 `core.py` is not automatically public. Research enters Artifacts through its
 single concrete package-root `Artifacts` capability. This is the executable
 form of “one stable public root”; it prevents a new use case or adapter from
-depending on internal services. The legacy
-public-entrypoint exception ledger is now empty: every cross-component import
-must enter through a declared public entrypoint. Workflow reads use
+depending on internal services. Every cross-component import must enter through
+a declared public entrypoint. Workflow reads use
 `Research.snapshot` and `SandboxReads`; Sandbox commands enter through the
 package-root `SandboxEngine`.
 An application service deliberately exported from a component package root is
@@ -74,12 +73,12 @@ imports remain forbidden.
 
 Research reaches immutable artifact evidence only through typed operations on
 the concrete `Artifacts` root; it never sees Artifact tables or blob locators.
-Artifacts resolves association targets through the reverse
-`AssociationTargetResolver` port, the one necessary transaction-aware seam.
+Artifacts resolves association targets through the reverse `ArtifactTargets`
+port, the one necessary transaction-aware seam.
 
 ## Layer law
 
-The initial layer mapping is deliberately honest about mixed directories:
+The current layer mapping is deliberately honest about mixed directories:
 
 | Layer | Representative paths |
 |---|---|
@@ -135,8 +134,7 @@ and response hardening are the real delivery boundaries. The narrow
 `FeedAdvisory` protocol preserves the independent post-commit boundary. Safe
 outbound previews are supplied through the Kernel `WebPreview` port by the
 Surface adapter, which is also shared with Literature's allowlisted paper
-preview. Kernel retains migration version 32 as a no-op historical ledger
-marker, but no longer contains a second copy of Feed's upload-token DDL.
+  preview.
 Application response composition depends on its batch
 `ProducedObjectCatalog` port; the provider-optional `ObjectStorage` root
 implements that port so historical ledger rows remain readable when no heavy
@@ -262,8 +260,7 @@ pairs. Every stable table has an explicit owner; an unclassified new table
 fails closed. SQL may name only tables owned by the file's component, Kernel
 tables, or tables behind a ratified component dependency. Research has a
 zero-entry foreign-Artifact-table counter, so any new direct evidence SQL fails
-immediately. The public-entrypoint exception ledger must shrink whenever a seam
-is repaired.
+immediately.
 
 Application has a zero-exception purity check: it may not import delivery,
 concrete adapters, frameworks, database/network SDKs, environment access, or

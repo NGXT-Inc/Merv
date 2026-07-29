@@ -1,243 +1,129 @@
-# Operating the Hosted Brain
+# Operating the hosted brain
 
-This runbook covers the `control` deployment preset served by
-`merv-control`. The reference container stack is documented in
-`../deploy/README.md`.
+This is the production runbook for the `control` preset served by
+`merv-control`. The reference container stack lives in
+[`deploy/README.md`](../deploy/README.md).
 
 ## Security boundary
 
-The current hosted brain is a private operator service, not a public SaaS API.
-End-user authentication is not implemented: every HTTP request runs as the
-implicit `local` principal, bearer tokens are not validated, and HTTP project
-access is not tenant-isolated.
+Control mode is authenticated by default. `SupabaseVerifier` accepts Supabase
+session JWTs, RapidReview `rr_sk_` keys, and Merv `mk_`/OAuth credentials.
+Project membership and key scope are enforced at the HTTP and MCP funnels.
 
-Consequences:
+Required production posture:
 
-- place the brain behind TLS and a trusted network boundary;
-- do not expose `/api/*`, `/mcp/*`, or `/api/admin/*`
-  directly to the public internet;
-- treat CORS and `X-RP-Client-Version` as browser/compatibility controls, not
-  authentication;
-- protect the separately served Merv UI at the
-  same infrastructure boundary.
+- terminate TLS before the brain;
+- set `MERV_REQUIRE_AUTH=1`;
+- configure exact browser origins in `MERV_ALLOWED_ORIGINS`;
+- keep `/api/admin/*` on an operator-controlled network;
+- store database, provider, Supabase, and SSH credentials in a secret manager.
 
-## Topology and modes
+An intentionally open control plane requires both `MERV_REQUIRE_AUTH=0` and
+`MERV_ALLOW_OPEN_CONTROL=1`. This is for isolated development only; the server
+logs the open state at every boot.
 
-Both presets use the same component graph: a brain owns records and policy, and
-every agent client — local Claude Code, cloud Codex, Replit, browser-driven —
-connects the same way, directly to the brain's `POST /mcp` HTTP endpoint,
-authenticated by a project-scoped key sent as `Authorization: Bearer <key>`.
+## Required configuration
 
-| `MERV_MODE` | Brain preset | Record/blob defaults | Entrypoint |
-|---|---|---|---|
-| `local` (default) | loopback development brain | SQLite and local-directory blobs | `merv-http` |
-| `control` | hosted private brain | Postgres, S3-compatible blobs, mounted management key | `merv-control` |
+`merv-control` forces `MERV_MODE=control` and fails fast without:
 
-Every tool is a control tool served by the brain. A key binds one immutable
-project, and the gateway requires each project-scoped call to pass that
-`project_id`, rejecting any call whose `project_id` does not match the key's
-bound project; agents never send `repo_root` and the brain never dials a user
-machine. Bytes
-that must move — `artifact.submit`, `storage.submit`/`storage.fetch`,
-`feed.post`, `sandbox.pull_outputs` — are agent-driven: the tool returns a
-one-line command (a presigned curl `PUT`/`GET`, or `rsync` for sandbox pulls)
-that the agent runs, so bytes stream directly to or from the object store or
-sandbox, never through the brain.
+```text
+MERV_DB_URL                 Postgres record-store URL
+MERV_BLOB_BUCKET            S3-compatible submitted-byte bucket
+MERV_MGMT_KEY_PATH          mounted management private key, mode 0600
+SUPABASE_URL
+SUPABASE_JWT_SECRET
+SUPABASE_SERVICE_KEY
+SUPABASE_ANON_KEY
+```
 
-Both brains own sandbox provider lifecycle and the expiry reaper. Neither
-preset automatically copies files out of a sandbox.
+The management public key comes from `MERV_MGMT_PUBLIC_KEY` or the adjacent
+`.pub` file. Drain live sandboxes before rotating this key.
 
-Unknown mode values fail at startup. The `merv-control` console
-entrypoint forces `MERV_MODE=control`.
-
-## Required control configuration
-
-The production control entrypoint has no checkout or staging directory, so it
-fails fast unless these durable dependencies are configured:
-
-- `MERV_DB_URL` — a `postgres://` or `postgresql://` record-store
-  URL;
-- `MERV_BLOB_BUCKET` plus the applicable `AWS_*` credential, region,
-  and endpoint configuration — the S3-compatible submitted-byte store;
-- `MERV_MGMT_KEY_PATH` — the mounted **private-key file**, readable
-  by the control user and mode `0600` or stricter.
-
-The management public key comes from `MERV_MGMT_PUBLIC_KEY` or an
-adjacent `<private-key-path>.pub` file. The key is fingerprinted at startup;
-changing it in place is rejected. Drain live sandboxes and restart the brain to
-rotate it.
-
-SQLite and local-directory blob fallbacks are available only to explicit
-programmatic dev/test compositions that supply a `repo_root`; they are not a
-fallback for the production console entrypoint.
-
-### Browser CORS
-
-`MERV_ALLOWED_ORIGINS` is a comma-separated list of exact HTTP(S)
-origins allowed to call the brain from a browser. Control mode restricts CORS by
-default; an empty list blocks cross-origin browser clients. Include the hosted
-UI origin explicitly.
-
-`MERV_CONTROL_RESTRICT_CORS=0` disables that restriction, but does
-not add authentication and is inappropriate for an exposed deployment.
-
-### Heavy-object storage
-
-Heavy storage is optional and separate from the submitted-byte blob store:
+Heavy-object storage is optional and separate from submitted artifacts:
 
 ```text
 MERV_STORAGE_PROVIDER=s3
 MERV_STORAGE_BUCKET=...
-MERV_STORAGE_ENDPOINT_URL=...   # MinIO/R2/custom S3 endpoint
+MERV_STORAGE_ENDPOINT_URL=...   # MinIO, R2, or custom S3
 MERV_STORAGE_REGION=...
-MERV_STORAGE_ACCESS_KEY_ID=...  # falls back to AWS_ACCESS_KEY_ID
+MERV_STORAGE_ACCESS_KEY_ID=...  # otherwise normal AWS resolution
 MERV_STORAGE_SECRET_ACCESS_KEY=...
 ```
 
-Presigned upload/download URLs must be reachable from the agent clients
-that perform the transfers, not merely from inside the control container.
+Presigned URLs must be reachable from agent machines, not just the container.
 
-## Sandbox provider configuration
+## Browser and client traffic
 
-The default backend is Lambda Labs. Provider credentials belong in the control
-process environment or an explicitly mounted provider env file; control mode
-does not discover credentials from a user's checkout.
+`MERV_ALLOWED_ORIGINS` is a comma-separated list of exact HTTP(S) browser
+origins. CORS is not authentication. Agent clients connect directly to
+`POST /mcp` and pass a project or account-scoped bearer credential.
 
-| Backend | Selection | Credentials |
-|---|---|---|
-| Lambda Labs | unset or `lambda_labs` | `MERV_LAMBDA_API_KEY`, `LAMBDA_LABS_API_KEY`, or `LAMBDA_API_KEY` |
-| Thunder Compute | `thunder_compute` | `MERV_THUNDER_API_KEY`, `THUNDER_COMPUTE_API_KEY`, or `TNR_API_TOKEN` |
-| Modal | `modal` | `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` |
+`GET /api/meta` reports the server/catalog versions, mode, authentication
+requirements, and capabilities. A client explicitly below
+`min_proxy_version` receives `426 client_too_old`; a missing version header is
+currently tolerated. `X-RP-Request-Id` identifies requests in logs.
 
-Set `MERV_REQUIRE_SANDBOX_BACKEND=1` in production to make startup
-fail when the selected provider's health check fails. Without it, the brain can
-start as a record-only service and `sandbox.health` reports the provider error.
+See [AUTH.md](AUTH.md) for credential and membership behavior and
+[CLIENTS.md](CLIENTS.md) for client configuration.
 
-Provider secret delivery differs by backend. Lambda Labs and Thunder Compute
-deliver `HF_TOKEN` after boot over the management channel into
-`/opt/merv/secrets.env`. Modal supplies it through `modal.Secret` at sandbox
-creation and writes the runtime environment under `/opt/merv/env`. Secret values
-are never returned through the agent API or written into retained artifacts by
-the plugin.
+## Sandbox providers
 
-## Client compatibility
+Select one provider with `MERV_EXECUTION_BACKEND` or several with the
+comma-separated `MERV_EXECUTION_BACKENDS`. Set
+`MERV_REQUIRE_SANDBOX_BACKEND=1` to reject startup when the configured provider
+is unhealthy. Without it, the brain may run record-only and expose the provider
+failure through sandbox health.
 
-```http
-GET /api/meta
-```
+Provider credentials belong in the control environment. Secrets delivered to a
+runtime travel through the provider or management channel, never in agent
+responses. See [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md) for provider
+settings.
 
-The response publishes `server_version`, `min_proxy_version`, `catalog_version`,
-`mode`, `auth`, and a `capabilities` map (`hosted_control`, `mcp`,
-`token_uploads`). The retained `min_proxy_version` is the minimum legacy-client
-version the gateway still accepts — it will be retired later once telemetry
-shows no old clients remain. Clients and the UI send `X-RP-Client-Version`. In
-control mode, a version explicitly below the floor receives `426
-client_too_old`; a missing header is currently tolerated.
+## Cleanup and cost control
 
-The response header `X-RP-Request-Id` identifies each HTTP request for log
-correlation.
-
-## Sandbox reaping and cost controls
-
-The expiry reaper runs inside the brain and is forced on in control mode. Its
-environment off-switch is ignored because the control process holds provider
-credentials and is responsible for billing cleanup.
-
-`QuotaService` can enforce concurrent-sandbox, request-duration,
-instance-price, GPU-hour, and USD limits from the sandbox-generation ledger. It
-also supports global and per-tenant provisioning kill switches. There is no
-public quota-management HTTP surface; these are operator/service integrations.
-With the current unauthenticated HTTP surface, externally created projects use
-the implicit `local` tenant.
-
-## Periodic cleanup
-
-The brain constructs `CleanupService` but does not run a cleanup scheduler.
-Call the private operator endpoint from managed cron or a sidecar:
+Sandbox lifecycle scheduling runs in the brain. Broader cleanup is an
+idempotent operator action:
 
 ```http
 POST /api/admin/cleanup
 ```
 
-One pass performs four idempotent, best-effort sweeps:
+Schedule it with managed cron or a sidecar. A pass reconciles tracked
+sandboxes, expires submitted blobs and heavy objects, and recovers stale
+provisioning records. It does not discover arbitrary provider VMs that have no
+durable Merv row.
 
-1. **running-row reconciliation** — asks the provider whether each tracked
-   running VM still exists and marks dead rows terminated;
-2. **submitted-blob expiry** — deletes blobs past their TTL;
-3. **heavy-storage expiry** — expires eligible object-ledger rows using
-   refcount-aware cleanup;
-4. **stale-provision cleanup** — fails or terminates provisioning rows that did
-   not reach a usable VM before the deadline.
+Sandbox admission and spend policy can enforce concurrency, duration, price,
+GPU-hour, and USD limits. Keep the provider consoles and billing alerts as an
+independent safety net.
 
-The first sweep does not enumerate and terminate provider VMs that have no
-registry row. Provider-specific deterministic-name cleanup during provisioning
-and stale-provision handling cover the implemented orphan defenses.
-
-The in-process expiry reaper is separate from these broader periodic sweeps and
-continues to run between cleanup calls.
+Nothing on a sandbox is durable by default. Retain compact evidence through
+Artifacts and heavy outputs through Object Storage before release or expiry.
 
 ## Observability
 
-In control mode the brain writes one compact JSON record to stdout per HTTP
-request. It includes request id, tenant id, path, method, status, and duration;
-the reference image sets `PYTHONUNBUFFERED=1`.
+The brain writes compact request records to stdout in control mode. Three
+different data sources exist:
 
-```http
-GET /api/admin/tenants/{tenant_id}/counters
-```
+- project events are durable and commit with accepted research changes;
+- `/api/activity` is a bounded in-memory summary ring;
+- `/api/debug/tool-calls` is a bounded in-memory request/response ring.
 
-The private counter endpoint reports `tool_calls` (currently counted from the
-project event table), sandbox generations, and closed-generation sandbox hours
-for the requested stored tenant id. Under the current unauthenticated surface,
-request logs normally carry tenant `local`.
+The diagnostic rings reset on restart and are operator surfaces.
 
-Three different records serve different purposes:
+The UI uses project-event SSE for refresh hints and ETag polling as fallback.
+Terminal and utilization reads use the management transport and short-lived
+caches.
 
-- project `events` are durable and committed with accepted research changes;
-- `/api/activity` is a bounded in-memory summarized activity ring;
-- `/api/debug/tool-calls` is a bounded in-memory full tool-I/O ring.
+## Readiness
 
-The two diagnostic rings reset whenever the brain restarts. They are not JSONL
-or SQLite audit files.
-
-## UI traffic and degraded content
-
-The Merv UI uses project events over SSE for prompt refreshes, with
-ETag-based conditional polling as fallback. Desktop fallback polling is 3 s;
-mobile uses 5 s while work is live and 30 s when quiet.
-
-Terminal reads use management SSH and are coalesced by the bounded,
-TTL-controlled transcript cache. Metrics sampling is also briefly coalesced.
-
-Because the brain has no checkout access:
-
-- submitted gated documents and captured relative figures can be rendered from
-  the blob store;
-- non-gated repo file bodies return an explicit unavailable response;
-- direct `/file` reads cannot expose live checkout files.
-
-Browser sandbox release is destructive. The UI confirms retention before
-calling the release route, which terminates the VM directly; anything not
-pulled or uploaded beforehand is lost.
-
-## Reference deployment and readiness
-
-`deploy/docker-compose.yml` starts a reference control brain with Postgres,
-MinIO, and a dev-only mounted management key. It is a local
-integration stack, not a managed production deployment.
-
-After supplying healthy sandbox-provider credentials, run:
+The reference Compose stack is an integration environment, not a production
+platform. After configuring providers, run:
 
 ```bash
 python3 deploy/doctor.py --control-url http://127.0.0.1:8787
 ```
 
-The doctor actively checks the control API, sandbox provider health/options,
-and object-storage upload/download. The default Compose stack may intentionally
-start without provider credentials; in that record-only configuration the full
-doctor is expected to fail.
-
-Production operators must additionally provide TLS termination, real user
-authentication and authorization, managed Postgres and backups, a secret
-store, the cleanup schedule, durable object lifecycle policy,
-monitoring/alerting, and a separately hosted UI.
+Production additionally needs managed Postgres and backups, durable bucket
+lifecycle policy, TLS, secrets management, cleanup scheduling, provider billing
+alerts, service monitoring, and a separately deployed UI.

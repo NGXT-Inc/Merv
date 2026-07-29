@@ -1,9 +1,10 @@
 # Merv Architecture
 
 This document describes the architecture implemented by the current codebase.
-The executable contracts in `src/merv/brain/research_core/domain/*`, `src/merv/brain/surface/tools/contracts.py`, and
-the structural tests under `tests/structure/` are authoritative when prose and
-code disagree.
+The workflow declarations in `research_core/{experiment_workflow,
+reflection_workflow}.py`, the tool manifest in `surface/tools/contracts.py`,
+and the structural tests under `tests/structure/` are authoritative when prose
+and code disagree.
 
 ## Product model
 
@@ -37,7 +38,7 @@ flowchart LR
   Brain --> Blobs["Local or S3-compatible stores"]
   Brain --> Providers["Lambda Labs, Thunder Compute, or Modal"]
   Client -->|SSH commands| Providers
-  Client -->|presigned PUT/GET| Blobs
+  Client -->|returned transfer commands| Blobs
 ```
 
 ### Brain service
@@ -51,9 +52,9 @@ The brain is the single authority for research records and policy. It owns:
 - the `/mcp/*`, `/api/*`, and server-sent-event surfaces.
 
 The brain never receives a checkout root and never opens files from a user's
-checkout. Agents submit typed artifacts and other bytes by calling a tool that
-mints a presigned upload and running the returned command; the bytes travel
-directly to object storage over that URL, never through the brain.
+checkout. Bounded Artifact and Feed uploads use one-time brain endpoints, heavy
+Storage bytes use provider-presigned transfers, and sandbox outputs move with
+`rsync`. None of those bytes enter model context.
 
 `MERV_MODE` selects deployment defaults, not a different component
 graph:
@@ -64,7 +65,7 @@ graph:
 | `control` | Operator-provided HTTPS URL | Postgres and S3-compatible stores | Supabase-backed end-user auth; TLS and network controls |
 
 The control surface requires Supabase-backed end-user authentication
-(`SupabaseVerifier` in `services/auth.py`, attached per-request in
+(`SupabaseVerifier` in `surface/auth.py`, attached per-request in
 `transport/api/app.py`, with a membership gate that 404s foreign projects).
 Hosted control fails closed: with no verifier configured it refuses to start
 unless the operator sets `MERV_ALLOW_OPEN_CONTROL=1`, which serves an
@@ -90,14 +91,13 @@ The key is scoped to one project or to its owner's whole account, immutably.
 The gateway does not inject a project:
 it requires the agent to pass `project_id` on project-scoped tools and enforces
 that it equals the key-bound project — a mismatched `project_id` is rejected and
-omitting it is an error — so an agent calls `project` (`action="current"`) once
-to learn its `project_id`, then passes it explicitly on every subsequent
-project-scoped call. Agents never pass `repo_root` and the brain never receives
-a checkout root. Bytes that must move — artifact and storage uploads,
-sandbox output pulls, feed images — travel agent-side over presigned URLs: the
-tool returns a one-line command the agent runs, and the bytes stream directly
-to or from the object store or sandbox, never through the brain or the agent's
-model context.
+omitting it is an error. An agent starts with `project(action="list")`; a
+single-project credential can also use `project(action="current")`. It then
+passes the selected id on every project-scoped call. Agents never pass
+`repo_root` and the brain never receives
+a checkout root. Tools return one-line transfer commands: Artifact and Feed use
+bounded one-time upload endpoints, Storage uses presigned provider URLs, and
+Sandbox uses SSH/`rsync`.
 
 Pure two-sided contracts live in `merv.shared`: error identities, path naming,
 narrow tool-shape validation, storage transfer/guidance, feed-media primitives,
@@ -131,7 +131,7 @@ root selects adapters and wires the modular monolith:
 - optional heavy-object store: S3-compatible storage;
 - sandbox backend: Lambda Labs by default; Thunder Compute, Modal, Hyperstack,
   DigitalOcean, Verda (DataCrunch), Voltage Park, TensorDock, or the fake
-  backend used in tests. `RESEARCH_PLUGIN_EXECUTION_BACKENDS` (comma-separated)
+  backend used in tests. `MERV_EXECUTION_BACKENDS` (comma-separated)
   runs several at once behind one multiplexer that routes per-request by
   provider and prefixes sandbox ids with their owner (see
   [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md)). A lazy driver registry is the
@@ -161,11 +161,10 @@ failure because post-response advisory work cannot roll it back.
 The brain registry in `src/merv/brain/surface/tools/contracts.py` is the single
 generator and source of truth for tool schemas and plane assignments. Since the
 no-dataplane transition every tool is a control tool that runs in the brain.
-Byte transfers (`storage.submit`, `storage.fetch`, `artifact.submit`,
-`feed.post`) hand back a one-line command the agent runs to move bytes over a
-presigned URL, and sandbox provisioning (`sandbox.request`, `sandbox.attach`,
-`sandbox.pull_outputs`) is served by the brain. No tool moves checkout bytes
-through the brain.
+Byte operations (`storage.submit`, `storage.fetch`, `artifact.submit`, and
+`feed.post`) hand back a one-line command. Storage uses presigned provider URLs;
+Artifact and Feed use bounded token endpoints. Sandbox operations are served by
+the brain, while output bytes move directly over `rsync`.
 
 The merged `project` tool is special:
 
@@ -258,13 +257,12 @@ proof that two separate models reasoned independently.
 
 ## Code boundaries
 
-The brain is a modular monolith. Research, Artifacts, Sandbox, and Feed are
-business components; the Application component coordinates use cases across
-their narrow facades. Concrete object storage is infrastructure, Surface
-delivers HTTP/MCP, and Kernel is the shared
-dependency floor. Every file is classified independently by component
-ownership and architectural layer. The exact mappings, import laws, and
-shrinking file-pair exception ledger live in
+The brain is a modular monolith. Research, Artifacts, Sandbox, Feed, and Object
+Storage expose concrete package-root capabilities. Application coordinates
+only genuinely cross-component work. Surface delivers HTTP/MCP, and Kernel is
+the shared dependency floor. Every file is classified independently by
+component ownership and architectural layer. The exact mappings and import laws
+live in
 `tests/structure/test_module_boundaries.py`.
 
 Additional structure tests enforce:

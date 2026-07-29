@@ -9,10 +9,10 @@ directly to the brain's `POST /mcp` endpoint. Bundled clients authenticate with
 a project-scoped key sent as `Authorization: Bearer <key>` from
 `MERV_MCP_KEY`; browser-configured clients may instead use the hosted OAuth
 flow or a pasted key. A key is scoped to one project or to the owner's whole
-account (chosen at mint/consent time); for a project-scoped key the gateway
-enforces that any project_id an agent passes equals the key-bound project (an
-agent learns it once via `project current`, then passes it explicitly), so
-agents never send a checkout root. Each client gets a thin adapter on top of the same `bin/`,
+account. Agents start with `project(action="list")`; a project-scoped key may
+also use `project(action="current")`. They pass the selected id explicitly, and
+the gateway rejects ids outside the credential's scope. Agents never send a
+checkout root. Each client gets a thin adapter on top of the same `bin/`,
 `skills/`, and `agents/` content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
@@ -45,7 +45,7 @@ Shared invariants across all clients:
   `tools/list`); there is no checked-in client-side tool catalog. The
   `merv-client` onboarding CLI, `merv-http`, and brain remain Python 3.11+; a
   venv is needed only for those surfaces when the machine does not already
-  provide 3.11+. Agent-run byte transfers — the token/presigned `curl` for
+  provide 3.11+. Agent-run byte transfers — the tokenized `curl` for
   `artifact.submit`, attachment-bearing `feed.post`, `storage.submit`, and
   `storage.fetch` (download), plus the `rsync` for `sandbox.pull_outputs` —
   rely on the machine's `curl`, OpenSSH client, and `rsync`.
@@ -313,8 +313,8 @@ Two Cursor-specific notes:
    project's `.cursor/mcp.json`.
 
 2. **Tool ceiling.** Cursor's approximately 40-tool limit applies across all
-   active MCP servers. Merv's catalog (35 public tools with optional storage
-   enabled; 31 without) nearly fills it. Merv hides
+   active MCP servers. Merv's catalog nearly fills it when optional Storage is
+   enabled. Merv hides
    UI/internal tools such as `project.list`, `experiment.get_state`, and `review.status` from the
    agent-facing catalog; if tools disappear when several MCP servers are
    enabled, disable servers or tools that are not in use.

@@ -18,7 +18,7 @@ document.
   client itself.
 - The supported browser surface does not provision sandboxes, pull sandbox
   outputs, or upload/download storage files. Those operations run through MCP
-  tools that hand the agent a one-line command to move bytes over a presigned URL.
+  tools that hand the agent a one-line transfer command.
 - Local and hosted brains expose the same HTTP shape. Local mode normally uses
   SQLite and local blobs; control mode uses operator-configured durable stores.
 - Authentication is deployment-conditional. Auth-off deployments (the local
@@ -58,14 +58,11 @@ GET /api/meta
 }
 ```
 
-The `capabilities` block reports `mcp: true` and `token_uploads: true`: every
-agent client connects over the shared `/mcp` HTTP transport, and bytes move over
-returned presigned token commands rather than through the brain. `catalog_version`
-is a deployment-drift marker for the MCP tool catalog. `min_proxy_version` is the
-retained minimum legacy-client floor: in control mode a request carrying an
-`X-RP-Client-Version` explicitly below it receives `426 client_too_old`, and the
-floor will be retired once telemetry shows no old clients remain. A missing
-version header is currently tolerated.
+The `capabilities` block reports `mcp: true` and `token_uploads: true`: clients
+use `/mcp`, while byte operations return tokenized transfer commands.
+`catalog_version` identifies the MCP catalog. In control mode, a request with
+`X-RP-Client-Version` explicitly below `min_proxy_version` receives
+`426 client_too_old`; a missing version header is currently tolerated.
 
 ## Refresh, caching, and events
 
@@ -299,8 +296,8 @@ GET  /api/projects/{project_id}/feed/{post_id}/embed
 POST /api/projects/{project_id}/feed/track
 ```
 
-Agent posts and image/embed capture use MCP tools that return a presigned upload
-command the agent runs. Browser mutations are limited to researcher reactions,
+Agent posts and image/embed capture use MCP tools that return a bounded
+token-upload command. Browser mutations are limited to researcher reactions,
 replies, and UI telemetry.
 
 ## Activity and tool-I/O diagnostics
