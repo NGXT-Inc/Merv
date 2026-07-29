@@ -609,30 +609,6 @@ CREATE TABLE IF NOT EXISTS artifact_figures (
   FOREIGN KEY(artifact_id) REFERENCES artifacts(id)
 );
 
--- Pending feed-post upload tokens (no-dataplane transition, Phase D.1). A media
--- feed post is minted here with a one-time token plus a pre-allocated post_id;
--- the agent PUTs the image/embed bytes to /api/feed/u/<token>, which validates
--- the bytes, pins them through the identical blob-store sink a live post uses,
--- inserts the post, and consumes the token (single-use). No-media posts never
--- touch this table. Rows expire with their token and are swept; the bytes never
--- transit MCP or model context.
-CREATE TABLE IF NOT EXISTS feed_upload_tokens (
-  token TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  post_id TEXT NOT NULL,
-  handle TEXT NOT NULL,
-  text TEXT NOT NULL DEFAULT '',
-  media_kind TEXT NOT NULL,
-  media_path TEXT NOT NULL DEFAULT '',
-  url TEXT NOT NULL DEFAULT '',
-  ref TEXT NOT NULL DEFAULT '',
-  kind TEXT NOT NULL DEFAULT '',
-  in_reply_to TEXT NOT NULL DEFAULT '',
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY(project_id) REFERENCES projects(id)
-);
-
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -959,12 +935,9 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # schemas create user_hf_tokens above; the handler runs the SCHEMA-extracted
     # DDL so ledger and SCHEMA cannot drift.
     (31, "add_user_hf_tokens", ""),
-    # No-dataplane transition Phase D.1 (July 2026): feed media posts mint a
-    # one-time upload token here so the bytes travel over the agent's own curl
-    # (like artifact.submit) instead of the local data plane. 33 is storage's —
-    # this cut owns 32 alone. SCHEMA creates the table on fresh DBs; the handler
-    # runs the SCHEMA-extracted DDL behind a _has_table gate so ledger and
-    # SCHEMA cannot drift.
+    # Historical Feed token migration marker. Feed now owns this table and its
+    # compatibility creation in feed/feed.py; keep version 32 in the
+    # immutable ledger so existing databases and later migration numbers align.
     (32, "add_feed_upload_tokens", ""),
     # No-dataplane Phase D (storage token-curl): the one-time completion-token
     # table backing the auth-exempt POST /api/storage/u/<token>/complete route.
@@ -1283,8 +1256,7 @@ class BaseStateStore:
             if not self._has_table(conn=conn, table="user_hf_tokens"):
                 conn.execute(_schema_table_ddl(table="user_hf_tokens"))
         elif name == "add_feed_upload_tokens":
-            if not self._has_table(conn=conn, table="feed_upload_tokens"):
-                conn.execute(_schema_table_ddl(table="feed_upload_tokens"))
+            pass  # Historical marker; Feed installs its owned schema at startup.
         elif name == "add_storage_completion_tokens":
             if not self._has_table(conn=conn, table="storage_completion_tokens"):
                 conn.execute(_schema_table_ddl(table="storage_completion_tokens"))

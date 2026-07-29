@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from merv.shared.errors import TrackingPersistenceError
 
-from ...feed.facade import Feed
+from ...feed import FeedAdvisory
 from ...research_core.facade import ExperimentState, PersistedRunState, ResearchCore
 from ..events import (
     EventCatalogEntry,
@@ -98,7 +98,7 @@ class ExperimentReactions:
     """Synchronous experiment reactions bound once by application composition."""
 
     research: ResearchCore
-    feed: Feed
+    feed: FeedAdvisory
     tracking: ExperimentTracking | None
 
     def bind(self, registry: EventDispatcher) -> None:

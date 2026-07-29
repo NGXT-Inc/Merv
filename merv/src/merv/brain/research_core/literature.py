@@ -13,8 +13,9 @@ import json
 import re
 import urllib.parse
 from contextlib import closing
-from typing import Any, Protocol
+from typing import Any
 
+from ..kernel.ports.web_preview import PaperPreview
 from ..kernel.state.store import BaseStateStore, next_created_seq, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
@@ -45,15 +46,6 @@ _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 _DOI_URL_RE = re.compile(
     r"^https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^?#]+)", re.IGNORECASE
 )
-
-
-class PaperUnfurl(Protocol):
-    """Port for fetching paper metadata; the adapter enforces its own hard
-    host allowlist per hop (feed_unfurl.AllowlistedPaperUnfurl)."""
-
-    def allowed(self, url: str) -> bool: ...
-
-    def unfurl(self, url: str) -> dict[str, Any]: ...
 
 
 def normalize_paper_identity(
@@ -112,7 +104,7 @@ def _normalize_url_key(url: str) -> str:
 
 
 class LiteratureService:
-    def __init__(self, *, store: BaseStateStore, unfurl: PaperUnfurl) -> None:
+    def __init__(self, *, store: BaseStateStore, unfurl: PaperPreview) -> None:
         self.store = store
         self.unfurl = unfurl
 

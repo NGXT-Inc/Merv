@@ -15,7 +15,7 @@ from pathlib import Path
 import uvicorn
 
 from merv.brain.surface.composition import build_local_server
-from merv.brain.feed import feed_policy
+from merv.brain.feed import feed as feed_module
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
@@ -255,8 +255,17 @@ def build():
     for handle in ("Vega", "Nova-7", "Cassiopeia", "Orion", "Zephyr-9"):
         feed.register(handle=handle, role="main", session_id="demo-seed", project_id=pid)
 
-    # Image posts go through post_observed with explicit bytes attached; the
-    # brain never reads caller files.
+    def seed_post(**kwargs):
+        """Use the same two-phase Feed API as a real agent upload."""
+        image_bytes = kwargs.pop("image_bytes", None)
+        html_bytes = kwargs.pop("html_bytes", None)
+        result = feed.post(**kwargs)
+        data = image_bytes if image_bytes is not None else html_bytes
+        if data is None:
+            return result
+        token = result["run"].rsplit("/", 1)[-1].rstrip("'")
+        return feed.complete_upload(token=token, data=data)
+
     post_ids: list[tuple[str, int]] = []
     for mins_ago, handle, image, ref_kind, text, *rest in POSTS:
         kwargs = {"project_id": pid, "handle": handle, "text": text}
@@ -271,7 +280,7 @@ def build():
             kwargs["ref"] = claim
         elif isinstance(ref_kind, str) and ref_kind.startswith("http"):
             kwargs["url"] = ref_kind
-        out = feed.post_observed(**kwargs)
+        out = seed_post(**kwargs)
         post_ids.append((out["post"]["id"], mins_ago))
 
     # One thread: the human quizzes the warm-restarts finding (researcher_reply
@@ -284,14 +293,14 @@ def build():
         text="Love this. Is the lift robust across seeds, or did one lucky restart schedule carry it?",
     )["post"]["id"]
     post_ids.append((r1, 210))
-    r2 = feed.post_observed(
+    r2 = seed_post(
         handle="Zephyr-9", project_id=pid, in_reply_to=r1,
         text="Three seeds in: same shape every time. The dip depth varies ±0.02 but the plateau lifts on all of them.",
     )["post"]["id"]
     post_ids.append((r2, 195))
 
     # One interactive embed (no image — the embed owns the media slot).
-    e1 = feed.post_observed(
+    e1 = seed_post(
         handle="Nova-7", project_id=pid, kind="finding",
         text="Made the restart sweep interactive — scrub the schedule and watch the val-loss response.",
         html_path="restart_scrubber.html",
@@ -301,7 +310,7 @@ def build():
 
     # A mid-run `status` checkpoint (the new sixth kind), threaded onto the
     # same warm-restarts conversation so the UI has a real example to render.
-    s1 = feed.post_observed(
+    s1 = seed_post(
         handle="Zephyr-9", project_id=pid, in_reply_to=r2, kind="status", ref=exp,
         text="Checkpoint: the 70B warm-restart push is ~40% through training — loss "
              "is tracking the small-scale plateau-lift shape so far, no surprises yet.",
@@ -329,7 +338,7 @@ def build():
 
 # The nudge fires only past BOTH thresholds; the seed crosses the 6h bar by
 # construction but not the event-count bar (a demo DB has ~4 domain events).
-feed_policy.NUDGE_AFTER_EVENTS = 1
+feed_module.NUDGE_AFTER_EVENTS = 1
 
 
 if __name__ == "__main__":

@@ -62,7 +62,6 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "application" / "workflow.py",
     BACKEND_ROOT / "sandbox" / "core.py",
     FEED_ROOT / "feed.py",
-    FEED_ROOT / "feed_policy.py",
     BACKEND_ROOT / "sandbox" / "observation.py",
     SURFACE_ROOT / "control" / "record_core.py",
     SURFACE_ROOT / "control" / "control_app.py",
@@ -165,8 +164,6 @@ def _literal_args(node: ast.Call) -> list[str]:
     return values
 
 
-
-
 def _process_spawn_references(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     aliases = _import_aliases(tree)
@@ -239,13 +236,9 @@ def _imports_management_key_adapter(path: Path) -> bool:
     return False
 
 
-
-
 class BrainToolManifestTest(unittest.TestCase):
     def test_one_valued_plane_abstraction_stays_deleted(self) -> None:
-        source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(
-            encoding="utf-8"
-        )
+        source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
         self.assertTrue(TOOL_CONTRACTS)
         for removed in (
             "ToolPlane",
@@ -256,7 +249,6 @@ class BrainToolManifestTest(unittest.TestCase):
             "def tool_plane(",
         ):
             self.assertNotIn(removed, source)
-
 
 
 class PlaneImportLintTest(unittest.TestCase):
@@ -333,7 +325,10 @@ load("subprocess")
                 )
 
     def test_tool_dispatcher_uses_narrow_permission_policy(self) -> None:
-        from merv.brain.surface.tools.tool_facade import ToolDispatcher, ToolPermissionPolicy
+        from merv.brain.surface.tools.tool_facade import (
+            ToolDispatcher,
+            ToolPermissionPolicy,
+        )
 
         hints = get_type_hints(ToolDispatcher.__init__)
         self.assertIs(hints["permissions"], ToolPermissionPolicy)
@@ -402,12 +397,8 @@ load("subprocess")
         activity = (BACKEND_ROOT / "kernel" / "state" / "activity.py").read_text(
             encoding="utf-8"
         )
-        self.assertFalse(
-            (BACKEND_ROOT / "kernel" / "state" / "tool_calls.py").exists()
-        )
-        self.assertFalse(
-            (IMPORT_ROOT / "merv" / "shared" / "project_dirs.py").exists()
-        )
+        self.assertFalse((BACKEND_ROOT / "kernel" / "state" / "tool_calls.py").exists())
+        self.assertFalse((IMPORT_ROOT / "merv" / "shared" / "project_dirs.py").exists())
         self.assertNotIn("class ActivityLogger", activity)
         self.assertNotIn("project_dirs", activity)
 
@@ -428,6 +419,7 @@ load("subprocess")
             "threading",
         ):
             self.assertNotIn(forbidden, imports)
+
     def test_brain_checkout_modules_are_absent(self) -> None:
         self.assertFalse((BACKEND_ROOT / "dataplane").exists())
         self.assertFalse((BACKEND_ROOT / "workspace.py").exists())
@@ -479,9 +471,7 @@ load("subprocess")
         presentation = (BACKEND_ROOT / "application" / "reflections.py").read_text(
             encoding="utf-8"
         )
-        app = (SURFACE_ROOT / "control" / "control_app.py").read_text(
-            encoding="utf-8"
-        )
+        app = (SURFACE_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
         record = (SURFACE_ROOT / "control" / "record_core.py").read_text(
             encoding="utf-8"
         )
@@ -718,6 +708,7 @@ load("subprocess")
         self.assertIn("ssh_keys", _import_segments(path))
         self.assertNotIn("subprocess", _import_segments(path))
         self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

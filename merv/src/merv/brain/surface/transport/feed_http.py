@@ -10,14 +10,21 @@ and activity sink used by these routes.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import Body, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from ...feed.facade import FeedDelivery
+from ...feed import FeedService
 from ...kernel.utils import ValidationError
-from .api.dependencies import ActivityTelemetry, AuthorizeProject
+
+
+class ActivityTelemetry(Protocol):
+    def emit(self, *, event_type: str, payload: dict[str, Any]) -> None: ...
+
+
+class AuthorizeProject(Protocol):
+    def __call__(self, request: Request, project_id: str) -> None: ...
 
 _TRACK_EVENTS = {"feed_opened", "post_viewed", "link_clicked", "image_viewed"}
 
@@ -101,7 +108,7 @@ def _enrich_post_urls(post: dict[str, Any], project_id: str) -> None:
 def register_feed_routes(
     http: Any,
     *,
-    feed_api: FeedDelivery,
+    feed_api: FeedService,
     authorize_project: AuthorizeProject,
     activity: ActivityTelemetry,
 ) -> None:
@@ -113,12 +120,12 @@ def register_feed_routes(
         # feed.post is the credential, so the agent's bare `curl -T` works
         # against both local and hosted brains. Token first (INV-12): an
         # unknown/used/expired token 404s before any body byte is buffered.
-        cap = feed_api.pending_upload_cap(token=token)
+        cap = feed_api.get_upload_limit(token=token)
         data = await _read_capped(request, cap=cap)
         if data is None:
             return _too_large(cap)
         try:
-            return feed_api.complete_post_upload(token=token, data=data)
+            return feed_api.complete_upload(token=token, data=data)
         except ValidationError as exc:
             if "max_bytes" in exc.details:
                 return JSONResponse(

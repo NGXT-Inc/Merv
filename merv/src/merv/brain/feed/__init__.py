@@ -1,1 +1,5 @@
-"""Social feed module: posting, unfurling, and feed policy (Feed_PRD.md)."""
+"""Public Feed entrypoint."""
+
+from .feed import FeedAdvisory, FeedService
+
+__all__ = ["FeedAdvisory", "FeedService"]

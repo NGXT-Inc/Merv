@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
-from ...feed.facade import Feed
+from ...feed import FeedAdvisory
 from ...kernel.utils import ValidationError
 from ...research_core.facade import (
     ExperimentState,
@@ -216,7 +216,7 @@ class FinalizeTrackingRun:
         self,
         *,
         research: ResearchCore,
-        feed: Feed,
+        feed: FeedAdvisory,
         tracking: ExperimentTracking | None,
         dispatcher: EventDispatcher,
         objects: ProducedObjectCatalog,

@@ -38,6 +38,7 @@ from pathlib import Path
 
 from tests.support.brain import TestBrain
 from merv.brain.artifacts import Artifacts
+from merv.brain.feed.persistence import install_feed_schema
 from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.application.queries import TenantCountersQuery
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
@@ -294,20 +295,6 @@ def _schema_without_storage_completion_tokens() -> str:
     )
     if legacy == SCHEMA or "storage_completion_tokens" in legacy:
         raise AssertionError("failed to build the pre-completion-token schema")
-    return legacy
-
-
-def _schema_without_feed_upload_tokens() -> str:
-    """SCHEMA before the no-dataplane Phase-D.1 feed-media token table."""
-    legacy = re.sub(
-        r"\n-- Pending feed-post upload tokens.*?"
-        r"CREATE TABLE IF NOT EXISTS feed_upload_tokens \(.*?\n\);\n",
-        "\n",
-        SCHEMA,
-        flags=re.DOTALL,
-    )
-    if legacy == SCHEMA or "feed_upload_tokens" in legacy:
-        raise AssertionError("failed to build the pre-feed-token schema")
     return legacy
 
 
@@ -746,18 +733,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_legacy_postgres_store_gains_feed_upload_tokens(self) -> None:
-        """Old-DB upgrade through the no-dataplane Phase-D.1 block: replay ledger
-        rows < 32 against a schema without feed_upload_tokens, re-open, and
-        confirm migration 32 creates the table (each migration + its ledger row
-        inside one transaction on the autocommit connection)."""
+    def test_feed_installer_upgrades_legacy_postgres_store(self) -> None:
+        """Feed, not Kernel, creates its tables after a legacy ledger replay."""
         dsn = _reset_database()
         import psycopg
 
-        legacy_schema = _schema_without_feed_upload_tokens()
         created = now_iso()
         with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute(translate_schema_to_postgres(legacy_schema))
+            conn.execute(translate_schema_to_postgres(SCHEMA))
             for version, name, _statement in MIGRATIONS:
                 if version >= 32:
                     continue
@@ -768,6 +751,15 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 )
 
         store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            self.assertFalse(
+                store._has_table(conn=conn, table="feed_upload_tokens")
+            )
+        finally:
+            conn.close()
+
+        install_feed_schema(store)
         conn = store.connect()
         try:
             self.assertTrue(

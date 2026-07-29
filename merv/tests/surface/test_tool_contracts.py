@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import tempfile
 import unittest
-import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -34,6 +36,145 @@ from merv.brain.surface.tools.contracts import (
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
 from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
+
+
+BASE_PUBLIC_TOOLS = frozenset(
+    {
+        "artifact.find",
+        "artifact.submit",
+        "claim.create",
+        "claim.update",
+        "experiment.create",
+        "experiment.exhibit",
+        "experiment.transition",
+        "feed.list",
+        "feed.post",
+        "feed.register",
+        "litreview.cite",
+        "litreview.edit",
+        "litreview.view",
+        "project",
+        "reflection.create",
+        "reflection.get",
+        "reflection.transition",
+        "review.request",
+        "review.start",
+        "review.submit",
+        "sandbox.attach",
+        "sandbox.extend",
+        "sandbox.get",
+        "sandbox.list",
+        "sandbox.options",
+        "sandbox.pull_outputs",
+        "sandbox.release",
+        "sandbox.request",
+        "sandbox.runs",
+        "sandbox.terminal",
+        "workflow.status_and_next",
+    }
+)
+BASE_INTERNAL_TOOLS = frozenset(
+    {
+        "claim.list",
+        "experiment.get_state",
+        "experiment.list",
+        "project.get",
+        "project.list",
+        "project.update",
+        "reflection.list",
+        "review.status",
+        "sandbox.health",
+    }
+)
+STORAGE_PUBLIC_TOOLS = frozenset(
+    {"storage.fetch", "storage.find", "storage.object", "storage.submit"}
+)
+STORAGE_INTERNAL_TOOLS = frozenset(
+    {"storage.complete_upload", "storage.put_object"}
+)
+TRACKING_PUBLIC_TOOLS = frozenset({"mlflow.context", "mlflow.finalize_run"})
+
+# Normalized Pydantic schemas: prose and non-semantic ordering are deliberately
+# excluded, while fields, requiredness, unions, enums, defaults, bounds, tuple
+# position, and strict additional-property behavior remain part of the wire
+# contract.
+TOOL_INPUT_SCHEMA_SHA256 = {
+    "artifact.find": "ac17e7ab19d57565b569c8fac1b0d3cb7558d6707ba134bf4148262b9e7361e2",
+    "artifact.submit": "6a0d7b13ad955492a130b31655449efa534ed3cf3316c50053bfa70278da9b2e",
+    "claim.create": "657e35c9cd860d4eae6e1d6403d77644389ea966471a56470f07b8a995995232",
+    "claim.list": "bf7f9192978f1785b0939d890a89c3b562db9125d34cb44f988d990e2bbc509c",
+    "claim.update": "55db160bd01130666f1a7a5720f57544e83de4227582249c88d7b265d68eb227",
+    "experiment.create": "cf4226fc5da948ceb3e6fa74720ce92e043b07014a99136d044b86b25e0c3fa2",
+    "experiment.exhibit": "a70a9ecc2df102418bb86cc5061ab9b930139dab4f6f6def9037230f99c777f3",
+    "experiment.get_state": "4abb4d266094018ce686f7d5c8f985eb25a7f5e0b201b201333626a3f560911e",
+    "experiment.list": "bf7f9192978f1785b0939d890a89c3b562db9125d34cb44f988d990e2bbc509c",
+    "experiment.transition": "69bc10a949b7aef4ba3dfdcf74d64cdb8902cae52f745f73357ca9e55fda8785",
+    "feed.list": "83fa2eef2ba251fe37e4ebe81810765c7015b82f17ecc08ea2bd2e1ee4bfc55a",
+    "feed.post": "3f354ea7b9596cb06c10667bfe03d9ee83e04d0f491bf57c1218b88e6b5c9f7a",
+    "feed.register": "4f09c8eac9262fee9a78b0c59077d6d1970d44e235a35bd4aeaffbda5325c96e",
+    "litreview.cite": "41b1e99b098e985e03ff27958c701057f2b7c82b00c11c8990173ff685933896",
+    "litreview.edit": "43fdf886b705bdf60d7b7361179eca819fce296fcabb59d85b74ba5cf8587cf5",
+    "litreview.view": "092471f2f3c7d5df39cbfb741f6ddf78ef646303aa9cf367c746292c6f3f2312",
+    "mlflow.context": "73d3324a8c0dddb1281d3a2c32b7736ee47dea9b9c822816eca979cf23b09a39",
+    "mlflow.finalize_run": "6c3723dd4fb2ab9dfeb2a381d35874f2d3c2587ef79bec76db0daa858c9aeffd",
+    "project": "ee6b0a43422608b1c6647bd3e6dc7b9316ff4ef4ad9e35716626bfe99ad63b59",
+    "project.get": "bf7f9192978f1785b0939d890a89c3b562db9125d34cb44f988d990e2bbc509c",
+    "project.list": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+    "project.update": "a3e7f2b2992242381eb562be2ef98f44268774ef861868965cdc6c8cb1a5e0b0",
+    "reflection.create": "c8afd8f54699b4a4196102c217801e2acf254bca1783acb50db108d3bcc1cfca",
+    "reflection.get": "08e0d6e280b0de7dd6e6d16621f1c5665ed2fbdc8becbad53ac93429ec840ede",
+    "reflection.list": "bf7f9192978f1785b0939d890a89c3b562db9125d34cb44f988d990e2bbc509c",
+    "reflection.transition": "d32e765600cb71182eaca6ff0ad77f95205940c8aa00301a630bcaf9aeec1674",
+    "review.request": "36381b5d441b00b01a159f9e04eff22e578ae58c3a35a4335070271888cd8cdd",
+    "review.start": "ee9057b697c95ad6cecf5208ddc8b5ba1022f503106b3f1f5c325e60f058d006",
+    "review.status": "aa3d6ff8cbe93e7228d970cbe794f27024ef8f4b80e06705404818fcec05dcda",
+    "review.submit": "243f1dbc74d33ce7fa9a5c0f932993739945e0442e17fa293956ac9cc952be3d",
+    "sandbox.attach": "ee23b4896d74fadcfec8d55f9c4b3c50316099837e0d9a45497c0d533d4e6f43",
+    "sandbox.extend": "6b1c3a1ef50ccad6009f750c0bd8db5b9edcd3717c13bb76b4843a2688c2ffff",
+    "sandbox.get": "cb58f835a7705c55bd6703cfe9314c9aa002b8f0e6dcffedc384c3fc36c407e9",
+    "sandbox.health": "99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+    "sandbox.list": "bf7f9192978f1785b0939d890a89c3b562db9125d34cb44f988d990e2bbc509c",
+    "sandbox.options": "de93e5483c38e7d2bfa2131611e6f3005f4056f300e5d9cf68f6b89ad714743c",
+    "sandbox.pull_outputs": "a8148c40cb5190cb11fc65a92bc6e434a01ca8e0ba05eb0909c2a3343bf20cba",
+    "sandbox.release": "785249e6607ce1907def30e2243f73f1100cd4a7d5ed9bc67898018a2ebee38a",
+    "sandbox.request": "db07e5678008789301d4fe1c2bd8a8d05e08bcb5d0b176fda3d24421c08f6f8e",
+    "sandbox.runs": "72fab984c275b694f03fcde851d06b0e98918aaa13916a65c4c519aecd66cc68",
+    "sandbox.terminal": "4140817916c31f3a3694a4197281f8196c6e718971529ae790eadaf639addbf1",
+    "storage.complete_upload": "25c9c4e741c2c3c0e284b60213dc18e67eb8751c2fcd0498d4fa60d47d60a879",
+    "storage.fetch": "8c6547f9b6845f29addb6c7388fe39eee144a7ff5ce8f17ebd83fa300317bec4",
+    "storage.find": "fc53432ef386a65e6392c6d7b20e10028a9bedf9938dd1c7dd2e086063a727bf",
+    "storage.object": "3fba20bb5e16ab17aa3e96c203332716c9eb3688332c2e11e573d220046451db",
+    "storage.put_object": "550c3f55aa135821f658eba9800d062f4e37b4ad3956af523b105be96d7da15a",
+    "storage.submit": "074879ce62d47c893a33b707fb7e307d7bb58c9d3aaccf3da66812f52c7e5fe9",
+    "workflow.status_and_next": "73d3324a8c0dddb1281d3a2c32b7736ee47dea9b9c822816eca979cf23b09a39",
+}
+
+
+_UNORDERED_SCHEMA_ARRAYS = frozenset(
+    {"allOf", "anyOf", "enum", "examples", "oneOf", "required"}
+)
+
+
+def _normalized_schema(value, *, parent_key: str = ""):
+    if isinstance(value, dict):
+        return {
+            key: _normalized_schema(item, parent_key=key)
+            for key, item in sorted(value.items())
+            if key not in {"title", "description"}
+        }
+    if isinstance(value, list):
+        items = [
+            _normalized_schema(item, parent_key=parent_key) for item in value
+        ]
+        if parent_key in _UNORDERED_SCHEMA_ARRAYS:
+            return sorted(
+                items,
+                key=lambda item: json.dumps(
+                    item, sort_keys=True, separators=(",", ":")
+                ),
+            )
+        return items
+    return value
 
 
 class _HandlerTarget:
@@ -103,6 +244,86 @@ class ToolContractRegistryTest(unittest.TestCase):
                 continue
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
+
+    def test_tool_profiles_are_a_frozen_external_inventory(self) -> None:
+        profiles = (
+            (
+                False,
+                False,
+                BASE_PUBLIC_TOOLS,
+                BASE_INTERNAL_TOOLS,
+            ),
+            (
+                True,
+                False,
+                BASE_PUBLIC_TOOLS | STORAGE_PUBLIC_TOOLS,
+                BASE_INTERNAL_TOOLS | STORAGE_INTERNAL_TOOLS,
+            ),
+            (
+                False,
+                True,
+                BASE_PUBLIC_TOOLS | TRACKING_PUBLIC_TOOLS,
+                BASE_INTERNAL_TOOLS,
+            ),
+            (
+                True,
+                True,
+                BASE_PUBLIC_TOOLS | STORAGE_PUBLIC_TOOLS | TRACKING_PUBLIC_TOOLS,
+                BASE_INTERNAL_TOOLS | STORAGE_INTERNAL_TOOLS,
+            ),
+        )
+        for storage_enabled, tracking_enabled, public, internal in profiles:
+            with self.subTest(
+                storage_enabled=storage_enabled,
+                tracking_enabled=tracking_enabled,
+            ):
+                available = available_tool_names(
+                    storage_enabled=storage_enabled,
+                    tracking_enabled=tracking_enabled,
+                )
+                self.assertEqual(
+                    {name for name in available if TOOL_MANIFEST[name].visibility == "public"},
+                    public,
+                )
+                self.assertEqual(available - public, internal)
+
+    def test_tool_scope_and_feature_groups_are_frozen(self) -> None:
+        by_scope = {
+            scope: {
+                name
+                for name, tool in TOOL_MANIFEST.items()
+                if tool.scope_strategy == scope
+            }
+            for scope in ("caller-selected", "capability", "none", "linked-project")
+        }
+        self.assertEqual(by_scope["caller-selected"], {"project"})
+        self.assertEqual(by_scope["capability"], {"review.start", "review.submit"})
+        self.assertEqual(by_scope["none"], {"project.list", "sandbox.health"})
+        self.assertEqual(
+            by_scope["linked-project"],
+            set(TOOL_MANIFEST)
+            - by_scope["caller-selected"]
+            - by_scope["capability"]
+            - by_scope["none"],
+        )
+        self.assertEqual(
+            {
+                name
+                for name, tool in TOOL_MANIFEST.items()
+                if tool.feature_requirements
+            },
+            STORAGE_PUBLIC_TOOLS | STORAGE_INTERNAL_TOOLS,
+        )
+
+    def test_tool_input_schemas_match_the_frozen_semantic_fingerprints(self) -> None:
+        actual = {}
+        for name, tool in TOOL_MANIFEST.items():
+            normalized = _normalized_schema(tool.input_model.model_json_schema())
+            encoded = json.dumps(
+                normalized, sort_keys=True, separators=(",", ":")
+            ).encode()
+            actual[name] = hashlib.sha256(encoded).hexdigest()
+        self.assertEqual(actual, TOOL_INPUT_SCHEMA_SHA256)
 
     def test_live_app_serves_every_available_manifest_tool(self) -> None:
         dispatched = set(self.app._app.tools._tools)

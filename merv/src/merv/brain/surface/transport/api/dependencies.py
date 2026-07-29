@@ -22,7 +22,7 @@ from ....application.facade import (
 from ....application.ports.storage import ObjectStorage
 from ....artifacts import Artifacts
 from ...user_settings import UserHfTokenSettings
-from ....feed.facade import FeedDelivery
+from ....feed import FeedService
 from ....research_core.facade import (
     ResearchLiterature,
     ResearchProjects,
@@ -62,7 +62,7 @@ class HttpDependencies:
     projects: ResearchProjects
     reviews: ResearchReviewDelivery
     artifacts: Artifacts
-    feed: FeedDelivery
+    feed: FeedService
     sandboxes: SandboxEngine
     storage: ObjectStorage | None
     timeline: EventTimelineQuery

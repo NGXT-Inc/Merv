@@ -1,4 +1,4 @@
-"""Safe server-side URL unfurling for feed posts (Feed_PRD.md).
+"""Safe outbound web previews shared by Feed and Literature.
 
 When an agent posts a link, we fetch it server-side and render a static preview
 card (title, description, thumbnail) — never a live iframe and never arbitrary
@@ -35,7 +35,7 @@ from collections.abc import Callable
 from html.parser import HTMLParser
 from typing import Any
 
-from .ports import LinkUnfurlError
+from ..kernel.ports.web_preview import WebPreviewError
 
 _USER_AGENT = "merv-feed-unfurl/1.0"
 _DEFAULT_TIMEOUT = 6.0
@@ -58,10 +58,6 @@ ALLOWLIST_SUFFIXES = (
     "ar5iv.org",
     "semanticscholar.org",
 )
-
-
-class UnfurlError(LinkUnfurlError):
-    """Compatibility name for a rejected or failed link preview."""
 
 
 def _host_is_public(host: str) -> bool:
@@ -92,17 +88,17 @@ def _host_is_public(host: str) -> bool:
 def _validate_url(url: str) -> urllib.parse.ParseResult:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise UnfurlError("only http and https links can be embedded")
+        raise WebPreviewError("only http and https links can be embedded")
     if not parsed.hostname:
-        raise UnfurlError("link has no host")
+        raise WebPreviewError("link has no host")
     try:
         port = parsed.port
     except ValueError as exc:
-        raise UnfurlError("link has an invalid port") from exc
+        raise WebPreviewError("link has an invalid port") from exc
     if port not in _ALLOWED_PORTS:
-        raise UnfurlError("only standard web ports (80/443) are allowed")
+        raise WebPreviewError("only standard web ports (80/443) are allowed")
     if not _host_is_public(parsed.hostname):
-        raise UnfurlError("link resolves to a non-public address")
+        raise WebPreviewError("link resolves to a non-public address")
     return parsed
 
 
@@ -129,7 +125,7 @@ def safe_fetch(
 ) -> tuple[str, str, bytes]:
     """Fetch ``url`` under the SSRF guard, following redirects manually.
 
-    Returns ``(final_url, content_type, body)``. Raises ``UnfurlError`` on any
+    Returns ``(final_url, content_type, body)``. Raises ``WebPreviewError`` on any
     validation failure, redirect-limit overflow, transport error, or oversize
     body. Every redirect hop is re-validated; when ``host_policy`` is given it
     is a HARD per-hop gate — a hop whose host it rejects aborts the fetch
@@ -139,7 +135,7 @@ def safe_fetch(
     for _ in range(max_redirects + 1):
         parsed = _validate_url(current)
         if host_policy is not None and not host_policy(parsed.hostname or ""):
-            raise UnfurlError("link host is outside the allowed set")
+            raise WebPreviewError("link host is outside the allowed set")
         request = urllib.request.Request(
             current,
             headers={"User-Agent": _USER_AGENT, "Accept": "*/*"},
@@ -149,19 +145,19 @@ def safe_fetch(
                 content_type = resp.headers.get_content_type()
                 body = resp.read(max_bytes + 1)
                 if len(body) > max_bytes:
-                    raise UnfurlError("linked content is too large to preview")
+                    raise WebPreviewError("linked content is too large to preview")
                 return resp.geturl() or current, content_type, body
         except urllib.error.HTTPError as exc:
             if exc.code in (301, 302, 303, 307, 308):
                 location = exc.headers.get("Location")
                 if not location:
-                    raise UnfurlError("redirect without a target") from exc
+                    raise WebPreviewError("redirect without a target") from exc
                 current = urllib.parse.urljoin(current, location)
                 continue
-            raise UnfurlError(f"link returned HTTP {exc.code}") from exc
+            raise WebPreviewError(f"link returned HTTP {exc.code}") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise UnfurlError("could not reach the link") from exc
-    raise UnfurlError("too many redirects")
+            raise WebPreviewError("could not reach the link") from exc
+    raise WebPreviewError("too many redirects")
 
 
 class _MetaParser(HTMLParser):
@@ -257,7 +253,7 @@ def extract_card(final_url: str, content_type: str, body: bytes) -> dict[str, An
     try:
         parser.feed(body.decode("utf-8", errors="replace"))
     except Exception as exc:  # noqa: BLE001 - hostile HTML must never crash a post
-        raise UnfurlError("could not parse the linked page") from exc
+        raise WebPreviewError("could not parse the linked page") from exc
     meta = parser.meta
     title = (
         meta.get("citation_title")
@@ -303,7 +299,7 @@ def unfurl(url: str) -> dict[str, Any]:
     citation authors/year when the page exposes them. A direct arxiv PDF link
     is unfurled via its /abs/ page (the PDF itself has no citation meta), with
     the card's ``url`` kept on the PDF so page fragments survive. Raises
-    ``UnfurlError`` if the link cannot be safely fetched.
+    ``WebPreviewError`` if the link cannot be safely fetched.
     """
     url = url.strip()
     m = _ARXIV_PDF_RE.match(url)
@@ -317,16 +313,16 @@ def unfurl(url: str) -> dict[str, Any]:
 def fetch_preview_image(image_url: str) -> tuple[bytes, str]:
     """Fetch a preview image under the SSRF guard. Returns ``(bytes, content_type)``.
 
-    Raises ``UnfurlError`` if it is not a reasonably-sized image.
+    Raises ``WebPreviewError`` if it is not a reasonably-sized image.
     """
     _final, content_type, body = safe_fetch(image_url, max_bytes=_MAX_IMAGE_BYTES)
     if not content_type.startswith("image/"):
-        raise UnfurlError("preview image is not an image")
+        raise WebPreviewError("preview image is not an image")
     return body, content_type
 
 
-class NetworkLinkUnfurl:
-    """Production adapter for the Feed link-unfurl port."""
+class NetworkWebPreview:
+    """Production adapter for Feed link previews."""
 
     def unfurl(self, url: str) -> dict[str, Any]:
         return unfurl(url)
@@ -354,8 +350,8 @@ def _paper_host_allowed(host: str) -> bool:
     return _matches(host.lower(), PAPER_ALLOWLIST_SUFFIXES)
 
 
-class AllowlistedPaperUnfurl:
-    """Adapter for the literature-review paper-unfurl port.
+class AllowlistedPaperPreview:
+    """Adapter for the Literature paper-preview port.
 
     Same SSRF guard and metadata extraction as the feed unfurler, plus a hard
     per-hop host allowlist: the initial URL and every redirect target must be

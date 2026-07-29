@@ -1,25 +1,19 @@
-"""Social feed service (Feed_PRD.md).
+"""Feed authors, posts, replies, reactions, history, and advisories.
 
-The feed is the platform's one *informal* visibility surface: agents post brief,
-curated aha-moments for the human to glance at, in reverse-chronological order.
-Unlike every other agent-output surface it is editorial rather than complete,
-ungated rather than reviewed, and may carry intuition not tied to any state
-change — so posts are their own append-only, immutable entity (no edit/delete; a
-correction is a new post), not events and not artifacts.
-
-This service owns three agent tools — ``feed.register`` (claim a sci-fi handle),
-``feed.post`` (write), ``feed.list`` (read back) — plus the read/image views the
-UI consumes and the soft posting nudge surfaced through ``workflow``.
+Posts are editorial, append-only observations rather than events or artifacts.
+Schema compatibility, outbound previews, and blob storage remain behind their
+focused persistence or infrastructure boundaries.
 """
 
 from __future__ import annotations
 
 from contextlib import closing, suppress
+from dataclasses import dataclass, replace
 import json
 import secrets
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from merv.shared.feed_embeds import (
     MAX_FEED_EMBED_BYTES,
@@ -32,8 +26,8 @@ from merv.shared.feed_images import (
     sniff_image_type,
 )
 
-from . import feed_policy
 from ..kernel.ports.blob_store import EvidenceBlobStore
+from ..kernel.ports.web_preview import WebPreview, WebPreviewError
 from ..kernel.state.store import (
     BaseStateStore,
     next_created_seq,
@@ -48,42 +42,71 @@ from ..kernel.utils import (
     now_iso,
     parse_iso,
 )
-from .ports import LinkUnfurlError, LinkUnfurlPort
+from .persistence import install_feed_schema
 
-# Hard cap on post text — "old Twitter, not an essay" (Feed_PRD.md open question,
-# resolved to a hard cap). Counted on the stripped string.
+# The product contract is a short editorial note, measured after stripping.
 POST_TEXT_MAX = 280
 
 AUTHOR_ROLES = frozenset({"main", "reviewer", "lens", "researcher"})
 
-# Optional editorial kind, self-declared by the posting agent (never inferred
-# from text). Drives the type accent in the UI. `status` marks a mid-run
-# checkpoint in a live experiment thread (distinct from `finding`, which is a
-# landed result).
+# Kinds are self-declared, never inferred. `status` is a live checkpoint;
+# `finding` is a landed result.
 POST_KINDS = frozenset(
     {"finding", "hunch", "bottleneck", "kill", "direction", "status"}
 )
 
-# Human -> agent feedback: exactly these three, single-researcher product so
-# counts would be meaningless — the researcher either has or hasn't set one.
+# Reactions are binary because a project has one researcher.
 REACTION_KINDS = frozenset({"fire", "eyes", "question"})
-
-# Backward-compatible import surface for HTTP code/tests.
-MAX_IMAGE_BYTES = MAX_FEED_IMAGE_BYTES
-MAX_EMBED_BYTES = MAX_FEED_EMBED_BYTES
 
 RESEARCHER_HANDLE = "Researcher"
 
 _KNOWN_REF_PREFIXES = ("exp_", "claim_", "res_", "rver_", "syn_", "rev_", "lit_", "paper_")
 
-# A minted media-upload token lives ~15 min, matching artifact.submit — long
-# enough to run the returned curl, short enough that a leaked token is stale fast.
+# Backup cadence policy. The agent skill remains the primary editorial policy;
+# these values only decide whether page one carries a soft reminder.
+NUDGE_AFTER_EVENTS = 8
+NUDGE_AFTER_HOURS = 6.0
+
+# Matches artifact.submit: enough time to run curl, short-lived if leaked.
 FEED_UPLOAD_TOKEN_TTL_SECONDS = 15 * 60
-# The base the mint one-liner falls back to when the caller-reachable base is
-# unknown (rendered only for direct in-process calls; the HTTP gateway injects
-# the real base_url, exactly as it does for artifact.submit).
+# Direct in-process calls lack the caller-reachable base injected by HTTP.
 _LOCAL_API_BASE = "http://127.0.0.1:8787"
 
+
+# -- Public application boundary and post values ---------------------------
+
+
+@runtime_checkable
+class FeedAdvisory(Protocol):
+    """The narrow post-commit, best-effort capability Application consumes."""
+
+    def transition_advisory(
+        self, *, project_id: str, experiment_id: str, event: str
+    ) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PostIntent:
+    """One post request; resolving it fills the project and author role."""
+
+    handle: str
+    text: str
+    project_id: str | None
+    author_role: str = ""
+    url: str = ""
+    ref: str = ""
+    kind: str = ""
+    in_reply_to: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MediaInput:
+    kind: str
+    path: str
+    data: bytes
+
+
+# -- Feed operations --------------------------------------------------------
 
 def _shell_quote(value: str) -> str:
     """POSIX single-quote — the agent runs the returned command verbatim."""
@@ -91,68 +114,8 @@ def _shell_quote(value: str) -> str:
 
 
 def feed_upload_command(*, base_url: str, path: str, token: str) -> str:
-    """The ready-to-run one-liner the agent executes to push the media bytes."""
     base = (base_url or _LOCAL_API_BASE).rstrip("/")
     return f"curl -sf -T {_shell_quote(path)} '{base}/api/feed/u/{token}'"
-
-# The feed owns its schema so it stays a liftable module rather than living in
-# the shared store SCHEMA constant. The DDL is dialect-neutral (only TEXT/INTEGER,
-# no AUTOINCREMENT/PRAGMA), so it runs unchanged on both SQLite (local/daemon) and
-# the Postgres control plane. Created idempotently when FeedService is built.
-FEED_SCHEMA: tuple[str, ...] = (
-    # Posts are append-only and immutable (no edit/delete — a correction is a new
-    # post). A post is editorial, not a state mutation, so it lives here rather
-    # than in `events`; its optional `ref` to a domain entity may be empty
-    # (un-anchored intuition). Image bytes and any re-hosted link thumbnail live
-    # in the blob store keyed by sha256; the row carries only the reference.
-    """
-    CREATE TABLE IF NOT EXISTS posts (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      author_handle TEXT NOT NULL DEFAULT '',
-      author_role TEXT NOT NULL DEFAULT 'main',
-      text TEXT NOT NULL DEFAULT '',
-      image_sha256 TEXT NOT NULL DEFAULT '',
-      image_content_type TEXT NOT NULL DEFAULT '',
-      link_url TEXT NOT NULL DEFAULT '',
-      link_preview_json TEXT NOT NULL DEFAULT '{}',
-      ref TEXT NOT NULL DEFAULT '',
-      kind TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL,
-      created_seq INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY(project_id) REFERENCES projects(id)
-    )
-    """,
-    # An agent registers a self-chosen sci-fi handle when it logs on, so parallel
-    # agents post under distinct voices. The handle is unique per project. `role`
-    # is captured so only main agents are ever nudged (reviewers/lens agents may
-    # post, never prompted).
-    """
-    CREATE TABLE IF NOT EXISTS feed_authors (
-      project_id TEXT NOT NULL,
-      handle TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'main',
-      session_id TEXT NOT NULL DEFAULT '',
-      registered_at TEXT NOT NULL,
-      last_posted_at TEXT,
-      PRIMARY KEY (project_id, handle),
-      FOREIGN KEY(project_id) REFERENCES projects(id)
-    )
-    """,
-    # Human -> agent feedback. Single-researcher product, so there is no actor
-    # column: a reaction kind is either set for the post or it isn't, hence the
-    # kind is part of the primary key rather than a countable row.
-    """
-    CREATE TABLE IF NOT EXISTS post_reactions (
-      project_id TEXT NOT NULL,
-      post_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (project_id, post_id, kind),
-      FOREIGN KEY(project_id) REFERENCES projects(id)
-    )
-    """,
-)
 
 
 def _validate_handle(handle: str) -> str:
@@ -173,39 +136,12 @@ class FeedService:
         *,
         store: BaseStateStore,
         blobs: EvidenceBlobStore,
-        link_unfurl: LinkUnfurlPort,
+        web_preview: WebPreview,
     ) -> None:
         self.store = store
         self.blobs = blobs
-        self.link_unfurl = link_unfurl
-        self._ensure_schema()
-
-    def _ensure_schema(self) -> None:
-        """Create the feed's own tables (idempotent)."""
-        with self.store.transaction() as conn:
-            for statement in FEED_SCHEMA:
-                conn.execute(statement)
-        # Columns added after first ship. Each runs in its own transaction (a
-        # failed ALTER aborts the whole transaction on Postgres) and failure
-        # means the column already exists — both dialects lack a portable
-        # IF NOT EXISTS for columns.
-        for statement in (
-            "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE posts ADD COLUMN in_reply_to TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE posts ADD COLUMN embed_sha256 TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE posts ADD COLUMN embed_content_type TEXT NOT NULL DEFAULT ''",
-        ):
-            with suppress(Exception):
-                with self.store.transaction() as conn:
-                    conn.execute(statement)
-
-    def transition_advisory(
-        self, *, project_id: str, experiment_id: str, event: str
-    ) -> str | None:
-        """Return the optional Feed nudge associated with a committed transition."""
-        return self.feed_note_for(
-            project_id=project_id, entity_id=experiment_id, event=event
-        )
+        self.web_preview = web_preview
+        install_feed_schema(store)
 
     # -- identity -----------------------------------------------------------
 
@@ -301,60 +237,71 @@ class FeedService:
         (the artifact.submit discipline)."""
         if image_path and html_path:
             raise ValidationError("a post may carry an image or an embed, not both")
-        media_kind = "image" if image_path else ("embed" if html_path else "")
-        if not media_kind:
-            return self._post(
+        intent = self._resolve_intent(
+            PostIntent(
                 handle=handle,
                 text=text,
-                image_path=None,
-                image_bytes=None,
-                html_path=None,
-                html_bytes=None,
-                url=url,
-                ref=ref,
-                kind=kind,
-                in_reply_to=in_reply_to,
                 project_id=project_id,
+                url=str(url or ""),
+                ref=str(ref or ""),
+                kind=str(kind or ""),
+                in_reply_to=str(in_reply_to or ""),
             )
-        return self._mint_upload_token(
+        )
+        media_kind = "image" if image_path else ("embed" if html_path else "")
+        if media_kind:
+            return self._begin_upload(
+                intent=intent,
+                media_kind=media_kind,
+                media_path=str(image_path or html_path or ""),
+                base_url=base_url,
+            )
+        return self._create_post(intent=intent)
+
+    def _resolve_intent(self, intent: PostIntent) -> PostIntent:
+        handle, text, ref, kind = self._validate_post_fields(
+            handle=intent.handle,
+            text=intent.text,
+            ref=intent.ref,
+            kind=intent.kind,
+        )
+        with self.store.transaction() as conn:
+            resolved_project = self.store.require_project_id(
+                conn=conn, project_id=intent.project_id
+            )
+            author = conn.execute(
+                "SELECT role FROM feed_authors WHERE project_id = ? AND handle = ?",
+                (resolved_project, handle),
+            ).fetchone()
+            if author is None:
+                raise ValidationError(
+                    f"handle '{handle}' is not registered; call feed.register first"
+                )
+            reply_to = self._validate_in_reply_to(
+                conn=conn,
+                project_id=resolved_project,
+                in_reply_to=intent.in_reply_to,
+            )
+        return replace(
+            intent,
             handle=handle,
+            author_role=str(author["role"] or "main"),
             text=text,
-            media_kind=media_kind,
-            media_path=str(image_path or html_path or ""),
-            url=url,
             ref=ref,
             kind=kind,
-            in_reply_to=in_reply_to,
-            project_id=project_id,
-            base_url=base_url,
+            in_reply_to=reply_to,
+            project_id=resolved_project,
         )
 
-    def _mint_upload_token(
+    def _begin_upload(
         self,
         *,
-        handle: str,
-        text: str,
+        intent: PostIntent,
         media_kind: str,
         media_path: str,
-        url: str | None,
-        ref: str | None,
-        kind: str | None,
-        in_reply_to: str | None,
-        project_id: str | None,
         base_url: str,
     ) -> dict[str, Any]:
-        """Validate the post metadata, pin a pending token + post_id, return the
-        curl line. The bytes are pushed later by the PUT, which finalizes the
-        post against this token (single-use)."""
         self._sweep_expired_tokens()
-        intent = self.validate_post_intent(
-            handle=handle,
-            text=text,
-            ref=ref,
-            kind=kind,
-            in_reply_to=in_reply_to,
-            project_id=project_id,
-        )
         post_id = new_id(prefix="post")
         token = secrets.token_urlsafe(24)
         with self.store.transaction() as conn:
@@ -368,16 +315,16 @@ class FeedService:
                 """,
                 (
                     token,
-                    intent["project_id"],
+                    intent.project_id,
                     post_id,
-                    intent["handle"],
-                    intent["text"],
+                    intent.handle,
+                    intent.text,
                     media_kind,
                     media_path,
-                    str(url or ""),
-                    intent["ref"] or "",
-                    intent["kind"] or "",
-                    intent["in_reply_to"] or "",
+                    intent.url,
+                    intent.ref,
+                    intent.kind,
+                    intent.in_reply_to,
                     iso_after(seconds=FEED_UPLOAD_TOKEN_TTL_SECONDS),
                     now_iso(),
                 ),
@@ -387,39 +334,47 @@ class FeedService:
             "run": feed_upload_command(base_url=base_url, path=media_path, token=token),
         }
 
-    def pending_upload_cap(self, *, token: str) -> int:
-        """Byte cap for a pending feed upload token; 404s on an unknown token so
-        the transport refuses to buffer a body for anyone without one."""
-        self._sweep_expired_tokens()
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                "SELECT media_kind FROM feed_upload_tokens "
-                "WHERE token = ? AND expires_at >= ?",
-                (token, now_iso()),
-            ).fetchone()
-        if row is None:
-            raise NotFoundError(
-                "unknown, used, or expired feed upload token — call feed.post again"
-            )
+    def get_upload_limit(self, *, token: str) -> int:
+        """Return the pending upload's cap before the transport buffers bytes."""
+        row = self._pending_upload(token=token, columns="media_kind")
         return (
             MAX_FEED_IMAGE_BYTES
             if str(row["media_kind"]) == "image"
             else MAX_FEED_EMBED_BYTES
         )
 
-    def complete_post_upload(self, *, token: str, data: bytes) -> dict[str, Any]:
-        """Finalize a media post from the PUT bytes.
+    def complete_upload(self, *, token: str, data: bytes) -> dict[str, Any]:
+        """Validate uploaded bytes, then atomically consume the token and post."""
+        row = self._pending_upload(token=token)
+        media_kind = str(row["media_kind"] or "")
+        intent = self._resolve_intent(
+            PostIntent(
+                project_id=str(row["project_id"]),
+                handle=str(row["handle"]),
+                text=str(row["text"]),
+                url=str(row["url"] or ""),
+                ref=str(row["ref"] or ""),
+                kind=str(row["kind"] or ""),
+                in_reply_to=str(row["in_reply_to"] or ""),
+            )
+        )
+        media = MediaInput(
+            kind=media_kind,
+            path=str(row["media_path"] or ""),
+            data=data,
+        )
+        return self._create_post(
+            intent=intent,
+            media=media,
+            post_id=str(row["post_id"]),
+            consume_token=token,
+        )
 
-        Token-first: an unknown/used/expired token 404s before any work. The
-        carried intent replays the exact post the mint validated; ``_post``
-        captures the bytes through the identical blob sink a live post uses and,
-        inside its insert transaction, atomically consumes the token — so a
-        replayed PUT 404s and the post is written exactly once. A bad-bytes
-        failure raises before the consume, leaving the token retryable."""
+    def _pending_upload(self, *, token: str, columns: str = "*") -> Any:
         self._sweep_expired_tokens()
         with closing(self.store.connect()) as conn:
             row = conn.execute(
-                "SELECT * FROM feed_upload_tokens "
+                f"SELECT {columns} FROM feed_upload_tokens "
                 "WHERE token = ? AND expires_at >= ?",
                 (token, now_iso()),
             ).fetchone()
@@ -427,24 +382,7 @@ class FeedService:
             raise NotFoundError(
                 "unknown, used, or expired feed upload token — call feed.post again"
             )
-        intent = row_to_dict(row=row) or {}
-        media_kind = str(intent.get("media_kind") or "")
-        media_path = str(intent.get("media_path") or "")
-        return self.post_observed(
-            project_id=str(intent["project_id"]),
-            handle=str(intent["handle"]),
-            text=str(intent["text"]),
-            image_path=media_path if media_kind == "image" else None,
-            image_bytes=data if media_kind == "image" else None,
-            html_path=media_path if media_kind == "embed" else None,
-            html_bytes=data if media_kind == "embed" else None,
-            url=str(intent.get("url") or "") or None,
-            ref=str(intent.get("ref") or "") or None,
-            kind=str(intent.get("kind") or "") or None,
-            in_reply_to=str(intent.get("in_reply_to") or "") or None,
-            post_id=str(intent["post_id"]),
-            consume_token=token,
-        )
+        return row
 
     def _sweep_expired_tokens(self) -> None:
         """Own transaction so the sweep survives a failing access path."""
@@ -453,159 +391,40 @@ class FeedService:
                 "DELETE FROM feed_upload_tokens WHERE expires_at < ?", (now_iso(),)
             )
 
-    def post_observed(
+    def _create_post(
         self,
         *,
-        handle: str,
-        text: str,
-        image_path: str | None = None,
-        image_bytes: bytes | None = None,
-        html_path: str | None = None,
-        html_bytes: bytes | None = None,
-        url: str | None = None,
-        ref: str | None = None,
-        kind: str | None = None,
-        in_reply_to: str | None = None,
-        project_id: str | None = None,
+        intent: PostIntent,
+        media: MediaInput | None = None,
         post_id: str | None = None,
         consume_token: str | None = None,
     ) -> dict[str, Any]:
-        """Write a post from already-read local image/embed bytes.
-
-        ``post_id`` pins a pre-allocated id (a token-mint reserved it); ``consume_
-        token`` is deleted inside the insert transaction so a token PUT lands the
-        post exactly once."""
-        return self._post(
-            handle=handle,
-            text=text,
-            image_path=image_path,
-            image_bytes=image_bytes,
-            html_path=html_path,
-            html_bytes=html_bytes,
-            url=url,
-            ref=ref,
-            kind=kind,
-            in_reply_to=in_reply_to,
-            project_id=project_id,
-            post_id=post_id,
-            consume_token=consume_token,
-        )
-
-    def validate_post_intent(
-        self,
-        *,
-        handle: str,
-        text: str,
-        ref: str | None = None,
-        kind: str | None = None,
-        in_reply_to: str | None = None,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Validate feed post metadata without reading/storing image bytes."""
-        handle, text, ref, kind = self._validate_post_fields(
-            handle=handle, text=text, ref=ref, kind=kind
-        )
-        with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            author = conn.execute(
-                "SELECT role FROM feed_authors WHERE project_id = ? AND handle = ?",
-                (project_id, handle),
-            ).fetchone()
-            if author is None:
-                raise ValidationError(
-                    f"handle '{handle}' is not registered; call feed.register first"
+        image_sha256, image_content_type = "", ""
+        embed_sha256, embed_content_type = "", ""
+        if media is not None:
+            if media.kind == "image":
+                image_sha256, image_content_type = self._capture_image_bytes(
+                    project_id=intent.project_id,
+                    image_path=media.path or "feed-image",
+                    data=media.data,
                 )
-            in_reply_to = self._validate_in_reply_to(
-                conn=conn, project_id=project_id, in_reply_to=in_reply_to
-            )
-            return {
-                "ok": True,
-                "project_id": project_id,
-                "handle": handle,
-                "text": text,
-                "ref": ref,
-                "kind": kind,
-                "in_reply_to": in_reply_to or None,
-                "author_role": str(author["role"] or "main"),
-            }
-
-    def _post(
-        self,
-        *,
-        handle: str,
-        text: str,
-        image_path: str | None,
-        image_bytes: bytes | None,
-        html_path: str | None = None,
-        html_bytes: bytes | None = None,
-        url: str | None,
-        ref: str | None,
-        kind: str | None,
-        in_reply_to: str | None = None,
-        project_id: str | None,
-        post_id: str | None = None,
-        consume_token: str | None = None,
-    ) -> dict[str, Any]:
-        handle, text, ref, kind = self._validate_post_fields(
-            handle=handle, text=text, ref=ref, kind=kind
-        )
-        if image_bytes is not None and html_bytes is not None:
-            raise ValidationError("a post may carry an image or an embed, not both")
-        # Resolve the project and author first (fail fast), then do the slow
-        # work — image blob writes and link unfurling (network I/O) — with no
-        # transaction open: the single-writer lock must never be held across
-        # network calls (a slow unfurl would stall every other writer).
-        with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            author = conn.execute(
-                "SELECT role FROM feed_authors WHERE project_id = ? AND handle = ?",
-                (project_id, handle),
-            ).fetchone()
-            if author is None:
-                raise ValidationError(
-                    f"handle '{handle}' is not registered; call feed.register first"
+            elif media.kind == "embed":
+                embed_sha256, embed_content_type = self._capture_embed_bytes(
+                    project_id=intent.project_id,
+                    html_path=media.path or "feed-embed",
+                    data=media.data,
                 )
-            author_role = str(author["role"] or "main")
-            in_reply_to = self._validate_in_reply_to(
-                conn=conn, project_id=project_id, in_reply_to=in_reply_to
-            )
-
-        image_sha256 = ""
-        image_content_type = ""
-        if image_bytes is not None:
-            image_sha256, image_content_type = self._capture_image_bytes(
-                project_id=project_id,
-                image_path=image_path or "feed-image",
-                data=image_bytes,
-            )
-        elif image_path:
-            raise ValidationError(
-                "image bytes are required when image_path is provided"
-            )
-
-        embed_sha256 = ""
-        embed_content_type = ""
-        if html_bytes is not None:
-            embed_sha256, embed_content_type = self._capture_embed_bytes(
-                project_id=project_id,
-                html_path=html_path or "feed-embed",
-                data=html_bytes,
-            )
-        elif html_path:
-            raise ValidationError("embed bytes are required when html_path is provided")
-
+            else:
+                raise ValidationError(f"unknown feed media kind: {media.kind}")
         link_url = ""
         link_preview: dict[str, Any] = {}
-        if url:
+        if intent.url:
             link_url, link_preview = self._build_link_preview(
-                project_id=project_id, url=url
+                project_id=intent.project_id, url=intent.url
             )
-
         with self.store.transaction() as conn:
-            # Single-use claim inside the same transaction as the insert: a
-            # concurrent or replayed PUT that already consumed the token finds no
-            # row and 404s, so the post is written exactly once (the pre-minted
-            # post_id it carries is never inserted twice).
+            # Claim the token in the post/event transaction so concurrent or
+            # replayed PUTs cannot insert the pre-minted post twice.
             if consume_token is not None:
                 claimed = conn.execute(
                     "SELECT 1 FROM feed_upload_tokens "
@@ -635,17 +454,17 @@ class FeedService:
                 """,
                 (
                     post_id,
-                    project_id,
-                    handle,
-                    author_role,
-                    text,
+                    intent.project_id,
+                    intent.handle,
+                    intent.author_role,
+                    intent.text,
                     image_sha256,
                     image_content_type,
                     link_url,
                     json.dumps(link_preview, sort_keys=True),
-                    ref,
-                    kind,
-                    in_reply_to,
+                    intent.ref,
+                    intent.kind,
+                    intent.in_reply_to,
                     embed_sha256,
                     embed_content_type,
                     created_at,
@@ -654,26 +473,30 @@ class FeedService:
             )
             conn.execute(
                 "UPDATE feed_authors SET last_posted_at = ? WHERE project_id = ? AND handle = ?",
-                (created_at, project_id, handle),
+                (created_at, intent.project_id, intent.handle),
             )
             self.store.record_event(
                 conn=conn,
-                project_id=project_id,
+                project_id=intent.project_id,
                 event_type="feed.post_created",
                 target_type="post",
                 target_id=post_id,
                 payload={
-                    "handle": handle,
+                    "handle": intent.handle,
                     "has_image": bool(image_sha256),
                     "has_embed": bool(embed_sha256),
                     "has_link": bool(link_url),
-                    "ref": ref,
+                    "ref": intent.ref,
                 },
             )
             row = conn.execute(
                 "SELECT * FROM posts WHERE id = ?", (post_id,)
             ).fetchone()
-            return {"post": self._post_view(row_to_dict(row=row) or {}, conn=conn)}
+            return {
+                "post": self._post_view(
+                    row_to_dict(row=row) or {}, reaction_kinds=set()
+                )
+            }
 
     def researcher_reply(
         self, *, post_id: str, text: str, project_id: str | None = None
@@ -697,19 +520,15 @@ class FeedService:
                     """,
                     (project_id, RESEARCHER_HANDLE, now_iso()),
                 )
-        return self._post(
-            handle=RESEARCHER_HANDLE,
-            text=text,
-            image_path=None,
-            image_bytes=None,
-            html_path=None,
-            html_bytes=None,
-            url=None,
-            ref=None,
-            kind=None,
-            in_reply_to=post_id,
-            project_id=project_id,
+        intent = self._resolve_intent(
+            PostIntent(
+                handle=RESEARCHER_HANDLE,
+                text=text,
+                project_id=project_id,
+                in_reply_to=post_id,
+            )
         )
+        return self._create_post(intent=intent)
 
     def _validate_in_reply_to(
         self, *, conn: Any, project_id: str, in_reply_to: str | None
@@ -753,10 +572,10 @@ class FeedService:
     def _capture_image_bytes(
         self, *, project_id: str, image_path: str, data: bytes
     ) -> tuple[str, str]:
-        """Store already-read image bytes, returning (sha, content_type)."""
-        if len(data) > MAX_IMAGE_BYTES:
+        if len(data) > MAX_FEED_IMAGE_BYTES:
             raise ValidationError(
-                f"image is {len(data)} bytes; keep feed images under {MAX_IMAGE_BYTES}"
+                f"image is {len(data)} bytes; keep feed images under "
+                f"{MAX_FEED_IMAGE_BYTES}"
             )
         candidate = Path(image_path or "feed-image")
         content_type = sniff_image_type(candidate, data)
@@ -770,10 +589,10 @@ class FeedService:
     def _capture_embed_bytes(
         self, *, project_id: str, html_path: str, data: bytes
     ) -> tuple[str, str]:
-        """Store already-read HTML embed bytes, returning (sha, content_type)."""
-        if len(data) > MAX_EMBED_BYTES:
+        if len(data) > MAX_FEED_EMBED_BYTES:
             raise ValidationError(
-                f"embed is {len(data)} bytes; keep feed embeds under {MAX_EMBED_BYTES}"
+                f"embed is {len(data)} bytes; keep feed embeds under "
+                f"{MAX_FEED_EMBED_BYTES}"
             )
         content_type = sniff_html_type(data)
         if content_type is None:
@@ -795,8 +614,8 @@ class FeedService:
         if urllib.parse.urlparse(url).scheme.lower() not in ("http", "https"):
             return "", {"url": "", "error": "only http and https links can be embedded"}
         try:
-            card = self.link_unfurl.unfurl(url)
-        except LinkUnfurlError as exc:
+            card = self.web_preview.unfurl(url)
+        except WebPreviewError as exc:
             return url, {"url": url, "error": str(exc)}
         preview: dict[str, Any] = {
             "url": card["url"],
@@ -809,13 +628,10 @@ class FeedService:
         }
         image_url = card.get("image_url") or ""
         if image_url:
-            # A missing/unsafe thumbnail just means a text-only preview card.
-            with suppress(LinkUnfurlError):
-                img_bytes, ctype = self.link_unfurl.fetch_preview_image(image_url)
+            with suppress(WebPreviewError):
+                img_bytes, ctype = self.web_preview.fetch_preview_image(image_url)
                 normalized = (ctype or "").split(";", 1)[0].strip().lower()
-                # Only re-host raster thumbnails. An external SVG og:image would
-                # otherwise be served same-origin (stored XSS); drop it to a
-                # text-only card instead.
+                # Re-hosting external SVG same-origin would permit stored XSS.
                 if normalized in SERVEABLE_IMAGE_TYPES:
                     preview["image_sha256"] = self.blobs.put(
                         namespace=project_id, data=img_bytes
@@ -850,21 +666,28 @@ class FeedService:
             has_more = len(items) > limit
             items = items[:limit]
             next_cursor = items[-1]["created_seq"] if (has_more and items) else None
-            views = [self._post_view(item, conn=conn) for item in items]
+            reactions = self._reaction_kinds_for_posts(
+                conn=conn,
+                project_id=project_id,
+                post_ids=[str(item["id"]) for item in items],
+            )
+            views = [
+                self._post_view(
+                    item,
+                    reaction_kinds=reactions.get(str(item["id"]), set()),
+                )
+                for item in items
+            ]
             result: dict[str, Any] = {
                 "posts": views,
                 "next_cursor": next_cursor,
             }
-            # On the first page (an agent reading the feed), include the soft
-            # posting nudge if one applies. This is how the backup cadence signal
-            # reaches the agent — through the feed's own surface, so the core
-            # research workflow has no dependency on the feed.
+            # Keep cadence signaling on Feed's first page so Research does not
+            # acquire a Feed dependency.
             if before_seq is None:
-                nudge = self.feed_nudge(project_id=project_id, conn=conn)
+                nudge = self._posting_nudge(project_id=project_id, conn=conn)
                 if nudge is not None:
                     result["nudge"] = nudge
-                # Surface what the researcher has reacted to, most recent first,
-                # so an agent reading page 1 sees it without a separate call.
                 attention = [
                     {
                         "post_id": view["id"],
@@ -894,7 +717,6 @@ class FeedService:
         return wrap_embed_html(data)
 
     def get_image(self, *, project_id: str, post_id: str) -> tuple[bytes, str]:
-        """Return (bytes, content_type) for a post's image, for the HTTP route."""
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
@@ -907,7 +729,6 @@ class FeedService:
         return data, str(row["image_content_type"] or "application/octet-stream")
 
     def get_link_image(self, *, project_id: str, post_id: str) -> tuple[bytes, str]:
-        """Return (bytes, content_type) for a post's re-hosted link thumbnail."""
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
@@ -968,9 +789,18 @@ class FeedService:
                 "SELECT * FROM posts WHERE id = ? AND project_id = ?",
                 (post_id, project_id),
             ).fetchone()
-            return {"post": self._post_view(row_to_dict(row=row) or {}, conn=conn)}
+            reaction_kinds = self._reaction_kinds_for_posts(
+                conn=conn, project_id=project_id, post_ids=[post_id]
+            ).get(post_id, set())
+            return {
+                "post": self._post_view(
+                    row_to_dict(row=row) or {}, reaction_kinds=reaction_kinds
+                )
+            }
 
-    def _post_view(self, item: dict[str, Any], *, conn: Any) -> dict[str, Any]:
+    def _post_view(
+        self, item: dict[str, Any], *, reaction_kinds: set[str]
+    ) -> dict[str, Any]:
         preview_raw = item.get("link_preview_json") or "{}"
         try:
             link_preview = json.loads(preview_raw)
@@ -978,8 +808,7 @@ class FeedService:
             link_preview = {}
         clean_preview: dict[str, Any] | None = None
         if link_preview:
-            # Don't leak the blob hash to clients — expose only presence.
-            # kind/authors/year default sanely for rows unfurled before they existed.
+            # Blob hashes stay internal; newer fields default for legacy rows.
             clean_preview = {
                 "url": link_preview.get("url"),
                 "title": link_preview.get("title") or "",
@@ -1003,28 +832,33 @@ class FeedService:
             "has_embed": bool(item.get("embed_sha256")),
             "link_url": item.get("link_url") or None,
             "link_preview": clean_preview,
-            "reactions": self._reactions_for_post(
-                conn=conn,
-                project_id=str(item.get("project_id") or ""),
-                post_id=str(item.get("id") or ""),
-            ),
+            "reactions": {
+                kind: kind in reaction_kinds for kind in sorted(REACTION_KINDS)
+            },
             "created_at": item.get("created_at"),
             "created_seq": item.get("created_seq"),
         }
 
-    def _reactions_for_post(
-        self, *, conn: Any, project_id: str, post_id: str
-    ) -> dict[str, bool]:
+    def _reaction_kinds_for_posts(
+        self, *, conn: Any, project_id: str, post_ids: list[str]
+    ) -> dict[str, set[str]]:
+        """Load all reactions for one page in a single query."""
+        if not post_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in post_ids)
         rows = conn.execute(
-            "SELECT kind FROM post_reactions WHERE project_id = ? AND post_id = ?",
-            (project_id, post_id),
+            "SELECT post_id, kind FROM post_reactions "
+            f"WHERE project_id = ? AND post_id IN ({placeholders})",
+            [project_id, *post_ids],
         ).fetchall()
-        on = {str(row["kind"]) for row in rows}
-        return {kind: kind in on for kind in sorted(REACTION_KINDS)}
+        result: dict[str, set[str]] = {post_id: set() for post_id in post_ids}
+        for row in rows:
+            result.setdefault(str(row["post_id"]), set()).add(str(row["kind"]))
+        return result
 
     # -- posting nudge (backup cadence signal) ------------------------------
 
-    def feed_signal(self, *, project_id: str, conn: Any) -> dict[str, Any]:
+    def _cadence_signal(self, *, project_id: str, conn: Any) -> dict[str, Any]:
         """Raw cadence numbers: events and hours since the last AGENT post.
 
         A researcher reply is not agent activity — it must not reset the
@@ -1037,9 +871,7 @@ class FeedService:
             (project_id,),
         ).fetchone()
         last_post_at = last["created_at"] if last is not None else None
-        # Count real research activity, not the feed's own events — feed.* rows
-        # (post_created, author_registered, UI telemetry) must not nudge the agent
-        # to post just because it already posted.
+        # Feed events must not create their own posting nudges.
         if last_post_at:
             events_since = conn.execute(
                 "SELECT COUNT(*) AS n FROM events "
@@ -1060,19 +892,19 @@ class FeedService:
             "ever_posted": last_post_at is not None,
         }
 
-    def feed_nudge(self, *, project_id: str, conn: Any) -> dict[str, Any] | None:
+    def _posting_nudge(self, *, project_id: str, conn: Any) -> dict[str, Any] | None:
         """A soft 'consider posting' hint, or None when nothing needs saying.
 
         Backup only: fires when a main agent has been silent for an extended
         stretch (both event-count AND elapsed-time thresholds crossed). Never
         blocks — the feed is ungated by design.
         """
-        signal = self.feed_signal(project_id=project_id, conn=conn)
+        signal = self._cadence_signal(project_id=project_id, conn=conn)
         events = signal["events_since_last_post"]
         hours = signal["hours_since_last_post"]
-        if events < feed_policy.NUDGE_AFTER_EVENTS:
+        if events < NUDGE_AFTER_EVENTS:
             return None
-        if hours is not None and hours < feed_policy.NUDGE_AFTER_HOURS:
+        if hours is not None and hours < NUDGE_AFTER_HOURS:
             return None
         if signal["ever_posted"]:
             reason = (
@@ -1093,54 +925,43 @@ class FeedService:
             **signal,
         }
 
-    # -- event-carried advisory (rides tool responses, not feed.list) -------
+    # -- event-carried advisory ---------------------------------------------
 
-    def feed_note_for(
-        self, *, project_id: str, entity_id: str, event: str
+    def transition_advisory(
+        self, *, project_id: str, experiment_id: str, event: str
     ) -> str | None:
-        """A one-line, optional advisory for another tool's response.
+        """Return an optional Feed nudge for a committed experiment transition.
 
-        The nudge above only reaches an agent that already remembers to call
-        feed.list. This is the other half: other services attach this note to
-        their own tool responses at story-worthy moments (an experiment
-        completing, a review verdict landing, an MLflow run finishing), so an
-        agent that never thinks to check the feed still gets reminded it
-        exists — reusing a response it was already going to read.
-
-        Returns None once the feed has said anything at all about
-        ``entity_id`` in this project — either a post's ``ref`` points at it,
-        or its ``text`` mentions it inline — so there is no separate "already
-        nudged" state to track: the dedup is just "has anyone posted about
-        this yet".
-
-        Never raises on missing/blank inputs (returns None); callers still
-        wrap the call, since a feed hiccup must never break the workflow
-        transition whose response this rides on.
+        Application attaches this only after committing its transition and
+        treats failures as advisory. A matching ``ref`` or text mention is the
+        deduplication state; no separate "already nudged" record is written.
+        Missing identifiers return None.
         """
         project_id = (project_id or "").strip()
-        entity_id = (entity_id or "").strip()
-        if not project_id or not entity_id:
+        experiment_id = (experiment_id or "").strip()
+        if not project_id or not experiment_id:
             return None
         with closing(self.store.connect()) as conn:
             mentioned = conn.execute(
                 "SELECT 1 FROM posts WHERE project_id = ? "
                 "AND (ref = ? OR text LIKE ? ESCAPE '\\') LIMIT 1",
-                (project_id, entity_id, f"%{_escape_like(entity_id)}%"),
+                (
+                    project_id,
+                    experiment_id,
+                    f"%{_escape_like(experiment_id)}%",
+                ),
             ).fetchone()
         if mentioned is not None:
             return None
         phrase = _FEED_NOTE_PHRASES.get(
             event, "{entity} just had a workflow update"
-        ).format(entity=entity_id)
+        ).format(entity=experiment_id)
         return (
             f"{phrase} and the feed has never mentioned it — if there's a "
             "takeaway worth sharing, consider a post (see the feed-posting skill)."
         )
 
 
-# Phrasing for feed_note_for, keyed by the caller-supplied ``event`` — kept as
-# plain data so new attach points can add a phrase without touching the
-# lookup logic. Unknown events fall back to a generic phrase (see above).
 _FEED_NOTE_PHRASES: dict[str, str] = {
     "experiment_complete": "{entity} just completed",
     "experiment_failed": "{entity} just failed",

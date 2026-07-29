@@ -104,9 +104,8 @@ The initial layer table is explicit about mixed packages:
 | `artifacts/**` | application |
 | `artifacts/ports/**` | port |
 | `artifacts/figure_view.py` | domain |
-| `feed/**` | application |
-| `feed/feed_policy.py` | domain |
-| `feed/feed_unfurl.py` | adapter |
+| `feed/feed.py` | complete Feed behavior and delivery/advisory contracts |
+| `feed/persistence.py` | Feed-owned schema installation and compatibility upgrades |
 | `sandbox/**` | application |
 | `sandbox/sandbox_backend.py` | port |
 | `sandbox/execution/backends/**`, `sandbox/execution/{multiplexer,vm_ssh}.py`, `sandbox/{managed_mgmt_keys,mgmt_keys,ssh_keys}.py` | adapter |
@@ -117,6 +116,7 @@ The initial layer table is explicit about mixed packages:
 | `application/**` | application |
 | `application/ports/**` | port |
 | `surface/**` | delivery |
+| `surface/web_preview.py` | adapter |
 | `surface/composition/**`, `surface/config.py`, `surface/control/{control_app,record_core}.py` | bootstrap |
 | `surface/control/control_runtime.py` | adapter |
 | `surface/tools/tool_handlers.py` | delivery |
@@ -164,9 +164,10 @@ removed.
 
 Both exact-pair exception ledgers are now empty. Structure assertions require
 `application/**` and every other non-bootstrap component to enter another
-component through its declared `facade.py` or `ports/**` entrypoint. Feed now
-receives a `LinkUnfurlPort`, and Surface vocabulary/configuration seams have
-stable inward-facing homes rather than compatibility exceptions.
+component through its declared package entrypoint, `api.py`, `facade.py`, or
+`ports/**` entrypoint. Feed deliberately uses its package entrypoint over a
+second facade file, receives the Kernel-owned `WebPreview` port, and keeps the
+Surface adapter outside the business module.
 
 ## Ports based on current use
 
@@ -448,7 +449,7 @@ lifecycle, and management facets) and is explicitly deferred. The current
 formal driver port remains the provider boundary, not the component facade.
 
 Application code imports explicit stable entrypoints such as
-`research_core.facade`, `artifacts.facade`, and `feed.facade`, never internal
+`research_core.facade`, `artifacts.facade`, and the `feed` package, never internal
 service files. Package roots may re-export those facades only when doing so does
 not eagerly load optional adapters. The facade may delegate internally today,
 but callers do not receive or type against the concrete internal services.
@@ -786,6 +787,10 @@ The completion pass moved the remaining immediately actionable policy inward:
 Surface no longer carries an application-layer file override. Delivery uses
 typed injected dependencies, and both the layer and public-entrypoint exception
 ledgers are empty.
+Delivery may name an application service exported from a component package root
+when that service is already the complete public capability and no independent
+projection is needed. The structural scan still rejects internal service
+imports, stores, persistence reach-through, and whole-application carriers.
 
 ## Verification gates
 

@@ -16,7 +16,7 @@ from ...application.facade import (
     TransitionExperiment,
 )
 from ...application.ports.storage import ObjectStorage
-from ...feed.facade import FeedDelivery
+from ...feed import FeedService
 from ...research_core.facade import (
     ResearchClaims,
     ResearchLiterature,
@@ -41,7 +41,7 @@ def build_control_tool_handlers(
     reviews: ResearchReviewDelivery,
     review_session: StartReviewSession,
     sandboxes: SandboxEngine,
-    feed: FeedDelivery,
+    feed: FeedService,
     experiment_transition: TransitionExperiment,
     experiment_exhibit: ExperimentExhibits,
     tracking_context: GetTrackingContext,

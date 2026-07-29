@@ -8,8 +8,7 @@ from ...artifacts import Artifacts
 from ...research_core.association_targets import AssociationTargets
 from ...research_core.claims import ClaimService
 from ...research_core.experiments import ExperimentService
-from ...feed.feed import FeedService
-from ...feed.feed_unfurl import AllowlistedPaperUnfurl, NetworkLinkUnfurl
+from ...feed import FeedService
 from ...research_core.graph_refs import GraphRefResolver
 from ...research_core.literature import LiteratureService
 from ..permissions import PermissionService
@@ -18,6 +17,7 @@ from ...research_core.reviews import ReviewService
 from ...research_core.reflections import ReflectionService
 from ...kernel.state import BaseStateStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
+from ..web_preview import AllowlistedPaperPreview, NetworkWebPreview
 
 
 @dataclass(frozen=True)
@@ -62,8 +62,8 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         reflections=reflection_waves,
         artifacts=artifacts,
     )
-    feed = FeedService(store=store, blobs=blobs, link_unfurl=NetworkLinkUnfurl())
-    literature = LiteratureService(store=store, unfurl=AllowlistedPaperUnfurl())
+    feed = FeedService(store=store, blobs=blobs, web_preview=NetworkWebPreview())
+    literature = LiteratureService(store=store, unfurl=AllowlistedPaperPreview())
     return RecordCore(
         permissions=permissions,
         projects=projects,

@@ -18,7 +18,7 @@ business authority.
               delivery --> application <-- adapters
                                   |
                                   v
-                         component facades/ports
+                           component APIs/ports
                                   |
                                   v
                                 kernel
@@ -37,7 +37,7 @@ classification plus file overrides handles mixed packages.
 | Research | `research_core/**` | experiment/review/reflection/project authority |
 | Artifacts | `artifacts/**` | submitted artifacts, upload tokens, pinned evidence |
 | Sandbox | `sandbox/**` | lifecycle and provider-driver capability |
-| Feed | `feed/**` | feed records and advisory policy |
+| Feed | `feed/**` | authors, posts, replies, reactions, history, and advisories |
 | Application | `application/**` | cross-component commands, reactions, and composite reads |
 | Tracking integration | `mlflow/**` | MLflow implementation of tracking ports |
 | Storage | `object_storage/**` | byte/object adapters plus the legacy ledger service |
@@ -58,13 +58,19 @@ The exact component import matrix is:
 | Surface | any component; its independent layer classification still applies |
 
 Outside bootstrap, code enters another component only through its declared
-`facade.py` or `ports/**` entrypoint. Research is deliberately narrower: it may
+package root, `api.py`, `facade.py`, or `ports/**` entrypoint. Research is
+deliberately narrower: it may
 enter Artifacts through `artifacts/ports/**` only, never the Artifacts facade.
 This is the executable form of “one stable public facade”; it prevents a new use
 case or adapter from depending on internal services. The legacy
 public-entrypoint exception ledger is now empty: every cross-component import
-must enter through a facade or port. Workflow reads use `ResearchSnapshots` and
-`SandboxReads`; Sandbox commands use the separately declared `Sandbox` facade.
+must enter through a declared public entrypoint. Workflow reads use
+`ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
+declared `Sandbox` facade.
+An application service deliberately exported from a component package root is
+itself a valid public entrypoint; Surface may type against it directly when no
+independent projection or capability constraint exists. Internal service-module
+imports remain forbidden.
 
 Research reaches immutable artifact evidence only through semantic DTOs on
 `artifacts/ports/EvidenceReader`; it never sees persistence rows, Artifact
@@ -81,7 +87,7 @@ The initial layer mapping is deliberately honest about mixed directories:
 |---|---|
 | foundation | `kernel/**` |
 | port | `kernel/ports/**`, `application/ports/**`, `artifacts/ports/**`, `sandbox/sandbox_backend.py` |
-| domain | `research_core/domain/**`, pure artifact/feed policy files |
+| domain | `research_core/domain/**` and pure component policy files |
 | application | component services and cross-component work under `application/**` |
 | adapter | `mlflow/**`, concrete storage/blob code, sandbox provider drivers, client/runtime adapters |
 | delivery | ordinary `surface/**` HTTP/MCP/auth/serialization code |
@@ -122,8 +128,18 @@ synchronously dispatches the Feed advisory after response assembly. Finalizing
 an explicit foreign run keeps the old advisory response but writes no event and
 never changes the experiment's canonical run identity.
 
-Artifacts, Feed, cleanup, and storage-ledger policy depend on narrow blob/object
-ports owned by Kernel. Application response composition depends on its batch
+Artifacts and Feed depend on the narrow `EvidenceBlobStore` port owned by
+Kernel. Feed behavior lives in the single readable `feed/feed.py`
+implementation; only Feed-owned DDL and compatibility upgrades live in its
+narrow `feed/persistence.py` helper. MCP and HTTP delivery use the public
+package-root `FeedService` directly; their frozen schemas, routes, authorization,
+and response hardening are the real delivery boundaries. The narrow
+`FeedAdvisory` protocol preserves the independent post-commit boundary. Safe
+outbound previews are supplied through the Kernel `WebPreview` port by the
+Surface adapter, which is also shared with Literature's allowlisted paper
+preview. Kernel retains migration version 32 as a no-op historical ledger
+marker, but no longer contains a second copy of Feed's upload-token DDL.
+Application response composition depends on its batch
 `ProducedObjectCatalog` port; the provider-independent SQL catalog under
 `object_storage` implements that port so historical ledger rows remain readable
 when no byte provider is enabled. Local and S3 implementations remain under
@@ -240,8 +256,9 @@ concrete adapters, frameworks, database/network SDKs, environment access, or
 state/config modules or state-store types; accept persistence parameters; open
 connections/transactions; or contain SQL. Non-bootstrap code may not construct
 another component's concrete collaborator. Surface delivery has zero-baseline,
-fail-closed scans for raw implementations, persistence reach-through, and
-whole-app dependency carriers.
+fail-closed scans for internal implementations, persistence reach-through, and
+whole-app dependency carriers. Public package-root services are allowed; their
+internals and stores are not.
 
 Untyped collaborator declarations are separate from JSON payload debt. A
 shrinking dependency ledger records the remaining callable seams and injected

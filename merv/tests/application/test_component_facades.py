@@ -8,7 +8,7 @@ from merv.brain.application.experiments.transition import (
     TransitionResponse,
 )
 from merv.brain.application.reflections import ReflectionCommands
-from merv.brain.feed.facade import Feed
+from merv.brain.feed import FeedAdvisory
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import (
     CommittedExperimentTransition,
@@ -208,7 +208,7 @@ class ComponentFacadeTest(unittest.TestCase):
         reviews = RecordingResearchReviewsFake()
 
         self.assertIsInstance(research, ResearchCore)
-        self.assertIsInstance(feed, Feed)
+        self.assertIsInstance(feed, FeedAdvisory)
         self.assertIsInstance(reviews, ResearchReviews)
         self.assertEqual(
             research.experiment_state(experiment_id="exp_fake"),

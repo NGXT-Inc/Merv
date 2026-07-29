@@ -53,6 +53,10 @@ PACKAGE_COMPONENTS = {
     "surface": SURFACE,
 }
 
+PUBLIC_COMPONENT_ROOTS = frozenset(
+    package for package in PACKAGE_COMPONENTS if "/" not in package
+)
+
 # File-level component overrides.
 FILE_COMPONENTS = {
     # kernel: package root docstring/version shell.
@@ -128,9 +132,7 @@ PACKAGE_LAYERS = {
 FILE_LAYERS = {
     "__init__.py": FOUNDATION,
     "kernel/state/dialects.py": ADAPTER,
-    "feed/feed_policy.py": DOMAIN,
-    "feed/feed_unfurl.py": ADAPTER,
-    "feed/ports.py": PORT,
+    "surface/web_preview.py": ADAPTER,
     "sandbox/sandbox_backend.py": PORT,
     "sandbox/execution/multiplexer.py": ADAPTER,
     "sandbox/execution/vm_ssh.py": ADAPTER,
@@ -443,6 +445,8 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
             violations.add((importer, target))
             continue
         if relative_target in {
+            "__init__.py",
+            "api.py",
             "core.py",
             "facade.py",
         } or relative_target.startswith("ports/"):
@@ -578,26 +582,37 @@ def _application_purity_violations() -> list[str]:
 def _delivery_boundary_violations(
     source: str, *, relative: str = "<synthetic>"
 ) -> list[str]:
-    """Reject raw implementations and persistence reach-through in Delivery.
+    """Reject internal implementations and persistence reach-through in Delivery.
 
-    This scan is deliberately structural rather than tied to today's routes.
-    Attribute access is rejected at its persistence member, so it still catches
-    values reached through local aliases or arbitrarily deep attribute chains.
+    A service deliberately exported from a component package root is public and
+    may be named directly. Internal ``*Service`` types, stores, whole-app
+    carriers, and persistence access remain forbidden.
     """
     tree = ast.parse(source, filename=relative)
     violations: set[str] = set()
     raw_aliases: set[str] = set()
+    public_service_aliases: set[str] = set()
     carrier_aliases = set(DELIVERY_WHOLE_DEPENDENCY_CARRIERS)
 
     def is_raw_type(name: str) -> bool:
         return name == "ControlApp" or name.endswith(("Service", "Store"))
+
+    def is_public_service_import(node: ast.ImportFrom, name: str) -> bool:
+        if not name.endswith("Service") or not node.module:
+            return False
+        module = node.module
+        if module.startswith("merv.brain."):
+            module = module.removeprefix("merv.brain.")
+        return module in PUBLIC_COMPONENT_ROOTS
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
         for alias in node.names:
             bound_name = alias.asname or alias.name
-            if is_raw_type(alias.name):
+            if is_public_service_import(node, alias.name):
+                public_service_aliases.add(bound_name)
+            elif is_raw_type(alias.name):
                 raw_aliases.add(bound_name)
                 violations.add(
                     f"{relative}:{node.lineno}: imports raw implementation type "
@@ -608,7 +623,11 @@ def _delivery_boundary_violations(
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and (
-            is_raw_type(node.id) or node.id in raw_aliases
+            node.id in raw_aliases
+            or (
+                is_raw_type(node.id)
+                and node.id not in public_service_aliases
+            )
         ):
             violations.add(
                 f"{relative}:{node.lineno}: names raw implementation type {node.id}"
@@ -946,8 +965,9 @@ class ModuleBoundaryTest(unittest.TestCase):
             )
         self.assertFalse(
             violations,
-            "Delivery may use only public facades/use cases and may not reach "
-            "through to persistence or whole-app dependency carriers: "
+            "Delivery may use public package-root services/facades/use cases but "
+            "may not name internal implementations or reach through to persistence "
+            "or whole-app dependency carriers: "
             + ", ".join(violations),
         )
 
@@ -1049,6 +1069,26 @@ def build_router(ctx: ApiRouteContext, *, records: ArtifactRecords):
     return route
 """
         self.assertEqual(_delivery_boundary_violations(source), [])
+
+    def test_delivery_boundary_scan_allows_public_package_root_services(self) -> None:
+        source = """
+from merv.brain.feed import FeedService
+def register_routes(*, feed: FeedService):
+    return feed.list_posts(project_id="proj_1")
+"""
+        self.assertEqual(_delivery_boundary_violations(source), [])
+
+    def test_delivery_boundary_scan_rejects_internal_service_imports(self) -> None:
+        source = """
+from merv.brain.feed.feed import FeedService
+def register_routes(*, feed: FeedService):
+    return feed.list_posts(project_id="proj_1")
+"""
+        violations = _delivery_boundary_violations(source)
+        self.assertTrue(
+            any("raw implementation type FeedService" in item for item in violations),
+            violations,
+        )
 
     def test_only_bootstrap_constructs_cross_component_collaborators(self) -> None:
         violations = _cross_component_constructions_outside_bootstrap()
