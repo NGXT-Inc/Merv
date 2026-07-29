@@ -40,7 +40,7 @@ classification plus file overrides handles mixed packages.
 | Feed | `feed/**` | authors, posts, replies, reactions, history, and advisories |
 | Application | `application/**` | cross-component commands, reactions, and composite reads |
 | Tracking integration | `mlflow/**` | MLflow implementation of tracking ports |
-| Storage | `object_storage/**` | byte/object adapters plus the legacy ledger service |
+| Storage | `object_storage/**` | heavy-object lifecycle plus byte providers |
 | Surface | `surface/**` | HTTP/MCP delivery and the co-located composition root |
 
 The exact component import matrix is:
@@ -87,18 +87,18 @@ The initial layer mapping is deliberately honest about mixed directories:
 | Layer | Representative paths |
 |---|---|
 | foundation | `kernel/**` |
-| port | `kernel/ports/**`, `application/ports/**`, `artifacts/ports/**` |
+| port | `kernel/ports/**`, `application/ports/**`, `object_storage/provider.py` |
 | domain | `research_core/domain/**`, `sandbox/models.py`, and pure component policy files |
-| application | component services and cross-component work under `application/**` |
+| application | component roots such as `object_storage/storage.py` and cross-component work under `application/**` |
 | adapter | `mlflow/**`, concrete storage/blob code, `sandbox/adapters/**`, `sandbox/remote/**`, and key custody |
 | delivery | ordinary `surface/**` HTTP/MCP/auth/serialization code |
 | bootstrap | Surface composition/config/control wiring, the HTTP process launcher, sandbox driver registration |
 
-`object_storage/service.py` is a notable override: it owns versioning, TTL,
-deduplication, lifecycle events, concurrency, and reclamation policy, so it is
-Storage-component **application** code, not a provider adapter. Its physical
-move is deferred. Conversely, `object_storage/{blobs,s3_blobs,s3_object_store}`
-are adapters implementing kernel-owned storage ports.
+`object_storage/storage.py` owns versioning, TTL, deduplication, lifecycle
+events, concurrency, and reclamation policy, so it is Storage-component
+**application** code. `object_storage/provider.py` is the component-owned
+heavy-byte port. `object_storage/{blobs,s3_blobs,s3_object_store}` are concrete
+adapters; only the first two implement Kernel's narrow submitted-byte port.
 
 Imports must point inward:
 
@@ -141,11 +141,12 @@ Surface adapter, which is also shared with Literature's allowlisted paper
 preview. Kernel retains migration version 32 as a no-op historical ledger
 marker, but no longer contains a second copy of Feed's upload-token DDL.
 Application response composition depends on its batch
-`ProducedObjectCatalog` port; the provider-independent SQL catalog under
-`object_storage` implements that port so historical ledger rows remain readable
-when no byte provider is enabled. Local and S3 implementations remain under
-`object_storage` as replaceable adapters. Old import paths may re-export the
-same symbols for compatibility, but do not own their definitions.
+`ProducedObjectCatalog` port; the provider-optional `ObjectStorage` root
+implements that port so historical ledger rows remain readable when no heavy
+byte provider is enabled. Artifacts and Feed consume only `put/get` from their
+binary blob port; cleanup consumes its separate expiry capability. Local and S3
+binary implementations remain replaceable adapters, while heavy S3 presigned
+transfer stays behind the component-owned `ObjectProvider`.
 
 Operator-triggered cleanup is a cross-component use case in
 `application/maintenance.py`; Surface only exposes its injected entry point.
@@ -155,10 +156,10 @@ Sandbox-owned generation counters and injects the result into admin delivery.
 The declarative `TOOL_MANIFEST` owns tool schemas, visibility, scope, execution,
 features, and handler identities. Surface derives its control handlers from
 those identities; every tool is a control tool served by the brain, so
-hidden/handler routing is not separately maintained. The transition
-adapter still sets the agent credential audience. Merged project,
-experiment-list and storage decisions live in
-`application/tool_commands.py`.
+hidden/handler routing is not separately maintained. The transition adapter
+still sets the agent credential audience. Cross-module project and
+experiment-list decisions live in `application/tool_commands.py`; storage-only
+tool operations call the owning `ObjectStorage` root directly.
 
 These are dependency changes, not service extraction: everything still runs in
 one brain process and shares the existing transaction/event ledger.

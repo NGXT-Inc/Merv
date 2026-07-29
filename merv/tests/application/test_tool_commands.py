@@ -12,12 +12,10 @@ class ControlToolOperationsTest(unittest.TestCase):
         self.projects = Mock()
         self.experiments = Mock()
         self.project_context = Mock()
-        self.storage = Mock()
         self.operations = ControlToolOperations(
             projects=self.projects,
             experiments=self.experiments,
             project_context=self.project_context,
-            storage=self.storage,
         )
 
     def test_experiment_list_preserves_the_slim_projection_and_order(self) -> None:
@@ -178,68 +176,6 @@ class ControlToolOperationsTest(unittest.TestCase):
 
         self.assertEqual(result["project"]["id"], "proj_bound")
         self.project_context.build.assert_called_once_with(project_id="proj_bound")
-
-    def test_storage_find_preserves_resolve_and_list_modes(self) -> None:
-        self.storage.resolve.return_value = {"object": {"id": "so_1"}}
-        resolved = self.operations.storage_find(
-            project_id="proj_1",
-            object_id="so_1",
-            version=3,
-            include_download=False,
-        )
-        self.assertEqual(resolved, {"object": {"id": "so_1"}})
-        self.storage.resolve.assert_called_once_with(
-            project_id="proj_1",
-            object_id="so_1",
-            name=None,
-            version=3,
-            include_download=False,
-        )
-        self.storage.list_objects.return_value = {"objects": []}
-
-        listed = self.operations.storage_find(
-            project_id="proj_1",
-            kind="model",
-            status="ready",
-            include_expired=True,
-            limit=5,
-            offset=1,
-            compact=True,
-        )
-
-        self.assertEqual(listed, {"objects": []})
-        self.storage.list_objects.assert_called_once_with(
-            project_id="proj_1",
-            kind="model",
-            status="ready",
-            include_expired=True,
-            limit=5,
-            offset=1,
-            compact=True,
-        )
-
-    def test_storage_object_routes_each_action_and_preserves_unknown_error(self) -> None:
-        for action in ("pin", "unpin", "renew", "delete"):
-            with self.subTest(action=action):
-                operation = getattr(self.storage, action)
-                operation.return_value = {"action": action}
-                self.assertEqual(
-                    self.operations.storage_object(
-                        project_id="proj_1", object_id="so_1", action=action
-                    ),
-                    {"action": action},
-                )
-                operation.assert_called_once_with(
-                    project_id="proj_1", object_id="so_1"
-                )
-
-        with self.assertRaisesRegex(
-            ValidationError, "unknown storage object action: purge"
-        ):
-            self.operations.storage_object(
-                project_id="proj_1", object_id="so_1", action="purge"
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

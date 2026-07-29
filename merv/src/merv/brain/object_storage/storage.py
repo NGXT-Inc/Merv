@@ -1,4 +1,5 @@
-"""Project ledger for durable heavy-file storage."""
+# If you update this file, you must consult object_storage.md to see whether object_storage.md needs to be updated. object_storage.md must not exceed 100 lines.
+"""Project-scoped heavy-object lifecycle and metadata."""
 
 from __future__ import annotations
 
@@ -6,12 +7,12 @@ import base64
 import secrets
 from contextlib import closing
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from merv.shared.storage_guidance import storage_guidance
 
 from ..kernel.ports.blob_store import validate_blob_keys
-from ..kernel.ports.object_store import ObjectStore
+from ..application.ports.storage import ProducedObject
 from ..kernel.state.store import (
     BaseStateStore,
     Connection,
@@ -27,32 +28,28 @@ from ..kernel.utils import (
     new_id,
     now_iso,
 )
+from .provider import CompletedPart, ObjectProvider
 
 
 STORAGE_KINDS = {"dataset", "model", "other"}
 STORAGE_STATUSES = {"uploading", "completing", "available", "expired", "deleted"}
 STORAGE_DEFAULT_TTL_SECONDS = 60 * 24 * 3600
 PRESIGN_TTL_SECONDS = 3600
-# S3's hard per-object single-PUT limit. storage.submit's token-curl command is
-# one presigned PUT, so anything larger is rejected (multipart orchestration is a
-# documented v1 non-goal).
+# S3's hard single-PUT limit; the submit command does not orchestrate multipart.
 SINGLE_PUT_MAX_BYTES = 5 * 1024 * 1024 * 1024
-# Absolute server-side upload ceiling; composition overrides from the env.
 DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024 * 1024
-# One-time completion token lifetime — outlives the 1-hour presigned PUT window
-# plus the trailing completion POST.
+# Leave time to finalize after the presigned PUT expires.
 COMPLETION_TOKEN_TTL_SECONDS = PRESIGN_TTL_SECONDS + 3600
 _LOCAL_API_BASE = "http://127.0.0.1:8787"
 
 
 def _shell_quote(value: str) -> str:
-    """POSIX single-quote — the agent runs the command verbatim in a shell."""
+    """Quote one POSIX shell argument."""
     return "'" + value.replace("'", "'\\''") + "'"
 
 
 def _checksum_sha256_b64(sha256: str) -> str:
-    """base64(SHA-256 raw bytes): the value S3 binds into the presigned PUT and
-    the agent must echo in the x-amz-checksum-sha256 header."""
+    """Encode the checksum format required by S3."""
     return base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
 
 
@@ -60,16 +57,9 @@ def storage_submit_command(
     *, base_url: str, path: str, presigned_url: str, checksum_b64: str,
     content_type: str, token: str
 ) -> str:
-    """Compound one-liner: push the bytes straight to S3, then finalize the
-    ledger object through the auth-exempt completion token. Bytes go direct to
-    S3 — never through the brain. Both the checksum AND the Content-Type are
-    bound into the presigned PUT's SigV4 signature, so the curl MUST send both
-    headers verbatim or S3 rejects the upload with SignatureDoesNotMatch."""
+    """Build the direct upload and completion command."""
     base = (base_url or _LOCAL_API_BASE).rstrip("/")
-    # content_type is caller-supplied free text, so the header MUST be
-    # _shell_quote'd as a whole (not wrapped in literal quotes) or a value like
-    # `x' ; rm -rf ~ ; echo '` injects commands into the one-liner the agent
-    # runs verbatim. The checksum is base64 (shell-safe) but quoted for symmetry.
+    # Both signed headers must be shell-quoted; content_type is caller supplied.
     checksum_header = _shell_quote(f"x-amz-checksum-sha256:{checksum_b64}")
     content_type_header = _shell_quote(f"Content-Type: {content_type}")
     put = (
@@ -81,26 +71,39 @@ def storage_submit_command(
 
 
 def storage_fetch_command(*, path: str, presigned_url: str, sha256: str) -> str:
-    """Download straight from S3, then verify the sha256 the ledger already
-    holds. Zero new server capability."""
+    """Build a direct download with checksum verification."""
     fetch = f"curl -sf -o {_shell_quote(path)} {_shell_quote(presigned_url)}"
     verify = f"printf '%s  %s\\n' {sha256} {_shell_quote(path)} | shasum -a 256 -c"
     return f"{fetch} && {verify}"
 
 
-class StorageLedgerService:
-    """Ledger + lifecycle owner for project-scoped heavy objects."""
+_PRODUCED_OBJECT_COLUMNS = tuple(ProducedObject.__annotations__)
+_EXPERIMENT_ID_BATCH_SIZE = 400
+
+
+class ObjectStorage:
+    """Heavy-object metadata, lifecycle, and provider transfer root."""
 
     def __init__(
         self,
         *,
         store: BaseStateStore,
-        objects: ObjectStore,
+        provider: ObjectProvider | None,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ) -> None:
         self.store = store
-        self.objects = objects
+        self._provider = provider
         self.max_upload_bytes = int(max_upload_bytes)
+
+    @property
+    def enabled(self) -> bool:
+        return self._provider is not None
+
+    @property
+    def _provider_required(self) -> ObjectProvider:
+        if self._provider is None:
+            raise NotFoundError("storage is not enabled on this backend")
+        return self._provider
 
     def put_object(
         self,
@@ -143,7 +146,7 @@ class StorageLedgerService:
                 }
 
             version = self._next_version(conn=conn, project_id=project_id, name=name)
-            stat = self.objects.stat(namespace=namespace, sha256=sha256)
+            stat = self._provider_required.stat(namespace=namespace, sha256=sha256)
             if stat is not None:
                 registered_size = int(stat.size_bytes)
                 registered_content_type = str(stat.content_type or content_type)
@@ -151,7 +154,7 @@ class StorageLedgerService:
                 upload_id = None
                 expires_at = iso_after(seconds=STORAGE_DEFAULT_TTL_SECONDS)
             else:
-                upload = self.objects.presign_upload(
+                upload = self._provider_required.presign_upload(
                     namespace=namespace,
                     sha256=sha256,
                     size_bytes=int(size_bytes),
@@ -197,7 +200,7 @@ class StorageLedgerService:
         *,
         project_id: str | None,
         upload_id: str,
-        parts: list[dict[str, Any]] | None = None,
+        parts: list[CompletedPart] | None = None,
     ) -> dict[str, Any]:
         recovering = False
         with self.store.transaction() as conn:
@@ -207,8 +210,7 @@ class StorageLedgerService:
             )
             status = str(row["status"])
             if status == "uploading":
-                # Reserve the row before touching bytes so delete cannot orphan
-                # a completion.
+                # Reserve before provider work so delete cannot orphan bytes.
                 cursor = conn.execute(
                     """
                     UPDATE storage_objects
@@ -232,11 +234,8 @@ class StorageLedgerService:
                 )
         try:
             if recovering:
-                # The provider may already have verified the immutable object
-                # and consumed its upload sidecar before a process crash. Re-stat
-                # by ledger identity so a retry can converge without that
-                # single-use sidecar.
-                stat = self.objects.stat(
+                # Provider completion may have consumed its sidecar before a crash.
+                stat = self._provider_required.stat(
                     namespace=str(row["namespace"]),
                     sha256=str(row["content_sha256"]),
                 )
@@ -244,13 +243,15 @@ class StorageLedgerService:
                     raise NotFoundError(
                         f"completed object not found for upload: {upload_id}"
                     )
-                if int(stat.size_bytes) != int(row["size_bytes"]):
+                if int(stat.size_bytes) > int(row["size_bytes"]):
                     raise ValidationError(
-                        f"completed object size mismatch for upload {upload_id}: "
-                        f"{stat.size_bytes} != {row['size_bytes']} bytes"
+                        f"completed object exceeds its size cap for upload {upload_id}: "
+                        f"{stat.size_bytes} > {row['size_bytes']} bytes"
                     )
             else:
-                stat = self.objects.complete_upload(upload_id=upload_id, parts=parts)
+                stat = self._provider_required.complete_upload(
+                    upload_id=upload_id, parts=parts
+                )
         except Exception:
             if not recovering:
                 with self.store.transaction() as conn:
@@ -334,12 +335,7 @@ class StorageLedgerService:
         notes: str = "",
         base_url: str = "",
     ) -> dict[str, Any]:
-        """Register a heavy object and return the token-curl command that pushes
-        its bytes straight to S3 and finalizes the ledger row.
-
-        The advisory client sha feeds the existing name+sha dedup; identity is
-        still enforced server-side by the presigned checksum and the completion
-        head-verify. Bytes never transit the brain (fatal for multi-GB)."""
+        """Register an object and return its direct-upload command."""
         if not str(path).strip():
             raise ValidationError("path is required (the local file to upload)")
         self._enforce_upload_size(size_bytes=int(size_bytes))
@@ -360,8 +356,6 @@ class StorageLedgerService:
         obj = registered["object"]
         upload = registered.get("upload")
         if upload is None:
-            # The advisory sha matched content already present (name+sha or
-            # physical dedup): the object is available, nothing to upload.
             return {
                 "object": obj,
                 "uploaded": True,
@@ -370,9 +364,7 @@ class StorageLedgerService:
                 "run": "",
             }
         if "url" not in upload:
-            # The single-PUT command cannot drive a multipart presign; the size
-            # guard should have caught this, so only a store configured with a
-            # sub-5 GiB multipart threshold reaches here.
+            # A custom provider threshold can force multipart below the size cap.
             raise ValidationError(
                 "this object needs a multipart upload, unsupported by the v1 "
                 "token-curl command — reduce the file below the single-PUT "
@@ -408,9 +400,7 @@ class StorageLedgerService:
         name: str | None = None,
         version: int | None = None,
     ) -> dict[str, Any]:
-        """Resolve a storage object and return the curl-download + sha256-verify
-        command, built entirely from the ledger row (content_sha256 is already
-        stored). Zero new server capability."""
+        """Resolve an object and return its verified download command."""
         if not str(path).strip():
             raise ValidationError("path is required (the local destination file)")
         resolved = self.resolve(
@@ -428,14 +418,42 @@ class StorageLedgerService:
         )
         return {"object": obj, "run": run}
 
-    def complete_via_token(self, *, token: str) -> dict[str, Any]:
-        """Finalize a pending upload named by a one-time completion token.
+    def find(
+        self,
+        *,
+        project_id: str | None = None,
+        object_id: str | None = None,
+        name: str | None = None,
+        version: int | None = None,
+        include_download: bool = True,
+        kind: str | None = None,
+        status: str | None = None,
+        include_expired: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve one object when selected; otherwise list the project ledger."""
+        if object_id or name:
+            return self.resolve(
+                project_id=project_id,
+                object_id=object_id,
+                name=name,
+                version=version,
+                include_download=include_download,
+            )
+        return self.list_objects(
+            project_id=project_id,
+            kind=kind,
+            status=status,
+            include_expired=include_expired,
+            limit=limit,
+            offset=offset,
+            compact=compact,
+        )
 
-        Token-first: an unknown/expired/consumed token raises NotFoundError (404)
-        before any object work. Single-use: the row is deleted once the
-        head-verify completion succeeds, so a transient pre-upload failure can be
-        retried within the TTL. This is the ONLY wire-reachable completion for a
-        key agent — storage.complete_upload stays internal + MCP-403'd."""
+    def complete_via_token(self, *, token: str) -> dict[str, Any]:
+        """Finalize through an expiring token consumed only after success."""
         self._sweep_completion_tokens()
         with closing(self.store.connect()) as conn:
             row = conn.execute(
@@ -586,7 +604,7 @@ class StorageLedgerService:
             obj = self._hydrate(row=row)
         result: dict[str, Any] = {"object": obj}
         if include_download:
-            result["download"] = self.objects.presign_download(
+            result["download"] = self._provider_required.presign_download(
                 namespace=str(obj["namespace"]),
                 sha256=str(obj["content_sha256"]),
                 expires_in=PRESIGN_TTL_SECONDS,
@@ -607,6 +625,19 @@ class StorageLedgerService:
 
     def renew(self, *, project_id: str | None, object_id: str) -> dict[str, Any]:
         return self.unpin(project_id=project_id, object_id=object_id)
+
+    def manage(
+        self, *, object_id: str, action: str, project_id: str | None = None
+    ) -> dict[str, Any]:
+        operation = {
+            "pin": self.pin,
+            "unpin": self.unpin,
+            "renew": self.renew,
+            "delete": self.delete,
+        }.get(action)
+        if operation is None:
+            raise ValidationError(f"unknown storage object action: {action}")
+        return operation(project_id=project_id, object_id=object_id)
 
     def delete(self, *, project_id: str | None, object_id: str) -> dict[str, Any]:
         with self.store.transaction() as conn:
@@ -681,6 +712,40 @@ class StorageLedgerService:
                 namespace=namespace, sha256=sha256
             )
         return swept
+
+    def by_experiment(
+        self, *, project_id: str, experiment_ids: tuple[str, ...]
+    ) -> dict[str, list[ProducedObject]]:
+        """Batch hosted-safe object facts without requiring a byte provider."""
+        ids = tuple(dict.fromkeys(str(item) for item in experiment_ids if item))
+        result: dict[str, list[ProducedObject]] = {item: [] for item in ids}
+        if not ids:
+            return result
+        columns = ", ".join(_PRODUCED_OBJECT_COLUMNS)
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(
+                conn=conn, project_id=project_id
+            )
+            for start in range(0, len(ids), _EXPERIMENT_ID_BATCH_SIZE):
+                batch = ids[start : start + _EXPERIMENT_ID_BATCH_SIZE]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"""
+                    SELECT {columns}, producing_experiment_id
+                    FROM storage_objects
+                    WHERE project_id = ?
+                      AND producing_experiment_id IN ({placeholders})
+                      AND status != 'deleted'
+                    ORDER BY producing_experiment_id, kind, name,
+                             version DESC, created_seq DESC
+                    """,
+                    (project_id, *batch),
+                ).fetchall()
+                for row in rows:
+                    data = row_to_dict(row=row) or {}
+                    experiment_id = str(data.pop("producing_experiment_id"))
+                    result[experiment_id].append(cast(ProducedObject, data))
+        return result
 
     def _insert_object(
         self,
@@ -847,7 +912,7 @@ class StorageLedgerService:
         ).fetchone()
         if int(remaining["count"]) > 0:
             return False
-        return self.objects.delete(namespace=namespace, sha256=sha256)
+        return self._provider_required.delete(namespace=namespace, sha256=sha256)
 
     def _record(
         self, *, conn: Connection, project_id: str, event_type: str, row: Row
@@ -906,7 +971,6 @@ class StorageLedgerService:
         return token
 
     def _sweep_completion_tokens(self) -> None:
-        """Own transaction so the sweep survives a failing completion path."""
         with self.store.transaction() as conn:
             conn.execute(
                 "DELETE FROM storage_completion_tokens WHERE expires_at < ?",
@@ -914,7 +978,6 @@ class StorageLedgerService:
             )
 
     def _namespace(self, *, project_id: str) -> str:
-        # Tenant-prefixing belongs to Phase 3 composition/config wiring.
         return project_id
 
     def _hydrate(self, *, row: Row, compact: bool = False) -> dict[str, Any]:
@@ -964,7 +1027,7 @@ __all__ = [
     "SINGLE_PUT_MAX_BYTES",
     "STORAGE_DEFAULT_TTL_SECONDS",
     "STORAGE_KINDS",
-    "StorageLedgerService",
+    "ObjectStorage",
     "storage_fetch_command",
     "storage_submit_command",
 ]

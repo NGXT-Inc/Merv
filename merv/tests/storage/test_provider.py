@@ -1,20 +1,25 @@
-"""ObjectStore contract for heavy-file provider implementations."""
+"""Heavy-object provider contract, including S3 transfer integrity."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import shutil
+import socket
+import subprocess
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.kernel.utils import NotFoundError, ValidationError
+from tests.storage.test_blobs import BlobStoreContractMixin
 
 
-class ObjectStoreContractMixin:
-    """One behavioral suite run against every ObjectStore implementation."""
+class ObjectProviderContractMixin:
+    """Behavior required from every heavy-byte provider."""
 
     def make_store(self):  # pragma: no cover - overridden
         raise NotImplementedError
@@ -128,6 +133,14 @@ class ObjectStoreContractMixin:
             )
 
 class S3CompatibleObjectStoreClientConfigTest(unittest.TestCase):
+    def test_package_export_preserves_the_released_provider_class(self) -> None:
+        from merv.brain.object_storage import S3CompatibleObjectStore
+        from merv.brain.object_storage.s3_object_store import (
+            S3CompatibleObjectStore as concrete,
+        )
+
+        self.assertIs(S3CompatibleObjectStore, concrete)
+
     def test_boto3_client_receives_explicit_credentials_when_both_set(self) -> None:
         from merv.brain.object_storage.s3_object_store import S3CompatibleObjectStore
 
@@ -192,35 +205,114 @@ class S3CompatibleObjectStoreClientConfigTest(unittest.TestCase):
             self.assertNotIn("aws_secret_access_key", call["kwargs"])
 
 
-try:
-    from tests.state import test_s3_blob_store as s3_fixture
-except ImportError:  # pragma: no cover - depends on optional test module layout
-    s3_fixture = None
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return (
+            subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _boto3_available() -> bool:
+    try:
+        import boto3  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+HAVE_MINIO = _docker_available() and _boto3_available()
+CONTAINER = "rp-test-minio"
+ACCESS_KEY = "rptestkey"
+SECRET_KEY = "rptestsecret"
+_endpoint: str | None = None
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _make_client(endpoint: str):
+    import boto3
+
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
+        region_name="us-east-1",
+    )
 
 
 def setUpModule() -> None:
-    if s3_fixture is not None:
-        s3_fixture.setUpModule()
+    global _endpoint
+    if not HAVE_MINIO:
+        return
+    port = _free_port()
+    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    subprocess.run(
+        [
+            "docker", "run", "-d", "--rm", "--name", CONTAINER,
+            "-e", f"MINIO_ROOT_USER={ACCESS_KEY}",
+            "-e", f"MINIO_ROOT_PASSWORD={SECRET_KEY}",
+            "-p", f"127.0.0.1:{port}:9000",
+            "minio/minio", "server", "/data",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    endpoint = f"http://127.0.0.1:{port}"
+    client = _make_client(endpoint)
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            client.list_buckets()
+            break
+        except Exception:  # noqa: BLE001
+            if time.monotonic() > deadline:
+                subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+                raise unittest.SkipTest("minio container never became ready")
+            time.sleep(0.5)
+    _endpoint = endpoint
 
 
 def tearDownModule() -> None:
-    if s3_fixture is not None:
-        s3_fixture.tearDownModule()
+    if HAVE_MINIO:
+        subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
 
 
-@unittest.skipIf(
-    s3_fixture is None or not (s3_fixture.HAVE_DOCKER and s3_fixture.HAVE_BOTO3),
-    "dockerized minio blob-store fixture or boto3 unavailable",
-)
-class S3CompatibleObjectStoreContractTest(ObjectStoreContractMixin, unittest.TestCase):
+@unittest.skipUnless(HAVE_MINIO, "docker or boto3 unavailable")
+class S3BlobStoreTest(BlobStoreContractMixin, unittest.TestCase):
+    _bucket_seq = 0
+
+    def make_store(self):
+        from merv.brain.object_storage.s3_blobs import S3BlobStore
+
+        assert _endpoint is not None
+        client = _make_client(_endpoint)
+        type(self)._bucket_seq += 1
+        bucket = f"rp-blobs-{type(self)._bucket_seq}"
+        client.create_bucket(Bucket=bucket)
+        return S3BlobStore(bucket=bucket, client=client)
+
+
+@unittest.skipUnless(HAVE_MINIO, "docker or boto3 unavailable")
+class S3CompatibleObjectProviderTest(ObjectProviderContractMixin, unittest.TestCase):
     _bucket_seq = 0
 
     def make_store(self, **kwargs):
         from merv.brain.object_storage.s3_object_store import S3CompatibleObjectStore
 
-        assert s3_fixture is not None
-        assert s3_fixture._endpoint is not None
-        client = s3_fixture._make_client(s3_fixture._endpoint)
+        assert _endpoint is not None
+        client = _make_client(_endpoint)
         type(self)._bucket_seq += 1
         bucket = f"rp-objects-{type(self)._bucket_seq}"
         client.create_bucket(Bucket=bucket)

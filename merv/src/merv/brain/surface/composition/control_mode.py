@@ -42,6 +42,7 @@ from ..control.control_app import ControlApp
 from ...kernel.env import env_bool, env_value
 from ...kernel.secret_tokens import load_wait_secret
 from ...kernel.ports.blob_store import BlobStore
+from ...object_storage import ObjectStorage
 from ...sandbox.adapters import build_sandbox_backend
 from ...sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
 from ..transport.http_api import create_fastapi_app
@@ -51,7 +52,6 @@ from ..project_keys import ProjectKeys
 from ..project_key_store import SqlProjectKeyRepository
 from ..oauth import OAuthService
 from ..oauth_store import SqlOAuthRepository
-from ...object_storage.service import StorageLedgerService
 from ...kernel.utils import ValidationError
 
 
@@ -123,16 +123,13 @@ def build_control_app(
         else build_blob_store(default_root=state_root / "blobs", env=env)
     )
     if storage is _UNSET:
-        objects = build_object_store(default_root=state_root, env=env)
-        storage = (
-            StorageLedgerService(
-                store=store,
-                objects=objects,
-                max_upload_bytes=resolve_storage_max_upload_bytes(env),
-            )
-            if objects
-            else None
+        storage = ObjectStorage(
+            store=store,
+            provider=build_object_store(default_root=state_root, env=env),
+            max_upload_bytes=resolve_storage_max_upload_bytes(env),
         )
+    elif storage is None:
+        storage = ObjectStorage(store=store, provider=None)
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
     _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)

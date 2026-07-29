@@ -44,17 +44,6 @@ from merv.brain.application.ports.tracking import (
     TrackingSnapshotRun,
 )
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
-from merv.brain.kernel.ports.blob_store import (
-    BlobDownloadTarget,
-    BlobStat,
-    BlobUploadTarget,
-)
-from merv.brain.kernel.ports.object_store import (
-    DownloadTarget,
-    ObjectStat,
-    UploadPart,
-    UploadTarget,
-)
 from merv.brain.research_core.facade import (
     ExperimentCreateArgs,
     LiteratureSignal,
@@ -301,27 +290,6 @@ SAMPLES: dict[type, object] = {
     DispatchResult: DispatchResult(
         state={"id": "exp_1"}, outcomes=MappingProxyType({"feed": "noted"})
     ),
-    BlobStat: BlobStat("a" * 64, "proj_1", 2, "text/plain", "now", None),
-    BlobDownloadTarget: {"url": "https://download.example"},
-    BlobUploadTarget: {
-        "upload_id": "upload_1",
-        "url": "https://upload.example",
-        "max_size_bytes": 10,
-        "expires_at": None,
-    },
-    ObjectStat: ObjectStat("b" * 64, "proj_1", 3, "application/json", "now"),
-    UploadPart: {"part_number": 1, "url": "https://upload.example/1"},
-    UploadTarget: {
-        "upload_id": "upload_1",
-        "url": "https://upload.example",
-        "parts": [{"part_number": 1, "url": "https://upload.example/1"}],
-        "part_size": 5,
-        "size_bytes": 5,
-        "content_type": "application/json",
-        "checksum_sha256": "b" * 64,
-        "expires_in": 300,
-    },
-    DownloadTarget: {"url": "https://download.example"},
     PersistedRunState: RUN,
     ExperimentCreateArgs: {
         "name": "example",

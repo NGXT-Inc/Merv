@@ -508,6 +508,22 @@ class StorageCompleteUploadInput(ProjectScopedInput):
     upload_id: str
     parts: list[dict[str, Any]] | None = None
 
+    @field_validator("parts")
+    @classmethod
+    def _canonicalize_completed_parts(
+        cls, value: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        if value is None:
+            return None
+        canonical: list[dict[str, Any]] = []
+        for part in value:
+            part_number = part.get("part_number", part.get("PartNumber"))
+            etag = part.get("etag", part.get("ETag"))
+            if part_number is None or etag is None:
+                raise ValueError("each completed part needs part_number and etag")
+            canonical.append({"part_number": int(part_number), "etag": str(etag)})
+        return canonical
+
 
 class StorageFindInput(ProjectScopedInput):
     """List the storage ledger, or resolve a single object.
@@ -1332,7 +1348,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         description="Complete a storage upload and mark the ledger object available.",
     ),
     "storage.find": ToolContract(
-        handler_identity="operations.storage_find",
+        handler_identity="storage.find",
         feature_requirements=("storage",),
         input_model=StorageFindInput,
         description=(
@@ -1356,7 +1372,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "storage.object": ToolContract(
-        handler_identity="operations.storage_object",
+        handler_identity="storage.manage",
         feature_requirements=("storage",),
         input_model=StorageObjectInput,
         description=(

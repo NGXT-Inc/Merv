@@ -37,10 +37,9 @@ from ..observability import StructuredLogger
 from ..user_settings import UserHfTokenSettings
 from ...kernel.ports.mgmt_keys import MgmtKeyStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
+from ...object_storage import ObjectStorage
 from .record_core import build_record_core
 from ...sandbox import SandboxBackend, SandboxEngine
-from ...object_storage.service import StorageLedgerService
-from ...object_storage.catalog import StorageObjectCatalog
 from ...kernel.state import BaseStateStore
 from ...kernel.state.tool_call_ledger import ToolCallLedger
 from ..artifacts import ArtifactTools
@@ -57,7 +56,7 @@ class ControlApp:
         *,
         store: BaseStateStore,
         blobs: EvidenceBlobStore,
-        storage: StorageLedgerService | None,
+        storage: ObjectStorage,
         execution_backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
         mlflow_tracking: Any | None = None,
@@ -74,7 +73,8 @@ class ControlApp:
         self.tool_ledger.start_retention()
         self.structured_logger = StructuredLogger(enabled=structured_logging)
         self._blobs = blobs
-        self._storage = storage
+        self.object_storage = storage
+        self._storage = storage if storage.enabled else None
         # The legacy tracking adapter remains injectable for compatibility and
         # a later reintroduction, but it is no longer auto-composed from the
         # environment.  A normal product build therefore has no tracking
@@ -88,7 +88,7 @@ class ControlApp:
             graph_refs=core.graph_refs,
         )
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
-        self.produced_objects = StorageObjectCatalog(store=store)
+        self.produced_objects = storage
         self.artifacts = core.artifacts
         self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
         self.project_context = ProjectContextQuery(
@@ -157,7 +157,6 @@ class ControlApp:
             projects=core.projects,
             experiments=self.experiment_collection_query,
             project_context=self.project_context,
-            storage=storage,
         )
 
         self.sandboxes = SandboxEngine(
@@ -165,7 +164,7 @@ class ControlApp:
             backend=execution_backend,
             mgmt_keys=mgmt_keys,
             force_expiry_reaper=force_expiry_reaper,
-            storage_enabled=storage is not None,
+            storage_enabled=storage.enabled,
             # The sandbox module embeds/calls the component-owned values it is handed.
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=self.research_core.assert_experiment_in_project,
@@ -177,8 +176,8 @@ class ControlApp:
             reflections=core.reflection_waves,
         )
         self.next_action_policy = StatusGuidancePolicy(
-            storage_enabled=storage is not None,
-            storage_guidance=storage_guidance(enabled=storage is not None),
+            storage_enabled=storage.enabled,
+            storage_guidance=storage_guidance(enabled=storage.enabled),
         )
         self.workflow = StatusAndNextQuery(
             snapshots=self.research_snapshots,
@@ -226,7 +225,7 @@ class ControlApp:
         )
         self.user_settings = UserHfTokenSettings(store=store)
         tool_names = available_tool_names(
-            storage_enabled=storage is not None,
+            storage_enabled=storage.enabled,
             tracking_enabled=self._tracking is not None,
         )
         self.tools = ToolDispatcher(
@@ -237,7 +236,7 @@ class ControlApp:
                 create_experiment=self.create_experiment,
                 reflection_tools=self.reflection_commands,
                 artifact_submissions=self.artifact_tools,
-                storage=storage,
+                storage=self._storage,
                 reviews=core.reviews,
                 review_session=self.start_review_session,
                 sandboxes=self.sandboxes,
@@ -264,7 +263,7 @@ class ControlApp:
             artifacts=core.artifacts,
             feed=core.feed,
             sandboxes=self.sandboxes,
-            storage=storage,
+            storage=self._storage,
             timeline=self.event_timeline,
             activity=self.activity,
             tool_calls=self.tool_calls,

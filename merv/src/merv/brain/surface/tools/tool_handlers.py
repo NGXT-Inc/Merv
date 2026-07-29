@@ -15,8 +15,8 @@ from ...application.facade import (
     StatusAndNextQuery,
     TransitionExperiment,
 )
-from ...application.ports.storage import ObjectStorage
 from ...feed import FeedService
+from ...object_storage import ObjectStorage
 from ...research_core.facade import (
     ResearchClaims,
     ResearchLiterature,
