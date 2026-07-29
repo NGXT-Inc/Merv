@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { feedApi } from './feedApi';
 import { useViewport } from '../store/useViewport';
+import { useMountedMedia } from './useMountedMedia';
 
 /**
  * An interactive embed in a post's media slot. Rests as a flat poster (kind
@@ -50,35 +51,7 @@ export default function EmbedCard({ post, projectId }) {
     close();
   };
 
-  // Desktop only: prefetch/auto-mount as the card nears the viewport, and
-  // auto-unmount well past it — same extended band both directions. Mobile
-  // keeps strict tap-to-load, so it gets no observer here at all.
-  useEffect(() => {
-    if (isMobile || !boxRef.current) return undefined;
-    const io = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          if (state === 'poster') open();
-        } else if (state === 'open') {
-          close();
-        }
-      }
-    }, { rootMargin: '200% 0px 200% 0px' });
-    io.observe(boxRef.current);
-    return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile, state]);
-
-  // Mobile: keep the original narrower auto-unmount-when-scrolled-away band
-  // for an already-opened embed (tap-opened, then scrolled past).
-  useEffect(() => {
-    if (!isMobile || state !== 'open' || !boxRef.current) return undefined;
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => !e.isIntersecting)) close();
-    }, { rootMargin: '150% 0px 150% 0px' });
-    io.observe(boxRef.current);
-    return () => io.disconnect();
-  }, [isMobile, state]);
+  useMountedMedia({ isMobile, state, rootRef: boxRef, open, close });
 
   if (state === 'open') {
     return (

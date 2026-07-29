@@ -1,276 +1,131 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import { useProjectStore } from '../store/useProjectStore';
-import { feedApi } from './feedApi';
 import ContextHeader from './ContextHeader';
 import PostCard from './PostCard';
 import { useNow, dayLabel, withDayDividers } from './feedModel';
+import { useFeedStream } from './useFeedStream';
 import './feed.css';
 
-const PAGE_SIZE = 20;
-const POLL_MS = 10000;
-
-// The quiet-feed banner's one line, derived defensively — the nudge payload is
-// agent-facing and its fields may evolve; the UI states the silence plainly
-// and never repeats the agent-directed hint text.
 function nudgeLabel(nudge) {
-  const h = Number(nudge?.hours_since_last_post);
-  if (Number.isFinite(h) && h >= 1) return `Agents haven't posted in ~${Math.round(h)}h`;
+  const hours = Number(nudge?.hours_since_last_post);
+  if (Number.isFinite(hours) && hours >= 1) {
+    return `Agents haven't posted in ~${Math.round(hours)}h`;
+  }
   return 'The feed has been quiet for a while';
 }
 
+function LoadingFeed() {
+  return (
+    <>
+      <div className="feed-sr" role="status">Loading feed…</div>
+      <div className="feed-list" aria-hidden="true">
+        {[0, 1, 2].map((index) => (
+          <div key={index} className="postcard postcard--skeleton">
+            <div className="skel-head">
+              <span className="skel skel--avatar" />
+              <div className="skel skel--handle" />
+            </div>
+            <div className="skel skel--line" />
+            <div className="skel skel--line skel--short" />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function FeedItems({
+  items,
+  projectId,
+  now,
+  onView,
+  onReact,
+  onReply,
+}) {
+  return (
+    <div className="feed-list">
+      {items.map((item) => {
+        if (item.type === 'day') {
+          return (
+            <div key={item.id} className="feed-day">
+              {dayLabel(item.ts, now)}
+            </div>
+          );
+        }
+        if (item.type === 'unseen') {
+          return (
+            <div key={item.id} className="feed-unseen">
+              new since your last visit
+            </div>
+          );
+        }
+        return (
+          <PostCard
+            key={item.id}
+            post={item.post}
+            projectId={projectId}
+            onView={onView}
+            now={now}
+            grouped={item.grouped}
+            depth={item.depth || 0}
+            orphan={Boolean(item.orphan)}
+            onReact={onReact}
+            onReply={onReply}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 /**
- * The social feed (Feed_PRD.md): a reverse-chronological, low-chrome stream of
- * the agents' aha-moments. Shared by desktop (/feed sidebar route) and mobile
- * (/feed, the first bottom-nav tab). Infinite scroll downward (older), a light
- * poll upward (newer), and fire-and-forget usage analytics.
- *
- * Self-contained: depends only on the shared project store + the feed's own
- * api module. Nothing else in the product reaches into the feed.
+ * Reverse-chronological agent feed shared by desktop and mobile. Remote state
+ * and races live in useFeedStream; this component only presents that state.
  */
 export default function Feed() {
-  const projectId = useProjectStore(s => s.projectId);
-  const [posts, setPosts] = useState([]);
-  const [pending, setPending] = useState([]); // polled posts held behind the pill
-  const [lastSeenSeq, setLastSeenSeq] = useState(null);
-  const [cursor, setCursor] = useState(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [status, setStatus] = useState('loading'); // loading | ready | error
-  const [error, setError] = useState('');
-  const [retryKey, setRetryKey] = useState(0);
-  const [nudge, setNudge] = useState(null); // page-1 quiet-feed signal
-  const loadingMoreRef = useRef(false);
-  const sentinelRef = useRef(null);
-  // Mirrors for the async paths: newest seq across visible + buffered posts
-  // (so the poll never re-adds what we hold), the buffer itself (so reveal's
-  // state updaters stay pure), and a generation counter that invalidates any
-  // in-flight response from a previous project.
-  const topSeqRef = useRef(0);
-  const pendingRef = useRef([]);
-  const genRef = useRef(0);
-  useEffect(() => {
-    topSeqRef.current = pending[0]?.created_seq ?? posts[0]?.created_seq ?? 0;
-    pendingRef.current = pending;
-  }, [posts, pending]);
-
-  const seenKey = projectId ? `rsui:feed:lastSeen:${projectId}` : null;
-
-  // Initial load (and reload on project switch).
-  useEffect(() => {
-    if (!projectId) return;
-    let cancelled = false;
-    genRef.current += 1;
-    setStatus('loading');
-    setPosts([]);
-    setPending([]);
-    setCursor(null);
-    setHasMore(false);
-    // Where the previous visit ended — frozen for this session so the marker
-    // doesn't chase the reader down the page.
-    const stored = Number(localStorage.getItem(`rsui:feed:lastSeen:${projectId}`));
-    setLastSeenSeq(Number.isFinite(stored) && stored > 0 ? stored : null);
-    setNudge(null);
-    feedApi.getFeed(projectId, { limit: PAGE_SIZE })
-      .then((data) => {
-        if (cancelled) return;
-        setPosts(data.posts || []);
-        setCursor(data.next_cursor ?? null);
-        setHasMore(data.next_cursor != null);
-        setNudge(data.nudge || null);
-        setStatus('ready');
-        feedApi.trackFeed(projectId, 'feed_opened', { count: (data.posts || []).length }).catch(() => {});
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(e.message || 'Failed to load feed');
-        setStatus('error');
-      });
-    return () => { cancelled = true; };
-  }, [projectId, retryKey]);
-
-  // Remember the newest post the reader actually had on screen, for the next
-  // visit's "new since last visit" marker. Buffered posts don't count until
-  // they are revealed.
-  useEffect(() => {
-    if (status !== 'ready' || !seenKey) return;
-    const top = posts[0]?.created_seq;
-    if (top == null) return;
-    const stored = Number(localStorage.getItem(seenKey)) || 0;
-    if (top > stored) localStorage.setItem(seenKey, String(top));
-  }, [posts, status, seenKey]);
-
-  // Poll for newer posts. Fresh posts are buffered, never prepended straight
-  // into the list — a stream that shoves content under the reader teaches them
-  // not to trust their scroll position. The pill releases the buffer; when the
-  // reader is already at the top, it releases itself. The controller aborts
-  // any in-flight response when the project changes, and the in-updater dedupe
-  // absorbs overlapping responses that raced past the topSeq check.
-  useEffect(() => {
-    if (!projectId || status !== 'ready') return;
-    const controller = new AbortController();
-    const t = setInterval(() => {
-      feedApi.getFeed(projectId, { limit: PAGE_SIZE, signal: controller.signal })
-        .then((data) => {
-          // Page-1 responses carry the quiet-feed signal; keep the banner
-          // current (it dissolves on its own once the agents speak again).
-          setNudge(data.nudge || null);
-          const fresh = (data.posts || []).filter((p) => p.created_seq > topSeqRef.current);
-          if (!fresh.length) return;
-          setPending((prev) => {
-            const seen = new Set(prev.map((p) => p.id));
-            const add = fresh.filter((p) => !seen.has(p.id));
-            return add.length ? [...add, ...prev] : prev;
-          });
-        })
-        .catch(() => {});
-    }, POLL_MS);
-    return () => { clearInterval(t); controller.abort(); };
-  }, [projectId, status]);
-
-  const revealPending = useCallback((scroll) => {
-    const buffered = pendingRef.current;
-    if (buffered.length) {
-      setPosts((prev) => {
-        const seen = new Set(prev.map((p) => p.id));
-        const add = buffered.filter((p) => !seen.has(p.id));
-        return add.length ? [...add, ...prev] : prev;
-      });
-      setPending([]);
-    }
-    if (scroll) window.scrollTo({ top: 0 });
-  }, []);
-
-  // At (or near) the top, new posts just appear — the pill is only for readers
-  // who have scrolled into the past, and it dissolves when they scroll back up.
-  useEffect(() => {
-    if (!pending.length) return;
-    if (window.scrollY <= 80) { revealPending(false); return; }
-    const onScroll = () => { if (window.scrollY <= 80) revealPending(false); };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, [pending, revealPending]);
-
-  const loadMore = useCallback(() => {
-    if (!projectId || loadingMoreRef.current || cursor == null) return;
-    loadingMoreRef.current = true;
-    const gen = genRef.current;
-    feedApi.getFeed(projectId, { limit: PAGE_SIZE, cursor })
-      .then((data) => {
-        if (gen !== genRef.current) return; // response belongs to a previous project
-        const older = data.posts || [];
-        setPosts((prev) => {
-          const seen = new Set(prev.map((p) => p.id));
-          return [...prev, ...older.filter((p) => !seen.has(p.id))];
-        });
-        setCursor(data.next_cursor ?? null);
-        setHasMore(data.next_cursor != null);
-      })
-      .catch(() => {})
-      .finally(() => { loadingMoreRef.current = false; });
-  }, [projectId, cursor]);
-
-  // Infinite scroll: load older when the sentinel scrolls into view.
-  useEffect(() => {
-    if (!hasMore || !sentinelRef.current) return;
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) loadMore();
-    }, { rootMargin: '400px' });
-    io.observe(sentinelRef.current);
-    return () => io.disconnect();
-  }, [hasMore, loadMore, posts.length]);
-
-  const onView = useCallback((postId) => {
-    if (projectId) feedApi.trackFeed(projectId, 'post_viewed', { post_id: postId }).catch(() => {});
-  }, [projectId]);
-
-  // Optimistic single-user reaction toggle: flip locally, confirm with the
-  // server's post view, roll the flip back if the write fails.
-  const onReact = useCallback((post, kind) => {
-    if (!projectId) return;
-    const on = !post.reactions?.[kind];
-    const flip = (id, value) => setPosts((prev) => prev.map((p) => (
-      p.id === id ? { ...p, reactions: { ...(p.reactions || {}), [kind]: value } } : p
-    )));
-    flip(post.id, on);
-    feedApi.setReaction(projectId, post.id, kind, on)
-      .then((data) => {
-        // Take only the reactions from the confirm — the POST response is a
-        // bare service view without the HTTP-layer media URL enrichment, and
-        // replacing wholesale would strip image_url/embed_url off the post.
-        const view = data?.post || data;
-        if (view?.id && view.reactions) {
-          setPosts((prev) => prev.map((p) => (
-            p.id === view.id ? { ...p, reactions: view.reactions } : p
-          )));
-        }
-      })
-      .catch(() => flip(post.id, !on));
-  }, [projectId]);
-
-  // The researcher's reply: post it, then insert the created view immediately
-  // (front of the raw list — it owns the newest seq; the threading pass seats
-  // it under its parent). Errors surface in the composer, which stays open.
-  const onReply = useCallback(async (post, text) => {
-    if (!projectId) throw new Error('No project selected');
-    const data = await feedApi.reply(projectId, post.id, text);
-    const view = data?.post || data;
-    if (view?.id) {
-      setPosts((prev) => (prev.some((p) => p.id === view.id) ? prev : [view, ...prev]));
-    }
-    return view;
-  }, [projectId]);
-
-  // One shared clock: every card's relative time ages in step, and the day
-  // dividers roll over correctly at midnight.
+  const projectId = useProjectStore((state) => state.projectId);
+  const stream = useFeedStream(projectId);
   const now = useNow();
-  const items = useMemo(() => withDayDividers(posts, now, lastSeenSeq), [posts, now, lastSeenSeq]);
+  const items = useMemo(
+    () => withDayDividers(stream.posts, now, stream.lastSeenSeq),
+    [stream.posts, now, stream.lastSeenSeq],
+  );
 
   return (
     <div className="feed-stage">
-      {/* Visually hidden on desktop; the mobile surface styles it as the
-          page title (One-Surface redesign). */}
       <h1 className="feed-title">Feed</h1>
-      <ContextHeader posts={posts} now={now} />
-      {status === 'ready' && nudge && (
-        <div className="feed-nudge">{nudgeLabel(nudge)}</div>
+      <ContextHeader posts={stream.posts} now={now} />
+      {stream.status === 'ready' && stream.nudge && (
+        <div className="feed-nudge">{nudgeLabel(stream.nudge)}</div>
       )}
       <div className="feed-newpill-wrap" aria-live="polite">
-        {pending.length > 0 && (
-          <button type="button" className="feed-newpill" onClick={() => revealPending(true)}>
-            ↑ {pending.length} new post{pending.length === 1 ? '' : 's'}
+        {stream.pending.length > 0 && (
+          <button
+            type="button"
+            className="feed-newpill"
+            onClick={() => stream.revealPending(true)}
+          >
+            ↑ {stream.pending.length} new post
+            {stream.pending.length === 1 ? '' : 's'}
           </button>
         )}
       </div>
-      {status === 'loading' && (
-        <>
-          <div className="feed-sr" role="status">Loading feed…</div>
-          <div className="feed-list" aria-hidden="true">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="postcard postcard--skeleton">
-                <div className="skel-head">
-                  <span className="skel skel--avatar" />
-                  <div className="skel skel--handle" />
-                </div>
-                <div className="skel skel--line" />
-                <div className="skel skel--line skel--short" />
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {status === 'error' && (
+
+      {stream.status === 'loading' && <LoadingFeed />}
+      {stream.status === 'error' && (
         <div className="feed-empty" role="alert">
           <p className="feed-empty-title">Couldn’t load the feed</p>
-          <p className="feed-empty-sub">{error}</p>
+          <p className="feed-empty-sub">{stream.error}</p>
           <button
             type="button"
             className="btn btn--ghost btn--sm feed-retry"
-            onClick={() => setRetryKey((k) => k + 1)}
+            onClick={stream.retry}
           >
             Try again
           </button>
         </div>
       )}
-      {status === 'ready' && posts.length === 0 && (
+      {stream.status === 'ready' && stream.posts.length === 0 && (
         <div className="feed-empty">
           <p className="feed-empty-title">No posts yet</p>
           <p className="feed-empty-sub">
@@ -278,45 +133,25 @@ export default function Feed() {
           </p>
         </div>
       )}
-      {posts.length > 0 && (
-        <div className="feed-list">
-          {items.map((item) => {
-            // Plain divs, not role="separator" — several screen readers skip
-            // separator children, and these labels are content.
-            if (item.type === 'day') {
-              return (
-                <div key={item.id} className="feed-day">
-                  {dayLabel(item.ts, now)}
-                </div>
-              );
-            }
-            if (item.type === 'unseen') {
-              return (
-                <div key={item.id} className="feed-unseen">
-                  new since your last visit
-                </div>
-              );
-            }
-            return (
-              <PostCard
-                key={item.id}
-                post={item.post}
-                projectId={projectId}
-                onView={onView}
-                now={now}
-                grouped={item.grouped}
-                depth={item.depth || 0}
-                orphan={Boolean(item.orphan)}
-                onReact={onReact}
-                onReply={onReply}
-              />
-            );
-          })}
-        </div>
+      {stream.posts.length > 0 && (
+        <FeedItems
+          items={items}
+          projectId={projectId}
+          now={now}
+          onView={stream.onView}
+          onReact={stream.onReact}
+          onReply={stream.onReply}
+        />
       )}
-      {hasMore && (
-        <div ref={sentinelRef} className="feed-sentinel">
-          <button type="button" className="btn btn--ghost btn--sm" onClick={loadMore}>Load older</button>
+      {stream.hasMore && (
+        <div ref={stream.sentinelRef} className="feed-sentinel">
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={stream.loadMore}
+          >
+            Load older
+          </button>
         </div>
       )}
     </div>
