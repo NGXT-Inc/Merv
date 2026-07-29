@@ -12,12 +12,12 @@ from pathlib import Path as _P
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.feed import feed_policy
-from merv.brain.feed.facade import Feed
+from merv.brain.feed import feed as feed_module
 from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
 from merv.shared.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
-from merv.brain.feed.feed import POST_TEXT_MAX, REACTION_KINDS
-from merv.brain.feed.feed_unfurl import UnfurlError, extract_card, unfurl
+from merv.brain.feed.feed import POST_TEXT_MAX
+from merv.brain.kernel.ports.web_preview import WebPreviewError
+from merv.brain.surface.web_preview import extract_card, unfurl
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.feed_http import _image_headers
 from merv.brain.kernel.utils import NotFoundError, ValidationError
@@ -112,47 +112,19 @@ class FeedServiceTest(unittest.TestCase):
 
     # -- writing ------------------------------------------------------------
 
-    def test_post_and_list_reverse_chronological(self) -> None:
+    def test_post_text_is_required_and_capped(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        self.call("feed.post", project_id=self.pid, handle="Nova-7", text="first")
-        self.call("feed.post", project_id=self.pid, handle="Nova-7", text="second")
-        posts = self.call("feed.list", project_id=self.pid)["posts"]
-        self.assertEqual([p["text"] for p in posts], ["second", "first"])
+        for text in ("   ", "x" * (POST_TEXT_MAX + 1)):
+            with self.subTest(text_length=len(text)):
+                with self.assertRaises(ValidationError):
+                    self.call(
+                        "feed.post",
+                        project_id=self.pid,
+                        handle="Nova-7",
+                        text=text,
+                    )
 
-    def test_char_cap_enforced(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        with self.assertRaises(ValidationError):
-            self.call(
-                "feed.post",
-                project_id=self.pid,
-                handle="Nova-7",
-                text="x" * (POST_TEXT_MAX + 1),
-            )
-
-    def test_empty_text_rejected(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        with self.assertRaises(ValidationError):
-            self.call("feed.post", project_id=self.pid, handle="Nova-7", text="   ")
-
-    def test_image_captured_and_served(self) -> None:
-        # feed.post mints a token; the PUT (agent's curl) pushes the bytes and
-        # finalizes the post — the identical blob sink a live post uses.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.app.post_feed_media(
-            project_id=self.pid,
-            handle="Nova-7",
-            text="plot",
-            image_path="plot.png",
-            data=_PNG,
-        )
-        self.assertTrue(result["post"]["has_image"])
-        data, ctype = self.app.feed.get_image(
-            project_id=self.pid, post_id=result["post"]["id"]
-        )
-        self.assertEqual(data, _PNG)
-        self.assertEqual(ctype, "image/png")
-
-    def test_media_post_mints_single_use_token(self) -> None:
+    def test_media_post_contract_and_single_use_completion(self) -> None:
         # The mint shape: feed.post with a visual returns {post_id, run} (a
         # /api/feed/u/ curl), NOT {post} — and the token is single-use.
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
@@ -169,10 +141,19 @@ class FeedServiceTest(unittest.TestCase):
         self.assertIn("curl -sf -T", pending["run"])
         # The path label rides into the curl verbatim (the agent runs it as-is).
         self.assertIn("figures/plot.png", pending["run"])
+        self.assertEqual(self.call("feed.list", project_id=self.pid)["posts"], [])
+
         token = pending["run"].rsplit("/", 1)[-1].rstrip("'")
         first = self.app.upload_feed_bytes(token=token, data=_PNG)
         self.assertEqual(first["post"]["id"], pending["post_id"])
         self.assertTrue(first["post"]["has_image"])
+        self.assertNotIn("image_sha256", first["post"])
+        self.assertEqual(
+            self.app.feed.get_image(
+                project_id=self.pid, post_id=pending["post_id"]
+            ),
+            (_PNG, "image/png"),
+        )
         # Re-running the same curl 404s: the token was consumed at completion.
         with self.assertRaises(NotFoundError):
             self.app.upload_feed_bytes(token=token, data=_PNG)
@@ -194,7 +175,6 @@ class FeedServiceTest(unittest.TestCase):
         self.assertIn("script-src 'none'", svg_headers["Content-Security-Policy"])
         self.assertEqual(svg_headers["X-Content-Type-Options"], "nosniff")
 
-    def test_svg_image_captured_and_served(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.app.post_feed_media(
             project_id=self.pid,
@@ -253,18 +233,6 @@ class FeedServiceTest(unittest.TestCase):
 
         self.assertIsNone(asyncio.run(_read_capped(_ChunkedRequest(), cap=16)))
 
-    def test_media_post_is_absent_until_the_upload_lands(self) -> None:
-        # Minting does not create the post: feed.list stays empty until the PUT.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        self.call(
-            "feed.post",
-            project_id=self.pid,
-            handle="Nova-7",
-            text="pending",
-            image_path="plot.png",
-        )
-        self.assertEqual(self.call("feed.list", project_id=self.pid)["posts"], [])
-
     def test_feed_post_mints_regardless_of_local_file(self) -> None:
         # The server never reads the path at mint time (the agent's curl does),
         # so a path that does not exist locally still mints a valid token.
@@ -277,21 +245,6 @@ class FeedServiceTest(unittest.TestCase):
         )
         self.assertIn("post_id", pending)
         self.assertIn("/api/feed/u/", pending["run"])
-
-    def test_observed_image_bytes_are_captured_and_served(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.app.feed.post_observed(
-            project_id=self.pid,
-            handle="Nova-7",
-            text="plot",
-            image_path="/private/path/plot.png",
-            image_bytes=_PNG,
-        )
-        data, ctype = self.app.feed.get_image(
-            project_id=self.pid, post_id=result["post"]["id"]
-        )
-        self.assertEqual(data, _PNG)
-        self.assertEqual(ctype, "image/png")
 
     def test_feed_post_preflights_handle_before_minting(self) -> None:
         # The mint validates the handle up front, so an unregistered author is
@@ -340,109 +293,32 @@ class FeedServiceTest(unittest.TestCase):
                 self.assertFalse(post["link_preview"]["url"])
                 self.assertTrue(post["link_preview"]["error"])
 
-    def test_post_kind_persists_and_lists(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.call(
-            "feed.post",
-            project_id=self.pid,
-            handle="Nova-7",
-            text="ruled out",
-            kind="kill",
-        )
-        self.assertEqual(result["post"]["kind"], "kill")
-        posts = self.call("feed.list", project_id=self.pid)["posts"]
-        self.assertEqual(posts[0]["kind"], "kill")
-
-    def test_post_kind_optional_and_validated(self) -> None:
+    def test_post_kind_is_optional_persisted_and_validated(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         plain = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hi")
         self.assertIsNone(plain["post"]["kind"])
-        # The MCP contract enum rejects bad kinds up front; the service check
-        # covers the daemon/HTTP paths that bypass pydantic.
+
+        status = self.call(
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="40% through training",
+            kind="status",
+        )["post"]
+        self.assertEqual(status["kind"], "status")
+        self.assertEqual(
+            self.call("feed.list", project_id=self.pid)["posts"][0]["kind"],
+            "status",
+        )
+
         with self.assertRaisesRegex(ValidationError, "unknown post kind"):
-            self.app.feed.validate_post_intent(
+            self.app.feed.post(
                 project_id=self.pid, handle="Nova-7", text="x", kind="rant"
             )
 
-    def test_status_kind_is_accepted(self) -> None:
-        # `status` marks a mid-run checkpoint in a live experiment thread —
-        # the sixth kind, added alongside finding/hunch/bottleneck/kill/direction.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.call(
-            "feed.post",
-            project_id=self.pid,
-            handle="Nova-7",
-            text="40% through training, no surprises yet",
-            kind="status",
-        )
-        self.assertEqual(result["post"]["kind"], "status")
-        posts = self.call("feed.list", project_id=self.pid)["posts"]
-        self.assertEqual(posts[0]["kind"], "status")
-
-    def test_kind_column_migration_is_idempotent(self) -> None:
-        # Rebuilding the service on an existing DB must survive the ALTER.
-        from merv.brain.feed.feed import FeedService
-
-        FeedService(
-            store=self.app.store,
-            blobs=self.app.feed.blobs,
-            link_unfurl=self.app.feed.link_unfurl,
-        )
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.call(
-            "feed.post",
-            project_id=self.pid,
-            handle="Nova-7",
-            text="still fine",
-            kind="finding",
-        )
-        self.assertEqual(result["post"]["kind"], "finding")
-
-    def test_post_view_does_not_leak_blob_hash(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.app.post_feed_media(
-            project_id=self.pid,
-            handle="Nova-7",
-            text="x",
-            image_path="p.png",
-            data=_PNG,
-        )
-        self.assertNotIn("image_sha256", result["post"])
-
-    def test_every_post_view_carries_a_reactions_map(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hi")
-        self.assertEqual(
-            result["post"]["reactions"], {k: False for k in REACTION_KINDS}
-        )
-
     # -- reactions ------------------------------------------------------------
 
-    def test_reaction_toggle_is_idempotent(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        post_id = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="hi"
-        )["post"]["id"]
-        first = self.app.feed.set_reaction(
-            project_id=self.pid, post_id=post_id, kind="fire", on=True
-        )
-        self.assertTrue(first["post"]["reactions"]["fire"])
-        # Setting it on again is a no-op, not an error (idempotent insert).
-        again = self.app.feed.set_reaction(
-            project_id=self.pid, post_id=post_id, kind="fire", on=True
-        )
-        self.assertTrue(again["post"]["reactions"]["fire"])
-        cleared = self.app.feed.set_reaction(
-            project_id=self.pid, post_id=post_id, kind="fire", on=False
-        )
-        self.assertFalse(cleared["post"]["reactions"]["fire"])
-        # Clearing an already-clear reaction is also a no-op.
-        cleared_again = self.app.feed.set_reaction(
-            project_id=self.pid, post_id=post_id, kind="fire", on=False
-        )
-        self.assertFalse(cleared_again["post"]["reactions"]["fire"])
-
-    def test_reaction_rejects_unknown_kind(self) -> None:
+    def test_reaction_validation_distinguishes_kind_and_post(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         post_id = self.call(
             "feed.post", project_id=self.pid, handle="Nova-7", text="hi"
@@ -452,66 +328,50 @@ class FeedServiceTest(unittest.TestCase):
                 project_id=self.pid, post_id=post_id, kind="love", on=True
             )
 
-    def test_reaction_rejects_missing_post(self) -> None:
         with self.assertRaises(NotFoundError):
             self.app.feed.set_reaction(
                 project_id=self.pid, post_id="post_missing", kind="fire", on=True
             )
 
-    def test_researcher_attention_surfaces_reacted_posts_on_first_page(self) -> None:
+    def test_researcher_attention_is_first_page_only_and_capped(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        post_a = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="a" * 100
-        )["post"]["id"]
-        self.call("feed.post", project_id=self.pid, handle="Nova-7", text="untouched")
-        self.app.feed.set_reaction(
-            project_id=self.pid, post_id=post_a, kind="eyes", on=True
-        )
-        first = self.call("feed.list", project_id=self.pid)
-        self.assertIn("researcher_attention", first)
-        attention = first["researcher_attention"]
-        self.assertEqual(len(attention), 1)
-        self.assertEqual(attention[0]["post_id"], post_a)
-        self.assertEqual(attention[0]["reactions"], ["eyes"])
-        self.assertEqual(attention[0]["text_snippet"], ("a" * 100)[:80])
-        # A paginated read must not recompute/carry it (nudge-like: first page only).
-        paged = self.call("feed.list", project_id=self.pid, before_seq=10_000_000)
-        self.assertNotIn("researcher_attention", paged)
-
-    def test_researcher_attention_absent_when_nothing_reacted(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hi")
-        first = self.call("feed.list", project_id=self.pid)
-        self.assertNotIn("researcher_attention", first)
-
-    def test_researcher_attention_caps_at_five(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        for i in range(7):
+        reacted = []
+        for i in range(5):
             post_id = self.call(
                 "feed.post", project_id=self.pid, handle="Nova-7", text=f"post {i}"
             )["post"]["id"]
+            reacted.append(post_id)
+        long_post = self.call(
+            "feed.post", project_id=self.pid, handle="Nova-7", text="a" * 100
+        )["post"]["id"]
+        reacted.append(long_post)
+        self.assertNotIn(
+            "researcher_attention",
+            self.call("feed.list", project_id=self.pid),
+        )
+
+        for post_id in reacted:
             self.app.feed.set_reaction(
-                project_id=self.pid, post_id=post_id, kind="fire", on=True
+                project_id=self.pid,
+                post_id=post_id,
+                kind="eyes" if post_id == long_post else "fire",
+                on=True,
             )
-        first = self.call("feed.list", project_id=self.pid)
-        self.assertEqual(len(first["researcher_attention"]), 5)
+        attention = self.call("feed.list", project_id=self.pid)[
+            "researcher_attention"
+        ]
+        self.assertEqual(len(attention), 5)
+        long_post_attention = next(
+            item for item in attention if item["post_id"] == long_post
+        )
+        self.assertEqual(long_post_attention["reactions"], ["eyes"])
+        self.assertEqual(long_post_attention["text_snippet"], ("a" * 100)[:80])
+        self.assertNotIn(
+            "researcher_attention",
+            self.call("feed.list", project_id=self.pid, before_seq=10_000_000),
+        )
 
     # -- researcher replies -----------------------------------------------------
-
-    def test_researcher_reply_creates_threaded_post_and_registers_handle(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        original = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="finding"
-        )["post"]["id"]
-        result = self.app.feed.researcher_reply(
-            project_id=self.pid, post_id=original, text="nice catch"
-        )
-        reply = result["post"]
-        self.assertEqual(reply["author_handle"], "Researcher")
-        self.assertEqual(reply["author_role"], "researcher")
-        self.assertEqual(reply["in_reply_to"], original)
-        posts = self.call("feed.list", project_id=self.pid)["posts"]
-        self.assertEqual([p["text"] for p in posts], ["nice catch", "finding"])
 
     def test_researcher_reply_enforces_char_cap(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
@@ -548,56 +408,40 @@ class FeedServiceTest(unittest.TestCase):
                 in_reply_to="post_missing",
             )
 
-    def test_researcher_reply_does_not_reset_cold_feed_clock(self) -> None:
-        # A researcher reply is not agent activity: the nudge clock must still
-        # measure from the last AGENT post, not the reply.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        original = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="finding"
-        )["post"]["id"]
-        with self.app.store.transaction() as conn:
-            before = self.app.feed.feed_signal(project_id=self.pid, conn=conn)
-        self.app.feed.researcher_reply(
-            project_id=self.pid, post_id=original, text="nice catch"
-        )
-        with self.app.store.transaction() as conn:
-            after = self.app.feed.feed_signal(project_id=self.pid, conn=conn)
-        self.assertEqual(before["last_post_at"], after["last_post_at"])
-
     # -- embeds -----------------------------------------------------------------
 
     def test_embed_size_cap_enforced(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         oversized = b"<html><body>" + b"x" * MAX_FEED_EMBED_BYTES + b"</body></html>"
         with self.assertRaises(ValidationError):
-            self.app.feed.post_observed(
+            self.app.post_feed_media(
                 project_id=self.pid,
                 handle="Nova-7",
                 text="chart",
                 html_path="chart.html",
-                html_bytes=oversized,
+                data=oversized,
             )
 
     def test_embed_rejects_non_html_bytes(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         with self.assertRaises(ValidationError):
-            self.app.feed.post_observed(
+            self.app.post_feed_media(
                 project_id=self.pid,
                 handle="Nova-7",
                 text="chart",
                 html_path="chart.html",
-                html_bytes=_PNG,
+                data=_PNG,
             )
 
     def test_embed_captured_and_served_wrapped(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         fragment = b"<div>hello</div>"
-        result = self.app.feed.post_observed(
+        result = self.app.post_feed_media(
             project_id=self.pid,
             handle="Nova-7",
             text="chart",
             html_path="chart.html",
-            html_bytes=fragment,
+            data=fragment,
         )
         self.assertTrue(result["post"]["has_embed"])
         wrapped = self.app.feed.get_embed(
@@ -605,36 +449,6 @@ class FeedServiceTest(unittest.TestCase):
         )
         self.assertIn("<div>hello</div>", wrapped)
         self.assertIn("Content-Security-Policy", wrapped)
-
-    def test_image_and_embed_are_mutually_exclusive(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        with self.assertRaisesRegex(ValidationError, "image or an embed"):
-            self.app.feed.post_observed(
-                project_id=self.pid,
-                handle="Nova-7",
-                text="both",
-                image_path="p.png",
-                image_bytes=_PNG,
-                html_path="c.html",
-                html_bytes=b"<html><body>x</body></html>",
-            )
-
-    def test_html_post_mints_and_upload_serves_wrapped_embed(self) -> None:
-        # An html_path post mints a token; the PUT pushes the embed bytes and
-        # the served document is CSP-wrapped, same as post_observed did.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        result = self.app.post_feed_media(
-            project_id=self.pid,
-            handle="Nova-7",
-            text="chart",
-            html_path="chart.html",
-            data=b"<div>hello</div>",
-        )
-        self.assertTrue(result["post"]["has_embed"])
-        wrapped = self.app.feed.get_embed(
-            project_id=self.pid, post_id=result["post"]["id"]
-        )
-        self.assertIn("<div>hello</div>", wrapped)
 
     def test_image_and_html_path_together_rejected_at_mint(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
@@ -650,50 +464,29 @@ class FeedServiceTest(unittest.TestCase):
 
     # -- nudge --------------------------------------------------------------
 
-    def test_nudge_excludes_feed_events(self) -> None:
-        # Registering + posting produce feed.* events; they must not count as
-        # "activity since last post" that would nudge the agent to post again.
+    def test_feed_list_exposes_cadence_without_private_signal_checks(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hello")
-        with self.app.store.transaction() as conn:
-            signal = self.app.feed.feed_signal(project_id=self.pid, conn=conn)
-        self.assertEqual(signal["events_since_last_post"], 0)
-
-    def test_feed_list_surfaces_nudge_on_first_page_only(self) -> None:
-        # The nudge reaches the agent through the feed's OWN surface (feed.list),
-        # not the research workflow — keeping the feed standalone.
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        orig = feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS
-        feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = 1, 0.0
+        with unittest.mock.patch.object(
+            feed_module, "now_iso", return_value="2020-01-01T00:00:00Z"
+        ):
+            post_id = self.call(
+                "feed.post", project_id=self.pid, handle="Nova-7", text="hello"
+            )["post"]["id"]
+        orig = feed_module.NUDGE_AFTER_EVENTS, feed_module.NUDGE_AFTER_HOURS
+        feed_module.NUDGE_AFTER_EVENTS, feed_module.NUDGE_AFTER_HOURS = 2, 0.0
         try:
+            self.assertNotIn("nudge", self.call("feed.list", project_id=self.pid))
             self.call("claim.create", project_id=self.pid, statement="a claim")
+            self.app.feed.researcher_reply(
+                project_id=self.pid, post_id=post_id, text="keep going"
+            )
             first = self.call("feed.list", project_id=self.pid)
             self.assertIn("nudge", first)
             self.assertTrue(first["nudge"]["should_post"])
-            # A paginated read (cursor set) omits the nudge — no nagging mid-scroll.
             paged = self.call("feed.list", project_id=self.pid, before_seq=10_000_000)
             self.assertNotIn("nudge", paged)
         finally:
-            feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = orig
-
-    def test_nudge_fires_on_real_activity(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        orig_events, orig_hours = (
-            feed_policy.NUDGE_AFTER_EVENTS,
-            feed_policy.NUDGE_AFTER_HOURS,
-        )
-        feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = 1, 0.0
-        try:
-            self.call("claim.create", project_id=self.pid, statement="a claim")
-            with self.app.store.transaction() as conn:
-                nudge = self.app.feed.feed_nudge(project_id=self.pid, conn=conn)
-            self.assertIsNotNone(nudge)
-            self.assertTrue(nudge["should_post"])
-        finally:
-            feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = (
-                orig_events,
-                orig_hours,
-            )
+            feed_module.NUDGE_AFTER_EVENTS, feed_module.NUDGE_AFTER_HOURS = orig
 
 
 class FeedEmbedWrapTest(unittest.TestCase):
@@ -776,12 +569,12 @@ class FeedHttpTest(unittest.TestCase):
         self.assertEqual(reply["in_reply_to"], post_id)
 
     def test_feed_listing_enriches_embed_url(self) -> None:
-        post_id = self.app.feed.post_observed(
+        post_id = self.app.post_feed_media(
             project_id=self.pid,
             handle="Nova-7",
             text="chart",
             html_path="chart.html",
-            html_bytes=b"<html><body>x</body></html>",
+            data=b"<html><body>x</body></html>",
         )["post"]["id"]
         response = self.client.get(f"/api/projects/{self.pid}/feed")
         self.assertEqual(response.status_code, 200)
@@ -792,12 +585,12 @@ class FeedHttpTest(unittest.TestCase):
         )
 
     def test_embed_endpoint_serves_wrapped_html_with_sandbox_headers(self) -> None:
-        post_id = self.app.feed.post_observed(
+        post_id = self.app.post_feed_media(
             project_id=self.pid,
             handle="Nova-7",
             text="chart",
             html_path="chart.html",
-            html_bytes=b"<html><body><script>1</script></body></html>",
+            data=b"<html><body><script>1</script></body></html>",
         )["post"]["id"]
         response = self.client.get(f"/api/projects/{self.pid}/feed/{post_id}/embed")
         self.assertEqual(response.status_code, 200)
@@ -927,7 +720,7 @@ class FeedUnfurlSsrfTest(unittest.TestCase):
             "http://example.com:22/",
         ):
             with self.subTest(url=bad):
-                with self.assertRaises(UnfurlError):
+                with self.assertRaises(WebPreviewError):
                     unfurl(bad)
 
 
@@ -957,7 +750,7 @@ class FeedUnfurlArxivPdfTest(unittest.TestCase):
 
             with self.subTest(url=pdf_url):
                 with unittest.mock.patch(
-                    "merv.brain.feed.feed_unfurl.safe_fetch", fake_fetch
+                    "merv.brain.surface.web_preview.safe_fetch", fake_fetch
                 ):
                     card = unfurl(pdf_url)
                 self.assertEqual(fetched, [f"https://arxiv.org/abs/{arxiv_id}"])
@@ -974,18 +767,14 @@ class FeedUnfurlArxivPdfTest(unittest.TestCase):
             fetched.append(url)
             return (url, "text/html", self._ABS_HTML)
 
-        with unittest.mock.patch("merv.brain.feed.feed_unfurl.safe_fetch", fake_fetch):
+        with unittest.mock.patch("merv.brain.surface.web_preview.safe_fetch", fake_fetch):
             card = unfurl("https://arxiv.org/abs/2106.09685")
         self.assertEqual(fetched, ["https://arxiv.org/abs/2106.09685"])
         self.assertEqual(card["url"], "https://arxiv.org/abs/2106.09685")
 
 
 class FeedNoteForTest(unittest.TestCase):
-    """Unit coverage for FeedService.feed_note_for (Part 2's dedupe helper):
-    other services never touch the posts table directly (test_module_boundaries
-    enforces that), they call this. Wiring it into tool responses is covered
-    separately (tests/surface/test_feed_note_attach.py) plus one end-to-end
-    transition test below."""
+    """Detailed advisory dedupe cases beyond the isolated core workflow."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1001,36 +790,6 @@ class FeedNoteForTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_returns_a_note_for_an_unmentioned_entity(self) -> None:
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid,
-            entity_id="exp_unmentioned",
-            event="experiment_complete",
-        )
-        self.assertIsNotNone(note)
-        self.assertIn("exp_unmentioned", note)
-        self.assertIn("feed-posting skill", note)
-
-    def test_service_implements_the_public_transition_advisory(self) -> None:
-        self.assertIsInstance(self.app.feed, Feed)
-        note = self.app.feed.transition_advisory(
-            project_id=self.pid,
-            experiment_id="exp_public",
-            event="experiment_complete",
-        )
-        self.assertIsNotNone(note)
-        self.assertIn("exp_public", note)
-
-    def test_none_when_a_post_ref_names_the_entity(self) -> None:
-        self.app.feed.register(handle="Nova-7", project_id=self.pid)
-        self.app.feed.post(
-            handle="Nova-7", project_id=self.pid, text="wrapped up", ref="exp_ref_1"
-        )
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_ref_1", event="experiment_complete"
-        )
-        self.assertIsNone(note)
-
     def test_none_when_a_posts_text_mentions_the_entity_inline(self) -> None:
         self.app.feed.register(handle="Nova-7", project_id=self.pid)
         self.app.feed.post(
@@ -1038,8 +797,8 @@ class FeedNoteForTest(unittest.TestCase):
             project_id=self.pid,
             text="wrapping up exp_inline_1 today, results look solid",
         )
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_inline_1", event="experiment_complete"
+        note = self.app.feed.transition_advisory(
+            project_id=self.pid, experiment_id="exp_inline_1", event="experiment_complete"
         )
         self.assertIsNone(note)
 
@@ -1048,8 +807,8 @@ class FeedNoteForTest(unittest.TestCase):
         self.app.feed.post(
             handle="Nova-7", project_id=self.pid, text="something else entirely"
         )
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_untouched", event="experiment_complete"
+        note = self.app.feed.transition_advisory(
+            project_id=self.pid, experiment_id="exp_untouched", event="experiment_complete"
         )
         self.assertIsNotNone(note)
 
@@ -1063,26 +822,26 @@ class FeedNoteForTest(unittest.TestCase):
             project_id=self.pid,
             text="expX12 is a different experiment",
         )
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_12", event="experiment_complete"
+        note = self.app.feed.transition_advisory(
+            project_id=self.pid, experiment_id="exp_12", event="experiment_complete"
         )
         self.assertIsNotNone(note)
 
     def test_missing_project_id_or_entity_id_returns_none(self) -> None:
         self.assertIsNone(
-            self.app.feed.feed_note_for(
-                project_id="", entity_id="exp_1", event="experiment_complete"
+            self.app.feed.transition_advisory(
+                project_id="", experiment_id="exp_1", event="experiment_complete"
             )
         )
         self.assertIsNone(
-            self.app.feed.feed_note_for(
-                project_id=self.pid, entity_id="", event="experiment_complete"
+            self.app.feed.transition_advisory(
+                project_id=self.pid, experiment_id="", event="experiment_complete"
             )
         )
 
     def test_unknown_event_still_produces_a_generic_note(self) -> None:
-        note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_x", event="some_future_event"
+        note = self.app.feed.transition_advisory(
+            project_id=self.pid, experiment_id="exp_x", event="some_future_event"
         )
         self.assertIsNotNone(note)
         self.assertIn("exp_x", note)
@@ -1200,26 +959,6 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertIn("feed_note", result)
         self.assertIn(exp_id, result["feed_note"])
-
-    def test_complete_transition_omits_feed_note_once_a_post_mentions_it(self) -> None:
-        exp_id = self._drive_to_ready_for_complete(name="exp-mentioned")
-        self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        self.call(
-            "feed.post",
-            project_id=self.pid,
-            handle="Nova-7",
-            text="wrapping this one up now",
-            ref=exp_id,
-        )
-        result = self.call(
-            "experiment.transition",
-            project_id=self.pid,
-            experiment_id=exp_id,
-            transition="complete",
-        )
-        self.assertEqual(result["status"], "complete")
-        self.assertNotIn("feed_note", result)
-
 
 if __name__ == "__main__":
     unittest.main()

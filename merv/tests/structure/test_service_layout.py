@@ -690,17 +690,21 @@ class ServiceLayoutTest(unittest.TestCase):
             reflection_calls,
         )
 
-    def test_feed_service_does_not_read_local_image_paths(self) -> None:
+    def test_feed_service_does_not_read_workspace_media(self) -> None:
         source = (FEED_ROOT / "feed.py").read_text(encoding="utf-8")
 
-        self.assertIn("from . import feed_policy", source)
         self.assertNotIn("resolve_repo_relative_file", source)
         self.assertNotIn(".read_bytes(", source)
         self.assertNotIn("workspace", source)
-        self.assertIn("post_observed", source)
 
-    def test_feed_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(FEED_ROOT / "feed_policy.py"), set())
+    def test_feed_schema_stays_out_of_business_logic(self) -> None:
+        core_source = (FEED_ROOT / "feed.py").read_text(encoding="utf-8")
+        persistence_source = (FEED_ROOT / "persistence.py").read_text(encoding="utf-8")
+        self.assertNotIn("CREATE TABLE", core_source)
+        self.assertIn("CREATE TABLE IF NOT EXISTS posts", persistence_source)
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS feed_upload_tokens", persistence_source
+        )
 
     def test_experiment_names_are_domain_policy(self) -> None:
         self.assertEqual(
