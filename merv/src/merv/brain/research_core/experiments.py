@@ -24,9 +24,12 @@ from .domain.reflection_policy import (
 )
 from .domain.review_snapshot import review_snapshot_id
 from .domain.artifact_evidence import (
+    ArtifactDocument,
     current_slot_artifacts,
     preferred_artifact,
     artifact_state_record,
+    require_artifact_document,
+    submission_state_record,
 )
 from .domain.workflow_gates import (
     GATE_TABLE,
@@ -38,12 +41,7 @@ from .gate_evaluation import (
     RequirementEvaluation,
     evaluate_artifact_requirement,
 )
-from ..artifacts.ports import (
-    AssociatedEvidence,
-    EvidenceReader,
-    SubmissionSealer,
-    SubmittedDocument,
-)
+from ..artifacts import Artifact, ArtifactTarget, Artifacts, Submission
 from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
@@ -102,12 +100,10 @@ class ExperimentService:
         self,
         *,
         store: BaseStateStore,
-        evidence_reader: EvidenceReader,
-        submissions: SubmissionSealer,
+        artifacts: Artifacts,
     ) -> None:
         self.store = store
-        self.evidence_reader = evidence_reader
-        self.submissions = submissions
+        self.artifacts = artifacts
 
     def create(
         self,
@@ -346,6 +342,12 @@ class ExperimentService:
                 raise NotFoundError(
                     f"experiment not found in project {project_id}: {experiment_id}"
                 )
+            history = self.artifacts.history(
+                tx=conn,
+                target_type="experiment",
+                target_ids=(experiment_id,),
+                summarize=True,
+            )[experiment_id]
             return self._assemble_state_with_gate(
                 conn=conn,
                 experiment=data,
@@ -359,9 +361,7 @@ class ExperimentService:
                     """,
                     (experiment_id,),
                 ),
-                evidence=self.evidence_reader.artifacts_for_target(
-                    target_type="experiment", target_id=experiment_id
-                ),
+                evidence=history.artifacts,
                 reviews=_query(
                     conn,
                     """SELECT * FROM reviews
@@ -369,6 +369,7 @@ class ExperimentService:
                     ORDER BY created_seq DESC""",
                     (experiment_id,),
                 ),
+                submissions=history.submissions,
             )
         finally:
             if owns_conn:
@@ -412,20 +413,20 @@ class ExperimentService:
         ):
             reviews.setdefault(str(review["target_id"]), []).append(review)
 
-        evidence = self.evidence_reader.artifacts_for_targets(
-            target_type="experiment", target_ids=experiment_ids
-        )
-        submissions = self.submissions.submissions_for_targets(
-            conn=conn, target_type="experiment", target_ids=experiment_ids
+        history = self.artifacts.history(
+            tx=conn,
+            target_type="experiment",
+            target_ids=experiment_ids,
+            summarize=True,
         )
         return [
             self._assemble_state_with_gate(
                 conn=conn,
                 experiment=experiment,
                 tested_claims=claims.get(str(experiment["id"]), []),
-                evidence=evidence.get(str(experiment["id"]), ()),
+                evidence=history[str(experiment["id"])].artifacts,
                 reviews=reviews.get(str(experiment["id"]), []),
-                submissions=submissions.get(str(experiment["id"]), []),
+                submissions=history[str(experiment["id"])].submissions,
             )
             for experiment in experiment_rows
         ]
@@ -436,9 +437,9 @@ class ExperimentService:
         conn,
         experiment: dict[str, Any],
         tested_claims: list[dict[str, Any]],
-        evidence: tuple[AssociatedEvidence, ...],
+        evidence: tuple[Artifact, ...],
         reviews: list[dict[str, Any]],
-        submissions: list[dict[str, Any]] | None = None,
+        submissions: tuple[Submission, ...],
     ) -> tuple[dict[str, Any], GateEvaluation]:
         data = dict(experiment)
         data["tested_claims"] = tested_claims
@@ -449,15 +450,9 @@ class ExperimentService:
         data["current_attempt_artifacts"] = current_slot_artifacts(
             data["artifacts"], attempt=data["attempt_index"]
         )
-        data["submissions"] = (
-            submissions
-            if submissions is not None
-            else self.submissions.submissions_for_targets(
-                conn=conn,
-                target_type="experiment",
-                target_ids=(str(data["id"]),),
-            ).get(str(data["id"]), [])
-        )
+        data["submissions"] = [
+            submission_state_record(submission) for submission in submissions
+        ]
         data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
         for review in reviews:
             review["findings"] = json.loads(review.pop("findings_json", "[]"))
@@ -868,12 +863,11 @@ class ExperimentService:
             # Every forward transition seals, not just submit_results: that is
             # one rule instead of a maintained allowlist, and it preserves plan
             # history at submit_design on the same terms as report history.
-            self.submissions.seal(
-                conn=conn,
-                project_id=experiment["project_id"],
-                target_type="experiment",
-                target_id=experiment_id,
-                attempt_index=int(experiment.get("attempt_index") or 1),
+            self.artifacts.seal(
+                tx=conn,
+                target=ArtifactTarget(
+                    "experiment", experiment_id, experiment["project_id"]
+                ),
                 transition=transition,
             )
             if transition == "complete":
@@ -1031,7 +1025,7 @@ class ExperimentService:
 
     def _submitted_document(
         self, *, experiment: dict[str, Any], role: str, what: str
-    ) -> SubmittedDocument:
+    ) -> ArtifactDocument:
         artifact = preferred_artifact(
             artifacts=experiment.get("current_attempt_artifacts") or [],
             roles=(role,),
@@ -1040,8 +1034,15 @@ class ExperimentService:
             raise WorkflowError(
                 f"no {role!r} artifact is submitted for the current attempt"
             )
-        return self.evidence_reader.submitted_document(
-            artifact_id=str(artifact.get("id") or ""), what=what
+        artifact_id = str(artifact.get("id") or "")
+        found = self.artifacts.get(
+            artifact_ids=(artifact_id,),
+            include="document",
+        )
+        return require_artifact_document(
+            found[0] if found else None,
+            artifact_id=artifact_id,
+            what=what,
         )
 
     def _validate_plan_sections(self, *, experiment: dict[str, Any]) -> None:

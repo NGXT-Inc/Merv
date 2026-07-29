@@ -1,48 +1,55 @@
 from __future__ import annotations
 
+from contextlib import closing
+import json
+from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
-from pathlib import Path
+from unittest.mock import Mock
 
-from merv.brain.artifacts.submissions import (
-    ArtifactSubmissionService,
+from merv.brain.artifacts.artifacts import (
+    MAX_SUBMITTED_TEXT_BYTES,
     UPLOAD_TOKEN_TTL_SECONDS,
+    ArtifactTarget,
+    Artifacts,
+    CompletedArtifact,
+    CompletedFigure,
 )
-from merv.brain.artifacts.ports import MAX_SUBMITTED_TEXT_BYTES
-from merv.shared.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
 from merv.brain.kernel.state import StateStore
 from merv.brain.kernel.utils import (
     NotFoundError,
     ValidationError,
-    WorkflowError,
     new_id,
     now_iso,
 )
 from merv.brain.object_storage.blobs import LocalDirBlobStore
 from merv.brain.research_core.association_targets import AssociationTargets
-from merv.brain.research_core.domain.review_snapshot import review_snapshot_id
+from merv.shared.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
 
-PLAN_MD = "## Summary\nBody.\n\n## Objective\nGoal.\n\n## Evaluation\nMetric.\n"
-REPORT_WITH_FIGURE = (
+
+PLAN = "## Summary\nBody.\n\n## Objective\nGoal.\n\n## Evaluation\nMetric.\n"
+REPORT = (
     "## Summary\nRan it.\n\n## Results\n![curve](figures/curve.png)\n\n"
     "## Deviations from plan\nNone.\n\n## Conclusion\nDone.\n"
 )
 
 
-class ArtifactSubmissionServiceTest(unittest.TestCase):
+class ArtifactsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.store = StateStore(db_path=root / "state.sqlite")
         self.blobs = LocalDirBlobStore(root=root / "blobs")
-        self.service = ArtifactSubmissionService(
+        self.artifacts = Artifacts(
             store=self.store,
             blobs=self.blobs,
-            association_targets=AssociationTargets(store=self.store),
+            targets=AssociationTargets(),
         )
-        with closing(self.store.connect()) as conn:
-            self.project_id = str(conn.execute("SELECT id FROM projects").fetchone()["id"])
+        with closing(self.store.connect()) as tx:
+            self.project_id = str(
+                tx.execute("SELECT id FROM projects").fetchone()["id"]
+            )
         self.experiment_id = self._insert_experiment()
 
     def tearDown(self) -> None:
@@ -50,490 +57,587 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
 
     def _insert_experiment(self, *, attempt_index: int = 1) -> str:
         experiment_id = new_id(prefix="exp")
-        with self.store.transaction() as conn:
-            conn.execute(
+        with self.store.transaction() as tx:
+            tx.execute(
                 """
-                INSERT INTO experiments
-                  (id, project_id, name, intent, status, attempt_index,
-                   revision_context, created_at, updated_at)
+                INSERT INTO experiments (
+                  id, project_id, name, intent, status, attempt_index,
+                  revision_context, created_at, updated_at
+                )
                 VALUES (?, ?, ?, 'test', 'planned', ?, '', ?, ?)
                 """,
-                (experiment_id, self.project_id, experiment_id, attempt_index,
-                 now_iso(), now_iso()),
+                (
+                    experiment_id,
+                    self.project_id,
+                    experiment_id,
+                    attempt_index,
+                    now_iso(),
+                    now_iso(),
+                ),
             )
         return experiment_id
 
     def _insert_reflection(self, *, status: str = "reflecting") -> str:
         reflection_id = new_id(prefix="ref")
-        with self.store.transaction() as conn:
-            conn.execute(
+        with self.store.transaction() as tx:
+            tx.execute(
                 """
-                INSERT INTO reflections
-                  (id, project_id, title, status, created_at, updated_at)
+                INSERT INTO reflections (
+                  id, project_id, title, status, created_at, updated_at
+                )
                 VALUES (?, ?, 'Wave', ?, ?, ?)
                 """,
-                (reflection_id, self.project_id, status, now_iso(), now_iso()),
+                (
+                    reflection_id,
+                    self.project_id,
+                    status,
+                    now_iso(),
+                    now_iso(),
+                ),
             )
         return reflection_id
 
-    def _submit(self, *, role: str = "plan", path: str = "plan.md", **kwargs):
-        return self.service.submit(
-            target_type="experiment",
-            target_id=self.experiment_id,
+    def _submit(
+        self,
+        *,
+        role: str = "plan",
+        path: str = "plan.md",
+        **kwargs,
+    ):
+        return self.artifacts.submit(
+            target=ArtifactTarget(
+                target_type="experiment",
+                target_id=self.experiment_id,
+                project_id=self.project_id,
+            ),
             role=role,
             path=path,
-            project_id=self.project_id,
             **kwargs,
         )
 
-    def _token(self, pending: dict) -> str:
-        return pending["run"].rsplit("/", 1)[-1].rstrip("'")
-
-    def test_full_loop_submit_upload_read(self) -> None:
-        pending = self._submit()
-        self.assertTrue(pending["artifact_id"].startswith("art_"))
-        self.assertIn("/api/artifacts/u/", pending["run"])
-
-        result = self.service.complete_upload(
-            token=self._token(pending), data=PLAN_MD.encode()
+    def _complete(self, pending, data: bytes = PLAN.encode()) -> CompletedArtifact:
+        completed = self.artifacts.complete_upload(
+            token=pending.token,
+            kind="artifact",
+            data=data,
         )
-        self.assertEqual(result["artifact_id"], pending["artifact_id"])
-        self.assertEqual(result["figures"], [])
+        assert isinstance(completed, CompletedArtifact)
+        return completed
 
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
-        )
-        self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0].role, "plan")
-        self.assertEqual(evidence[0].attempt_index, 1)
-        self.assertEqual(evidence[0].path, "plan.md")
+    def _history(self, target_id: str | None = None):
+        target_id = target_id or self.experiment_id
+        with closing(self.store.connect()) as tx:
+            return self.artifacts.history(
+                tx=tx,
+                target_type="experiment",
+                target_ids=(target_id,),
+                summarize=True,
+            )[target_id]
 
-        document = self.service.submitted_document(
-            artifact_id=pending["artifact_id"], what="experiment plan"
-        )
-        self.assertEqual(document.text, PLAN_MD)
-        self.assertEqual(document.role, "plan")
-
-    def test_submit_validates_role_and_lens_pairing(self) -> None:
-        with self.assertRaises(ValidationError):
-            self._submit(role="code", path="train.py")  # untyped roles are gone
-        with self.assertRaises(ValidationError):
-            self._submit(role="reflection_lens_doc", path="rigor.md")  # no lens_id
-        with self.assertRaises(ValidationError):
-            self._submit(role="plan", lens_id="rigor")  # lens_id on wrong role
-
-    def test_upload_token_is_single_use(self) -> None:
-        pending = self._submit()
-        token = self._token(pending)
-        self.service.complete_upload(token=token, data=PLAN_MD.encode())
-        with self.assertRaises(NotFoundError):
-            self.service.complete_upload(token=token, data=PLAN_MD.encode())
-
-    def test_expired_pending_rows_are_swept_on_access(self) -> None:
-        pending = self._submit()
-        with self.store.transaction() as conn:
-            conn.execute(
-                "UPDATE artifacts SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?",
-                (pending["artifact_id"],),
-            )
-        with self.assertRaises(NotFoundError):
-            self.service.complete_upload(
-                token=self._token(pending), data=PLAN_MD.encode()
-            )
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM artifacts WHERE id = ?", (pending["artifact_id"],)
-            ).fetchone()
-        self.assertIsNone(row)
-        self.assertGreater(UPLOAD_TOKEN_TTL_SECONDS, 0)
-
-    def test_oversize_upload_is_rejected_with_cap_details(self) -> None:
-        pending = self._submit()
-        with self.assertRaises(ValidationError) as caught:
-            self.service.complete_upload(
-                token=self._token(pending), data=b"x" * 20_000
-            )
-        self.assertEqual(caught.exception.details["max_bytes"], 16_000)
-        # The token died with the pending row? No — the row survives a failed
-        # cap check inside the rolled-back transaction, so a slimmed retry works.
-        result = self.service.complete_upload(
-            token=self._token(pending), data=PLAN_MD.encode()
-        )
-        self.assertEqual(result["artifact_id"], pending["artifact_id"])
-
-    def test_resubmit_supersedes_and_invalidates_the_snapshot(self) -> None:
-        first = self._submit()
-        self.service.complete_upload(token=self._token(first), data=PLAN_MD.encode())
-        snapshot_before = self._snapshot()
-
-        second = self._submit()
-        self.service.complete_upload(
-            token=self._token(second), data=(PLAN_MD + "v2\n").encode()
-        )
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
-        )
+    def test_public_api_is_the_nine_domain_operations(self) -> None:
+        public_methods = {
+            name
+            for name, value in vars(Artifacts).items()
+            if callable(value) and not name.startswith("_")
+        }
         self.assertEqual(
-            [item.artifact_id for item in evidence], [second["artifact_id"]]
-        )
-        self.assertNotEqual(first["artifact_id"], second["artifact_id"])
-        self.assertNotEqual(snapshot_before, self._snapshot())
-
-    def _snapshot(self) -> str:
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
-        )
-        return review_snapshot_id(
-            target_type="experiment",
-            target={
-                "id": self.experiment_id,
-                "status": "planned",
-                "attempt_index": 1,
-                "current_attempt_artifacts": [
-                    {
-                        "id": item.artifact_id,
-                        "role": item.role,
-                        "attempt_index": item.attempt_index,
-                    }
-                    for item in evidence
-                ],
+            public_methods,
+            {
+                "submit",
+                "upload_cap",
+                "complete_upload",
+                "get",
+                "scan",
+                "figure",
+                "pin",
+                "seal",
+                "history",
             },
         )
 
-    def test_frozen_target_refuses_completion_and_expires_the_row(self) -> None:
-        # Race closed: a token minted while the wave was open must not
-        # complete after the wave publishes (the frozen wave would drift).
-        reflection_id = self._insert_reflection()
-        pending = self.service.submit(
-            target_type="reflection",
-            target_id=reflection_id,
-            role="reflection_doc",
-            path="reflections/wave.md",
+    def test_submit_upload_get_scan_and_history(self) -> None:
+        pending = self._submit(path=r"\plans\plan.md")
+        self.assertTrue(pending.artifact_id.startswith("art_"))
+        self.assertEqual(pending.path, "plans/plan.md")
+
+        completed = self._complete(pending)
+        self.assertEqual(completed.artifact_id, pending.artifact_id)
+        self.assertEqual(completed.figures, ())
+
+        payload = self.artifacts.get(
+            artifact_ids=(pending.artifact_id,),
             project_id=self.project_id,
+            include="content",
+        )[0]
+        self.assertEqual(payload.data, PLAN.encode())
+        self.assertEqual(payload.role, "plan")
+        self.assertEqual(payload.attempt_index, 1)
+
+        scanned = self.artifacts.scan(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_ids=(self.experiment_id,),
         )
-        with self.store.transaction() as conn:
-            conn.execute(
-                "UPDATE reflections SET status = 'published' WHERE id = ?",
-                (reflection_id,),
-            )
-        with self.assertRaises(ValidationError) as caught:
-            self.service.complete_upload(
-                token=self._token(pending), data=b"## Story\nS.\n"
-            )
-        self.assertIn("published", caught.exception.message)
-        # The refusal expired the row: the token is dead, nothing completed.
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM artifacts WHERE id = ?", (pending["artifact_id"],)
-            ).fetchone()
-        self.assertIsNone(row)
+        self.assertEqual([artifact.id for artifact in scanned], [pending.artifact_id])
+        history = self._history()
+        self.assertEqual([artifact.id for artifact in history.artifacts], [pending.artifact_id])
+        self.assertTrue(history.artifacts[0].tldr)
+
+    def test_history_reads_blobs_only_for_best_effort_summaries(self) -> None:
+        pending = self._submit()
+        self._complete(pending)
+        unavailable_blobs = Mock(wraps=self.blobs)
+        unavailable_blobs.get.side_effect = RuntimeError("storage unavailable")
+        self.artifacts._blobs = unavailable_blobs
+
+        with closing(self.store.connect()) as tx:
+            plain = self.artifacts.history(
+                tx=tx,
+                target_type="experiment",
+                target_ids=(self.experiment_id,),
+            )[self.experiment_id]
+        unavailable_blobs.get.assert_not_called()
+        self.assertEqual([item.id for item in plain.artifacts], [pending.artifact_id])
+        self.assertEqual(plain.artifacts[0].tldr, "")
+
+        with closing(self.store.connect()) as tx:
+            summarized = self.artifacts.history(
+                tx=tx,
+                target_type="experiment",
+                target_ids=(self.experiment_id,),
+                summarize=True,
+            )[self.experiment_id]
+        unavailable_blobs.get.assert_called_once()
+        self.assertEqual(
+            [item.id for item in summarized.artifacts],
+            [pending.artifact_id],
+        )
+        self.assertIn("No submitted text is available", summarized.artifacts[0].tldr)
+
+    def test_submit_validates_role_lens_and_project(self) -> None:
+        with self.assertRaises(ValidationError):
+            self._submit(role="code", path="train.py")
+        with self.assertRaises(ValidationError):
+            self._submit(role="reflection_lens_doc", path="rigor.md")
+        with self.assertRaises(ValidationError):
+            self._submit(role="plan", lens_id="rigor")
         with self.assertRaises(NotFoundError):
-            self.service.complete_upload(
-                token=self._token(pending), data=b"## Story\nS.\n"
+            self.artifacts.submit(
+                target=ArtifactTarget(
+                    target_type="experiment",
+                    target_id=self.experiment_id,
+                    project_id="proj_missing",
+                ),
+                role="plan",
+                path="plan.md",
             )
 
-    def test_a_superseded_attempt_cannot_complete_its_stale_token(self) -> None:
-        # ART-02: a token minted in attempt 1 promised bytes to a round that
-        # attempt 2 has closed; completing it would land work in a dead round.
-        stale = self._submit()
-        with self.store.transaction() as conn:
-            conn.execute(
+    def test_upload_token_is_capped_expiring_and_single_use(self) -> None:
+        with self.assertRaises(NotFoundError):
+            self.artifacts.upload_cap(token="unknown", kind="artifact")
+        pending = self._submit()
+        self.assertEqual(
+            self.artifacts.upload_cap(token=pending.token, kind="artifact"),
+            MAX_SUBMITTED_TEXT_BYTES,
+        )
+        self._complete(pending)
+        with self.assertRaises(NotFoundError):
+            self._complete(pending)
+
+        expired = self._submit(path="expired.md")
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                UPDATE artifacts SET expires_at = '2000-01-01T00:00:00Z'
+                WHERE id = ?
+                """,
+                (expired.artifact_id,),
+            )
+        with self.assertRaises(NotFoundError):
+            self._complete(expired)
+        self.assertGreater(UPLOAD_TOKEN_TTL_SECONDS, 0)
+
+    def test_oversize_upload_rolls_back_and_allows_a_smaller_retry(self) -> None:
+        pending = self._submit()
+        with self.assertRaises(ValidationError) as caught:
+            self._complete(pending, b"x" * (MAX_SUBMITTED_TEXT_BYTES + 1))
+        self.assertEqual(
+            caught.exception.details["max_bytes"],
+            MAX_SUBMITTED_TEXT_BYTES,
+        )
+        self.assertEqual(self._complete(pending).artifact_id, pending.artifact_id)
+
+    def test_resubmit_replaces_live_rows_but_not_sealed_history(self) -> None:
+        first = self._submit()
+        self._complete(first)
+        second = self._submit()
+        self._complete(second, (PLAN + "v2\n").encode())
+        self.assertEqual(
+            [item.id for item in self.artifacts.scan(target_ids=(self.experiment_id,))],
+            [second.artifact_id],
+        )
+
+        with self.store.transaction() as tx:
+            self.artifacts.seal(
+                tx=tx,
+                target=ArtifactTarget(
+                    target_type="experiment",
+                    target_id=self.experiment_id,
+                    project_id=self.project_id,
+                ),
+                transition="submit_design",
+            )
+        third = self._submit()
+        self._complete(third, (PLAN + "v3\n").encode())
+
+        history = self._history()
+        submission = history.submissions[0]
+        by_id = {item.id: item for item in history.artifacts}
+        self.assertEqual(set(by_id), {second.artifact_id, third.artifact_id})
+        self.assertEqual(by_id[second.artifact_id].submission_id, submission.id)
+        self.assertEqual(by_id[third.artifact_id].submission_id, "")
+        self.assertEqual([item.id for item in history.submissions], [submission.id])
+
+    def test_seal_uses_the_callers_transaction(self) -> None:
+        pending = self._submit()
+        self._complete(pending)
+        with self.assertRaisesRegex(RuntimeError, "force rollback"):
+            with self.store.transaction() as tx:
+                self.artifacts.seal(
+                    tx=tx,
+                    target=ArtifactTarget(
+                        target_type="experiment",
+                        target_id=self.experiment_id,
+                        project_id=self.project_id,
+                    ),
+                    transition="submit_design",
+                )
+                raise RuntimeError("force rollback")
+        history = self._history()
+        self.assertEqual(history.submissions, ())
+        self.assertEqual(history.artifacts[0].submission_id, "")
+
+    def test_stale_attempt_token_is_deleted_before_refusal(self) -> None:
+        pending = self._submit()
+        with self.store.transaction() as tx:
+            tx.execute(
                 "UPDATE experiments SET attempt_index = 2 WHERE id = ?",
                 (self.experiment_id,),
             )
-        with self.assertRaises(ValidationError) as caught:
-            self.service.complete_upload(
-                token=self._token(stale), data=PLAN_MD.encode()
-            )
-        self.assertIn("attempt superseded", caught.exception.message)
-        self.assertIn("artifact.submit again", caught.exception.message)
-        # The refusal expired the row, so a retry finds no token at all.
+        with self.assertRaisesRegex(ValidationError, "attempt superseded"):
+            self._complete(pending)
         with self.assertRaises(NotFoundError):
-            self.service.complete_upload(
-                token=self._token(stale), data=PLAN_MD.encode()
-            )
-        self.assertEqual(
-            self.service.artifacts_for_target(
-                target_type="experiment", target_id=self.experiment_id
+            self._complete(pending)
+
+    def test_terminal_target_token_is_deleted_before_refusal(self) -> None:
+        reflection_id = self._insert_reflection()
+        pending = self.artifacts.submit(
+            target=ArtifactTarget(
+                target_type="reflection",
+                target_id=reflection_id,
+                project_id=self.project_id,
             ),
-            (),
+            role="reflection_doc",
+            path="reflection.md",
         )
-        # A token minted in the CURRENT attempt completes normally.
-        fresh = self._submit()
-        completed = self.service.complete_upload(
-            token=self._token(fresh), data=PLAN_MD.encode()
-        )
-        self.assertEqual(completed["artifact_id"], fresh["artifact_id"])
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
-        )
-        self.assertEqual([item.attempt_index for item in evidence], [2])
-
-    def test_artifact_content_binary_contract(self) -> None:
-        # Declared non-text type is binary even when the bytes decode as UTF-8.
-        cases = (
-            ("data.bin", b"plain ascii bytes", True),
-            ("archive.zip", b"PK fake zip", True),
-            ("notes.txt", b"a\x00b", True),  # NUL byte in valid UTF-8
-            ("metrics.json", b'{"accuracy": 0.9}', False),
-            ("notes.txt", b"hello", False),
-        )
-        for path, data, expect_binary in cases:
-            with self.subTest(path=path, data=data):
-                pending = self._submit(role="result", path=path)
-                self.service.complete_upload(token=self._token(pending), data=data)
-                content = self.service.artifact_content(
-                    artifact_id=pending["artifact_id"], project_id=self.project_id
-                )
-                self.assertTrue(content["available"])
-                self.assertEqual(content["is_binary"], expect_binary)
-                self.assertEqual(
-                    content["content"], None if expect_binary else data.decode()
-                )
-
-    def test_upload_command_always_shell_quotes_the_path(self) -> None:
-        pending = self._submit(path="my plan's file.md")
-        self.assertIn("curl -sf -T 'my plan'\\''s file.md' '", pending["run"])
-
-    def test_pending_upload_cap_gates_on_the_token_first(self) -> None:
-        with self.assertRaises(NotFoundError):
-            self.service.pending_upload_cap(token="tok_unknown")
-        pending = self._submit()
-        self.assertEqual(
-            self.service.pending_upload_cap(token=self._token(pending)), 16_000
-        )
-        report = self._submit(role="report", path="report.md")
-        result = self.service.complete_upload(
-            token=self._token(report), data=REPORT_WITH_FIGURE.encode()
-        )
-        self.assertEqual(
-            self.service.pending_upload_cap(
-                token=result["figures"][0]["token"], kind="f"
-            ),
-            MARKDOWN_FIGURE_MAX_BYTES,
-        )
-        with self.assertRaises(NotFoundError):
-            self.service.pending_upload_cap(token="tok_unknown", kind="f")
-
-    def test_unsafe_figure_links_are_rejected_at_upload(self) -> None:
-        for link in ("../secrets.png", "figs;rm.png", "figs/`id`.png", "$HOME.png"):
-            pending = self._submit(role="report", path=f"r{len(link)}.md")
-            bad = f"## Summary\nS.\n\n![x]({link})\n"
-            with self.assertRaises(ValidationError):
-                self.service.complete_upload(
-                    token=self._token(pending), data=bad.encode()
-                )
-            # The rollback kept the row pending: the same token accepts the
-            # fixed document.
-            result = self.service.complete_upload(
-                token=self._token(pending), data=b"## Summary\nS.\n"
+        with self.store.transaction() as tx:
+            tx.execute(
+                "UPDATE reflections SET status = 'published' WHERE id = ?",
+                (reflection_id,),
             )
-            self.assertEqual(result["artifact_id"], pending["artifact_id"])
+        with self.assertRaisesRegex(ValidationError, "published"):
+            self.artifacts.complete_upload(
+                token=pending.token,
+                kind="artifact",
+                data=b"## Summary\nDone.\n",
+            )
+        with self.assertRaises(NotFoundError):
+            self.artifacts.upload_cap(token=pending.token, kind="artifact")
 
-    def test_figure_flow_mints_tokens_and_pins_bytes(self) -> None:
-        pending = self._submit(role="report", path="report.md")
-        result = self.service.complete_upload(
-            token=self._token(pending), data=REPORT_WITH_FIGURE.encode()
-        )
+    def test_figure_uploads_are_typed_capped_and_readable(self) -> None:
+        report = self._submit(role="report", path="reports/report.md")
+        completed = self._complete(report, REPORT.encode())
         self.assertEqual(
-            [figure["link_path"] for figure in result["figures"]],
+            [figure.link_path for figure in completed.figures],
             ["figures/curve.png"],
         )
-        # Until the figure lands, the document reports no submitted figures.
-        document = self.service.submitted_document(
-            artifact_id=pending["artifact_id"], what="results report"
-        )
-        self.assertEqual(document.figure_links, ())
-
-        png = b"\x89PNG fake bytes"
-        uploaded = self.service.complete_figure_upload(
-            token=result["figures"][0]["token"], data=png
-        )
-        self.assertEqual(uploaded["link_path"], "figures/curve.png")
-        document = self.service.submitted_document(
-            artifact_id=pending["artifact_id"], what="results report"
-        )
-        self.assertEqual(document.figure_links, ("figures/curve.png",))
+        figure = completed.figures[0]
         self.assertEqual(
-            self.service.figure_bytes(
-                artifact_id=pending["artifact_id"],
+            self.artifacts.upload_cap(token=figure.token, kind="figure"),
+            MARKDOWN_FIGURE_MAX_BYTES,
+        )
+        png = b"\x89PNG fake"
+        uploaded = self.artifacts.complete_upload(
+            token=figure.token,
+            kind="figure",
+            data=png,
+        )
+        self.assertIsInstance(uploaded, CompletedFigure)
+        assert isinstance(uploaded, CompletedFigure)
+        self.assertEqual(uploaded.artifact_id, report.artifact_id)
+        self.assertEqual(
+            self.artifacts.figure(
+                artifact_id=report.artifact_id,
                 link_path="figures/curve.png",
                 project_id=self.project_id,
             ),
             png,
         )
-        with self.assertRaises(NotFoundError):  # figure tokens are single-use
-            self.service.complete_figure_upload(
-                token=result["figures"][0]["token"], data=png
+        payload = self.artifacts.get(
+            artifact_ids=(report.artifact_id,),
+            include="document",
+        )[0]
+        self.assertEqual(payload.figures, ("figures/curve.png",))
+        with self.assertRaises(NotFoundError):
+            self.artifacts.complete_upload(
+                token=figure.token,
+                kind="figure",
+                data=png,
             )
 
-    def test_a_stale_figure_token_cannot_mutate_a_closed_round(self) -> None:
-        # ART-02: a figure token inherits its document's (target, attempt)
-        # binding. Attempt 2 closed the round the token was minted in, so the
-        # figure must not land in the attempt-1 document's figure set.
-        png = b"\x89PNG fake bytes"
+    def test_unsafe_figure_link_rolls_back_for_a_fixed_retry(self) -> None:
+        for index, link in enumerate(
+            ("../secret.png", "figs;rm.png", "figs/`id`.png", "$HOME.png")
+        ):
+            pending = self._submit(role="report", path=f"report-{index}.md")
+            with self.assertRaises(ValidationError):
+                self._complete(
+                    pending,
+                    f"## Summary\nS.\n\n![x]({link})\n".encode(),
+                )
+            self.assertEqual(
+                self._complete(pending, b"## Summary\nFixed.\n").artifact_id,
+                pending.artifact_id,
+            )
+
+    def test_stale_figure_token_cannot_mutate_a_closed_round(self) -> None:
         report = self._submit(role="report", path="report.md")
-        result = self.service.complete_upload(
-            token=self._token(report), data=REPORT_WITH_FIGURE.encode()
-        )
-        figure_token = result["figures"][0]["token"]
-        with self.store.transaction() as conn:
-            conn.execute(
+        figure_token = self._complete(report, REPORT.encode()).figures[0].token
+        with self.store.transaction() as tx:
+            tx.execute(
                 "UPDATE experiments SET attempt_index = 2 WHERE id = ?",
                 (self.experiment_id,),
             )
-        with self.assertRaises(ValidationError) as caught:
-            self.service.complete_figure_upload(token=figure_token, data=png)
-        self.assertIn("attempt superseded", caught.exception.message)
-        # The refusal expired the pending figure tokens, so a retry finds none.
-        with self.assertRaises(NotFoundError):
-            self.service.complete_figure_upload(token=figure_token, data=png)
-        document = self.service.submitted_document(
-            artifact_id=report["artifact_id"], what="results report"
-        )
-        self.assertEqual(document.figure_links, ())
-
-        # A figure minted in the CURRENT attempt completes normally.
-        fresh = self._submit(role="report", path="report.md")
-        minted = self.service.complete_upload(
-            token=self._token(fresh), data=REPORT_WITH_FIGURE.encode()
-        )
-        uploaded = self.service.complete_figure_upload(
-            token=minted["figures"][0]["token"], data=png
-        )
-        self.assertEqual(uploaded["link_path"], "figures/curve.png")
-        self.assertEqual(
-            self.service.submitted_document(
-                artifact_id=fresh["artifact_id"], what="results report"
-            ).figure_links,
-            ("figures/curve.png",),
-        )
-
-    def test_a_figure_token_is_refused_once_its_target_goes_terminal(self) -> None:
-        # ART-02: same target-status check the primary upload runs — a frozen
-        # wave's figure set must not drift after it publishes.
-        reflection_id = self._insert_reflection()
-        pending = self.service.submit(
-            target_type="reflection",
-            target_id=reflection_id,
-            role="reflection_doc",
-            path="reflections/wave.md",
-            project_id=self.project_id,
-        )
-        result = self.service.complete_upload(
-            token=self._token(pending),
-            data="## Story\n![curve](figures/curve.png)\n".encode(),
-        )
-        figure_token = result["figures"][0]["token"]
-        with self.store.transaction() as conn:
-            conn.execute(
-                "UPDATE reflections SET status = 'published' WHERE id = ?",
-                (reflection_id,),
+        with self.assertRaisesRegex(ValidationError, "attempt superseded"):
+            self.artifacts.complete_upload(
+                token=figure_token,
+                kind="figure",
+                data=b"\x89PNG",
             )
-        with self.assertRaises(ValidationError) as caught:
-            self.service.complete_figure_upload(
-                token=figure_token, data=b"\x89PNG fake bytes"
+        self.assertIsNone(
+            self.artifacts.figure(
+                artifact_id=report.artifact_id,
+                link_path="figures/curve.png",
             )
-        self.assertIn("published", caught.exception.message)
-        with self.assertRaises(NotFoundError):
-            self.service.complete_figure_upload(
-                token=figure_token, data=b"\x89PNG fake bytes"
-            )
-        self.assertEqual(
-            self.service.submitted_document(
-                artifact_id=pending["artifact_id"], what="reflection"
-            ).figure_links,
-            (),
         )
 
-    def test_result_role_pins_and_feeds_metric_sources(self) -> None:
-        pending = self._submit(role="result", path="anything/output.txt")
-        self.service.complete_upload(
-            token=self._token(pending), data=b'{"accuracy": 0.9}'
-        )
-        sources = self.service.metric_sources(
-            target_id=self.experiment_id, attempt_index=1
-        )
-        # Path label is a hint, never a gate: a .txt result still parses.
-        self.assertEqual(len(sources), 1)
-        self.assertEqual(sources[0]["data"], {"accuracy": 0.9})
-        self.assertEqual(sources[0]["artifact_id"], pending["artifact_id"])
-
-    def test_pin_system_artifact_inserts_complete_exhibit(self) -> None:
-        pinned = self.service.pin_system_artifact(
-            path="experiments/test/metrics_exhibit.json",
-            target_type="experiment",
-            target_id=self.experiment_id,
+    def test_get_is_ordered_omits_missing_ids_and_supports_read_modes(self) -> None:
+        second = self._submit(role="result", path="second.txt")
+        self._complete(second, b"second")
+        self.artifacts.pin(
+            target=ArtifactTarget(
+                target_type="experiment",
+                target_id=self.experiment_id,
+                project_id=self.project_id,
+            ),
             role="exhibit",
-            content_bytes=b'{"kind": "metrics_exhibit"}',
-            title="Metrics exhibit",
-            project_id=self.project_id,
+            path="large.json",
+            data=b"a" * (MAX_SUBMITTED_TEXT_BYTES + 10),
         )
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
-        )
-        self.assertEqual(evidence[0].role, "exhibit")
-        self.assertEqual(evidence[0].created_by, "system")
-        self.assertEqual(evidence[0].path, "experiments/test/metrics_exhibit.json")
-        # Re-pinning replaces in place (same slot, fresh id).
-        repinned = self.service.pin_system_artifact(
-            path="experiments/test/metrics_exhibit.json",
-            target_type="experiment",
-            target_id=self.experiment_id,
-            role="exhibit",
-            content_bytes=b'{"kind": "metrics_exhibit", "v": 2}',
-            title="Metrics exhibit",
-            project_id=self.project_id,
-        )
-        evidence = self.service.artifacts_for_target(
-            target_type="experiment", target_id=self.experiment_id
+        first_id = self.artifacts.scan(
+            target_ids=(self.experiment_id,),
+            roles=("exhibit",),
+        )[0].id
+
+        payloads = self.artifacts.get(
+            artifact_ids=(
+                second.artifact_id,
+                "art_missing",
+                first_id,
+                second.artifact_id,
+            ),
+            include="content",
         )
         self.assertEqual(
-            [item.artifact_id for item in evidence], [repinned["artifact_id"]]
+            [payload.id for payload in payloads],
+            [second.artifact_id, first_id],
         )
-        self.assertNotEqual(pinned["artifact_id"], repinned["artifact_id"])
+        self.assertEqual(
+            len(payloads[1].data or b""),
+            MAX_SUBMITTED_TEXT_BYTES + 10,
+        )
+        metadata = self.artifacts.get(artifact_ids=(first_id,))
+        self.assertIsNone(metadata[0].data)
 
-    def test_bounded_text_port_never_exceeds_gated_content_limit(self) -> None:
-        pinned = self.service.pin_system_artifact(
-            path="experiments/test/large-exhibit.json",
-            target_type="experiment",
-            target_id=self.experiment_id,
-            role="exhibit",
-            content_bytes=b"x" * (MAX_SUBMITTED_TEXT_BYTES + 100),
-            title="Large exhibit",
-            project_id=self.project_id,
-        )
-        content = self.service.bounded_text_for_artifact(
-            artifact_id=pinned["artifact_id"]
-        )
-        self.assertTrue(content.truncated)
-        self.assertEqual(content.size_bytes, MAX_SUBMITTED_TEXT_BYTES + 100)
-        self.assertIsNotNone(content.content)
-        self.assertLessEqual(
-            len(content.content.encode("utf-8")), MAX_SUBMITTED_TEXT_BYTES
-        )
+    def test_content_reads_isolate_blob_errors_but_document_reads_are_strict(
+        self,
+    ) -> None:
+        unavailable = self._submit(path="unavailable.md")
+        unavailable_result = self._complete(unavailable)
+        available = self._submit(role="result", path="available.txt")
+        self._complete(available, b"available")
 
-    def test_submitted_document_requires_a_complete_artifact(self) -> None:
-        with self.assertRaises(WorkflowError):
-            self.service.submitted_document(artifact_id="", what="experiment plan")
-        pending = self._submit()
-        with self.assertRaises(WorkflowError):
-            self.service.submitted_document(
-                artifact_id=pending["artifact_id"], what="experiment plan"
+        original_get = self.blobs.get
+
+        def flaky_get(*, namespace: str, sha256: str) -> bytes:
+            if sha256 == unavailable_result.sha256:
+                raise RuntimeError("transient storage failure")
+            return original_get(namespace=namespace, sha256=sha256)
+
+        flaky_blobs = Mock(wraps=self.blobs)
+        flaky_blobs.get.side_effect = flaky_get
+        self.artifacts._blobs = flaky_blobs
+
+        content = self.artifacts.get(
+            artifact_ids=(unavailable.artifact_id, available.artifact_id),
+            include="content",
+        )
+        self.assertEqual(
+            [artifact.id for artifact in content],
+            [unavailable.artifact_id, available.artifact_id],
+        )
+        self.assertIsNone(content[0].data)
+        self.assertEqual(content[1].data, b"available")
+
+        with self.assertRaisesRegex(RuntimeError, "transient storage failure"):
+            self.artifacts.get(
+                artifact_ids=(unavailable.artifact_id,),
+                include="document",
             )
 
-    def test_find_lists_only_complete_artifacts(self) -> None:
-        pending = self._submit()
-        listing = self.service.find(project_id=self.project_id)
-        self.assertEqual(listing["count"], 0)
-        self.service.complete_upload(token=self._token(pending), data=PLAN_MD.encode())
-        listing = self.service.find(
+    def test_scan_filters_complete_rows_roles_and_targets(self) -> None:
+        pending = self._submit(path="pending.md")
+        plan = self._submit(path="plan.md")
+        result = self._submit(role="result", path="result.json")
+        self._complete(plan)
+        self._complete(result, b'{"accuracy": 0.9}')
+        other_id = self._insert_experiment(attempt_index=2)
+        other = self.artifacts.submit(
+            target=ArtifactTarget(
+                target_type="experiment",
+                target_id=other_id,
+                project_id=self.project_id,
+            ),
+            role="plan",
+            path="other.md",
+        )
+        self._complete(other, b"other")
+
+        scanned = self.artifacts.scan(
             project_id=self.project_id,
             target_type="experiment",
-            target_id=self.experiment_id,
+            target_ids=(self.experiment_id, other_id),
+            roles=("plan",),
         )
-        self.assertEqual(listing["count"], 1)
-        self.assertNotIn("upload_token", listing["artifacts"][0])
+        self.assertEqual(
+            {item.id for item in scanned},
+            {plan.artifact_id, other.artifact_id},
+        )
+        self.assertNotIn(pending.artifact_id, {item.id for item in scanned})
+
+    def test_artifact_event_and_replacement_share_one_transaction(self) -> None:
+        original = self._submit()
+        self._complete(original)
+        replacement = self._submit()
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                CREATE TRIGGER reject_artifact_submitted
+                BEFORE INSERT ON events
+                WHEN NEW.type = 'artifact.submitted'
+                BEGIN
+                  SELECT RAISE(ABORT, 'forced artifact event failure');
+                END
+                """
+            )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError,
+            "forced artifact event failure",
+        ):
+            self._complete(replacement, (PLAN + "v2\n").encode())
+
+        with closing(self.store.connect()) as tx:
+            rows = tx.execute(
+                """
+                SELECT id, status, content_sha256 FROM artifacts
+                WHERE target_id = ? AND role = 'plan'
+                ORDER BY created_seq
+                """,
+                (self.experiment_id,),
+            ).fetchall()
+            event = tx.execute(
+                """
+                SELECT payload_json FROM events
+                WHERE type = 'artifact.submitted' AND target_id = ?
+                """,
+                (self.experiment_id,),
+            ).fetchone()
+        self.assertEqual(
+            [(str(row["id"]), str(row["status"])) for row in rows],
+            [
+                (original.artifact_id, "complete"),
+                (replacement.artifact_id, "pending"),
+            ],
+        )
+        self.assertEqual(str(rows[1]["content_sha256"]), "")
+        self.assertEqual(
+            json.loads(str(event["payload_json"])),
+            {
+                "artifact_id": original.artifact_id,
+                "attempt_index": 1,
+                "path": "plan.md",
+                "role": "plan",
+            },
+        )
+
+    def test_pin_is_complete_and_event_atomic(self) -> None:
+        self.artifacts.pin(
+            target=ArtifactTarget(
+                target_type="experiment",
+                target_id=self.experiment_id,
+                project_id=self.project_id,
+            ),
+            role="exhibit",
+            path="metrics/exhibit.json",
+            data=b'{"version": 1}',
+        )
+        original = self.artifacts.scan(
+            target_ids=(self.experiment_id,),
+            roles=("exhibit",),
+        )[0]
+
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                CREATE TRIGGER reject_artifact_pinned
+                BEFORE INSERT ON events
+                WHEN NEW.type = 'artifact.pinned'
+                BEGIN
+                  SELECT RAISE(ABORT, 'forced pinned event failure');
+                END
+                """
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "forced pinned event"):
+            self.artifacts.pin(
+                target=ArtifactTarget(
+                    target_type="experiment",
+                    target_id=self.experiment_id,
+                    project_id=self.project_id,
+                ),
+                role="exhibit",
+                path="metrics/exhibit.json",
+                data=b'{"version": 2}',
+            )
+        after = self.artifacts.scan(
+            target_ids=(self.experiment_id,),
+            roles=("exhibit",),
+        )
+        self.assertEqual([item.id for item in after], [original.id])
+        payload = self.artifacts.get(
+            artifact_ids=(original.id,),
+            include="content",
+        )[0]
+        self.assertEqual(payload.data, b'{"version": 1}')
 
 
 if __name__ == "__main__":

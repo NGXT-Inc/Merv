@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain, upload_token
-from merv.brain.artifacts.ports import MAX_SUBMITTED_TEXT_BYTES
+from merv.brain.artifacts.artifacts import MAX_SUBMITTED_TEXT_BYTES
 from merv.brain.research_core.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
 from merv.brain.research_core.domain.reflection_artifacts import (
     reflection_lens_doc_problems,

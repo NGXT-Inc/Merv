@@ -37,7 +37,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.artifacts.submissions import ArtifactSubmissionService
+from merv.brain.artifacts import Artifacts
 from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.application.queries import TenantCountersQuery
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
@@ -54,6 +54,7 @@ from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.research_core.experiments import ExperimentService
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.facade import ResearchCoreFacade
+from tests.fakes import FakeBlobStore
 from tests.sandbox.test_sandbox_event_contract import (
     SandboxRepositoryEventContractScenarios,
 )
@@ -1075,14 +1076,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
 
     def test_tracking_refresh_returns_exact_persisted_postgres_event(self) -> None:
         project_id = self._seed_project()
-        artifacts = ArtifactSubmissionService(
+        artifacts = Artifacts(
             store=self.store,
-            association_targets=AssociationTargets(store=self.store),
+            blobs=FakeBlobStore(),
+            targets=AssociationTargets(),
         )
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=artifacts,
-            submissions=artifacts,
+            artifacts=artifacts,
         )
         created = experiments.create(
             project_id=project_id, name="tracking-refresh", intent="postgres"
@@ -1112,14 +1113,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         import psycopg
 
         project_id = self._seed_project()
-        artifacts = ArtifactSubmissionService(
+        artifacts = Artifacts(
             store=self.store,
-            association_targets=AssociationTargets(store=self.store),
+            blobs=FakeBlobStore(),
+            targets=AssociationTargets(),
         )
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=artifacts,
-            submissions=artifacts,
+            artifacts=artifacts,
         )
         created = experiments.create(
             project_id=project_id, name="rollback-event", intent="postgres"
@@ -1199,16 +1200,18 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                         "UPDATE experiments SET revision_context = ? WHERE id = ?",
                         ("outer postgres write", experiment_id),
                     )
-                    artifacts = app.artifact_submissions.artifacts_for_target(
-                        target_type="experiment", target_id=experiment_id
-                    )
-                    document = app.artifact_submissions.submitted_document(
-                        artifact_id=artifacts[0].artifact_id,
-                        what="experiment plan",
-                    )
+                    artifacts = app.artifacts.history(
+                        tx=conn,
+                        target_type="experiment",
+                        target_ids=(experiment_id,),
+                    )[experiment_id].artifacts
+                    document = app.artifacts.get(
+                        artifact_ids=(artifacts[0].id,),
+                        include="content",
+                    )[0]
                     raise RuntimeError("rollback outer")
             self.assertEqual(artifacts[0].role, "plan")
-            self.assertIn("Postgres evidence", document.text)
+            self.assertIn("Postgres evidence", (document.data or b"").decode())
             conn = self.store.connect()
             try:
                 row = conn.execute(

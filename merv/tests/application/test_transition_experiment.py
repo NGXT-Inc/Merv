@@ -410,12 +410,7 @@ class RecordingArtifacts:
         self.pin_attempts: list[dict[str, Any]] = []
         self.pins: list[dict[str, Any]] = []
 
-    def metric_file_sources(
-        self, *, experiment_id: str, attempt_index: int
-    ) -> list[dict[str, Any]]:  # pragma: no cover - collaborator owns generation
-        raise AssertionError("TransitionExperiment must use its exhibit collaborator")
-
-    def pin_system_artifact(self, **kwargs: Any) -> None:
+    def pin(self, **kwargs: Any) -> None:
         self.order.append("artifacts.pin")
         copied = deepcopy(kwargs)
         self.pin_attempts.append(copied)
@@ -1557,10 +1552,12 @@ class SubmitResultsExhibitPrerequisiteTest(unittest.TestCase):
         self.assertTrue(research.verdicts[0]["pinned"])
         self.assertEqual(len(artifacts.pins), 1)
         pin = artifacts.pins[0]
-        self.assertEqual(pin["experiment_id"], EXPERIMENT_ID)
+        self.assertEqual(pin["target"].target_type, "experiment")
+        self.assertEqual(pin["target"].target_id, EXPERIMENT_ID)
+        self.assertEqual(pin["target"].project_id, PROJECT_ID)
         self.assertEqual(pin["role"], "exhibit")
-        self.assertEqual(pin["content_type"], "application/json")
-        self.assertEqual(json.loads(pin["content_bytes"]), _exhibit())
+        self.assertNotIn("content_type", pin)
+        self.assertEqual(json.loads(pin["data"]), _exhibit())
         self.assertEqual(
             result["metrics_exhibit"],
             {

@@ -16,7 +16,6 @@ from ...application.facade import (
     TransitionExperiment,
 )
 from ...application.ports.storage import ObjectStorage
-from ...artifacts.facade import ArtifactSubmissions
 from ...feed.facade import FeedDelivery
 from ...research_core.facade import (
     ResearchClaims,
@@ -25,6 +24,7 @@ from ...research_core.facade import (
     ResearchReviewDelivery,
 )
 from ...sandbox.facade import SandboxFacade
+from ..artifacts import ArtifactTools
 from .contracts import TOOL_MANIFEST, available_tool_names
 from .tool_facade import ToolHandler
 
@@ -36,7 +36,7 @@ def build_control_tool_handlers(
     claims: ResearchClaims,
     create_experiment: CreateExperiment,
     reflection_tools: ReflectionCommands,
-    artifact_submissions: ArtifactSubmissions,
+    artifact_submissions: ArtifactTools,
     storage: ObjectStorage | None,
     reviews: ResearchReviewDelivery,
     review_session: StartReviewSession,

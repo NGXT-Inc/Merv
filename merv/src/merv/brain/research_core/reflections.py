@@ -41,12 +41,14 @@ from .domain.reflection_policy import (
     reflection_signal_state,
 )
 from .domain.artifact_evidence import (
+    ArtifactDocument,
     artifact_state_record,
     current_slot_artifacts,
     artifact_submission_recency_key,
     preferred_artifact,
+    require_artifact_document,
 )
-from ..artifacts.ports import EvidenceReader, SubmissionSealer, SubmittedDocument
+from ..artifacts import MAX_SUBMITTED_TEXT_BYTES, ArtifactTarget, Artifacts
 from .domain.review_snapshot import review_snapshot_id
 from .domain.reflection_gates import (
     REFLECTION_GATE_TABLE,
@@ -81,14 +83,12 @@ class ReflectionService:
         store: BaseStateStore,
         claims: ReflectionClaimWriter,
         experiment_writer: ReflectionExperimentWriter,
-        evidence_reader: EvidenceReader,
-        submissions: SubmissionSealer,
+        artifacts: Artifacts,
     ) -> None:
         self.store = store
         self.claims = claims
         self.experiment_writer = experiment_writer
-        self.evidence_reader = evidence_reader
-        self.submissions = submissions
+        self.artifacts = artifacts
 
     # ---- create ----
 
@@ -170,13 +170,14 @@ class ReflectionService:
             (project_id,),
         ).fetchall()
         experiments = rows_to_dicts(rows=exp_rows)
-        experiment_artifacts = self.evidence_reader.artifacts_for_targets(
+        experiment_history = self.artifacts.history(
+            tx=conn,
             target_type="experiment",
             target_ids=tuple(str(experiment["id"]) for experiment in experiments),
         )
         for experiment in experiments:
             authoritative: dict[str, dict[str, Any]] = {}
-            for evidence in experiment_artifacts.get(str(experiment["id"]), ()):
+            for evidence in experiment_history[str(experiment["id"])].artifacts:
                 if (
                     evidence.attempt_index != int(experiment["attempt_index"])
                     or evidence.role not in {"report", "graph"}
@@ -290,11 +291,14 @@ class ReflectionService:
                 )
             data["roster"] = json.loads(str(data.pop("roster_json", "[]")))
             data["corpus"] = json.loads(str(data.pop("corpus_json", "{}")))
+            history = self.artifacts.history(
+                tx=conn,
+                target_type="reflection",
+                target_ids=(reflection_id,),
+                summarize=True,
+            )[reflection_id]
             data["artifacts"] = [
-                artifact_state_record(evidence)
-                for evidence in self.evidence_reader.artifacts_for_target(
-                    target_type="reflection", target_id=reflection_id
-                )
+                artifact_state_record(evidence) for evidence in history.artifacts
             ]
             # Newest row per slot — the reflection wave seals on its forward
             # transitions too, so superseded lens docs stay alive as history.
@@ -373,14 +377,31 @@ class ReflectionService:
     def _hydrate_artifact_content(
         self, *, artifact: dict[str, Any]
     ) -> dict[str, Any]:
-        result = self.evidence_reader.bounded_text_for_artifact(
-            artifact_id=str(artifact.get("artifact_id") or artifact.get("id") or "")
+        artifact_id = str(
+            artifact.get("artifact_id") or artifact.get("id") or ""
         )
+        found = self.artifacts.get(
+            artifact_ids=(artifact_id,),
+            include="content",
+        )
+        content = None
+        truncated = False
+        if found and found[0].data is not None:
+            data = found[0].data
+            truncated = len(data) > MAX_SUBMITTED_TEXT_BYTES
+            content = data[:MAX_SUBMITTED_TEXT_BYTES].decode(
+                "utf-8", errors="replace"
+            )
+            encoded = content.encode("utf-8")
+            if len(encoded) > MAX_SUBMITTED_TEXT_BYTES:
+                content = encoded[:MAX_SUBMITTED_TEXT_BYTES].decode(
+                    "utf-8", errors="ignore"
+                )
         return {
             **{key: value for key, value in artifact.items() if key != "tldr"},
-            "content": result.content,
-            "content_available": result.content is not None,
-            "content_truncated": result.truncated,
+            "content": content,
+            "content_available": content is not None,
+            "content_truncated": truncated,
         }
 
     def _hydrate_current_attempt_artifacts(
@@ -699,9 +720,7 @@ class ReflectionService:
         self, *, artifact_id: str, what: str
     ) -> tuple[dict[str, Any] | None, list[str]]:
         try:
-            text = self.evidence_reader.submitted_document(
-                artifact_id=artifact_id, what=what
-            ).text
+            text = self._read_document(artifact_id=artifact_id, what=what).text
         except WorkflowError as exc:
             return None, [str(exc)]
         problems = graph_problems(text)
@@ -709,6 +728,22 @@ class ReflectionService:
             return None, [f"{what}: {problem}" for problem in problems]
         data = json.loads(text)
         return data, []
+
+    def _read_document(self, *, artifact_id: str, what: str) -> ArtifactDocument:
+        """Read one complete artifact as strict UTF-8 for a workflow gate."""
+        if not artifact_id:
+            raise WorkflowError(
+                f"{what} has no submitted artifact — submit it with artifact.submit"
+            )
+        found = self.artifacts.get(
+            artifact_ids=(artifact_id,),
+            include="document",
+        )
+        return require_artifact_document(
+            found[0] if found else None,
+            artifact_id=artifact_id,
+            what=what,
+        )
 
     def _evaluate_gate(self, *, conn, reflection: dict[str, Any]) -> GateEvaluation:
         """Collect reflection facts once for enforcement, state, and guidance."""
@@ -808,7 +843,7 @@ class ReflectionService:
             for lens in coverage.get("lenses") or []:
                 lens_id, path = str(lens["lens_id"]), str(lens["path"])
                 try:
-                    text = self.evidence_reader.submitted_document(
+                    text = self._read_document(
                         artifact_id=str(lens.get("artifact_id") or ""),
                         what=f"reflection {lens_id!r}",
                     ).text
@@ -891,12 +926,11 @@ class ReflectionService:
             now = now_iso()
             # Same seal as the experiment FSM: freeze this round's lens docs
             # so a re-run of the fan-out cannot delete what was reviewed.
-            self.submissions.seal(
-                conn=conn,
-                project_id=reflection["project_id"],
-                target_type="reflection",
-                target_id=reflection_id,
-                attempt_index=int(reflection.get("attempt_index") or 1),
+            self.artifacts.seal(
+                tx=conn,
+                target=ArtifactTarget(
+                    "reflection", reflection_id, reflection["project_id"]
+                ),
                 transition=transition,
             )
             if transition == "publish":
@@ -1209,15 +1243,16 @@ class ReflectionService:
         reflection: dict[str, Any],
         roles: tuple[str, ...],
         what: str,
-    ) -> SubmittedDocument | None:
+    ) -> ArtifactDocument | None:
         artifact = preferred_artifact(
             artifacts=reflection.get("current_attempt_artifacts") or [],
             roles=roles,
         )
         if artifact is None:
             return None
-        return self.evidence_reader.submitted_document(
-            artifact_id=str(artifact.get("id") or ""), what=what
+        return self._read_document(
+            artifact_id=str(artifact.get("id") or ""),
+            what=what,
         )
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:

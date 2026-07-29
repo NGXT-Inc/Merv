@@ -105,7 +105,7 @@ def create_fastapi_app(
         ),
         reflections.build_router(graphs=api.logic_graph),
         litreview.build_router(literature=api.literature),
-        artifacts.build_router(submissions=api.artifact_submissions),
+        artifacts.build_router(artifacts=api.artifacts),
         storage.build_router(storage=api.storage),
         reviews.build_router(ctx, review_delivery=api.reviews),
         sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),

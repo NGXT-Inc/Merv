@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 
 from merv.brain.application.queries import (
@@ -9,6 +10,7 @@ from merv.brain.application.queries import (
     MlflowOverviewQuery,
     TenantCountersQuery,
 )
+from merv.brain.artifacts import Artifact
 
 
 class RecordingQuery:
@@ -115,16 +117,54 @@ class GraphResearch:
 
 class GraphArtifacts:
     def __init__(self) -> None:
-        self.resolved = []
+        self.get_calls = []
 
-    def submitted_text_for_artifact(self, *, artifact_id):
+    def _content(self, artifact_id: str) -> bytes | None:
         if artifact_id == "res_new":
-            return '{"version":1,"nodes":[{"id":"n","label":"New","refs":["claim_1"]}]}'
+            return (
+                b'{"version":1,"nodes":['
+                b'{"id":"n","label":"New","refs":["claim_1"]}]}'
+            )
         return None
 
-    def resolve_artifact_reference(self, *, project_id, artifact_id):
-        self.resolved.append({"project_id": project_id, "artifact_id": artifact_id})
+    def _reference(self, artifact_id: str) -> Artifact | None:
         return None
+
+    def get(self, **kwargs):
+        self.get_calls.append(kwargs)
+        payloads = []
+        for artifact_id in kwargs["artifact_ids"]:
+            content = self._content(artifact_id)
+            artifact = (
+                _artifact(artifact_id, role="graph")
+                if content is not None
+                else self._reference(artifact_id)
+            )
+            if artifact is not None:
+                payloads.append(replace(artifact, data=content))
+        return tuple(payloads)
+
+
+def _artifact(artifact_id: str, *, role: str) -> Artifact:
+    return Artifact(
+        id=artifact_id,
+        project_id="proj_1",
+        target_type="experiment",
+        target_id="exp_1",
+        role=role,
+        attempt_index=2,
+        lens_id="",
+        path=f"{artifact_id}.json",
+        title="",
+        sha256=f"sha-{artifact_id}",
+        size_bytes=1,
+        content_type="application/json",
+        status="complete",
+        created_by="agent",
+        created_at="2026-07-19T12:00:00Z",
+        updated_at="2026-07-19T12:00:00Z",
+        order=1,
+    )
 
 
 class ApplicationQueryTest(unittest.TestCase):
@@ -196,7 +236,10 @@ class ApplicationQueryTest(unittest.TestCase):
             research.resolved,
             [{"project_id": "proj_1", "refs": ("claim_1",)}],
         )
-        self.assertEqual(artifacts.resolved, [])
+        self.assertEqual(
+            [call["artifact_ids"] for call in artifacts.get_calls],
+            [("res_new",)],
+        )
 
     def test_logic_graph_query_composes_refs_in_first_seen_order(self) -> None:
         class MixedResearch(GraphResearch):
@@ -208,27 +251,20 @@ class ApplicationQueryTest(unittest.TestCase):
                 }
 
         class MixedArtifacts(GraphArtifacts):
-            def submitted_text_for_artifact(self, *, artifact_id):
+            def _content(self, artifact_id: str) -> bytes | None:
                 if artifact_id == "res_new":
                     return (
-                        '{"version":1,"nodes":['
-                        '{"id":"a","label":"A","refs":'
-                        '["claim_1","art_results","claim_1","exp_missing"]},'
-                        '{"id":"b","label":"B","refs":'
-                        '["art_missing","ghost.json"," ",7]}]}'
+                        b'{"version":1,"nodes":['
+                        b'{"id":"a","label":"A","refs":'
+                        b'["claim_1","art_results","claim_1","exp_missing"]},'
+                        b'{"id":"b","label":"B","refs":'
+                        b'["art_missing","ghost.json"," ",7]}]}'
                     )
                 return None
 
-            def resolve_artifact_reference(self, *, project_id, artifact_id):
-                self.resolved.append(
-                    {"project_id": project_id, "artifact_id": artifact_id}
-                )
+            def _reference(self, artifact_id: str) -> Artifact | None:
                 if artifact_id == "art_results":
-                    return {
-                        "type": "artifact",
-                        "resolved": True,
-                        "artifact_id": "art_results",
-                    }
+                    return _artifact(artifact_id, role="result")
                 return None
 
         research = MixedResearch()
@@ -274,8 +310,8 @@ class ApplicationQueryTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [call["artifact_id"] for call in artifacts.resolved],
-            ["art_results", "art_missing"],
+            [call["artifact_ids"] for call in artifacts.get_calls],
+            [("res_new",), ("art_results", "art_missing")],
         )
 
     def test_project_graph_keeps_signal_when_no_reflection_exists(self) -> None:

@@ -8,7 +8,6 @@ from merv.brain.application.experiments.transition import (
     TransitionResponse,
 )
 from merv.brain.application.reflections import ReflectionCommands
-from merv.brain.artifacts.facade import Artifacts, ArtifactsFacade
 from merv.brain.feed.facade import Feed
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import (
@@ -90,32 +89,6 @@ class RecordingExperimentService:
     def attempt_started_running_at(self, **kwargs):
         self.calls.append(("attempt_started_running_at", kwargs))
         return "2026-07-19T11:00:00Z"
-
-
-class RecordingSubmissionsService:
-    def __init__(self) -> None:
-        self.calls = []
-        self.sources = [
-            {
-                "path": "experiments/first/results.json",
-                "artifact_id": "art_1",
-                "sha256": "abc",
-                "submitted_at": "2026-07-19T11:30:00Z",
-                "data": {"accuracy": 0.8},
-            }
-        ]
-
-    def metric_sources(self, **kwargs):
-        self.calls.append(("metric_sources", kwargs))
-        return self.sources
-
-    def pin_system_artifact(self, **kwargs):
-        self.calls.append(("pin_system_artifact", kwargs))
-        return {"association": "internal result intentionally hidden"}
-
-    def resolve(self, **kwargs):
-        self.calls.append(("resolve", kwargs))
-        return {"id": "art_1", "path": "results.json", "role": "result", "title": ""}
 
 
 class RecordingReflectionService:
@@ -204,19 +177,13 @@ class RecordingResearchCoreFake:
 
 
 class RecordingArtifactsFake:
-    def metric_file_sources(self, **kwargs):
-        return []
+    def get(self, **_kwargs):
+        return ()
 
-    def pin_system_artifact(self, **kwargs):
-        return None
+    def scan(self, **_kwargs):
+        return ()
 
-    def submitted_text_for_artifact(self, **_kwargs):
-        return None
-
-    def submitted_artifact_figure(self, **_kwargs):
-        return None
-
-    def resolve_artifact_reference(self, **_kwargs):
+    def pin(self, **_kwargs):
         return None
 
 
@@ -234,14 +201,13 @@ class RecordingFeedFake:
 
 
 class ComponentFacadeTest(unittest.TestCase):
-    def test_structural_contracts_accept_isolated_application_fakes(self) -> None:
+    def test_application_contracts_accept_isolated_fakes(self) -> None:
         research = RecordingResearchCoreFake()
         artifacts = RecordingArtifactsFake()
         feed = RecordingFeedFake()
         reviews = RecordingResearchReviewsFake()
 
         self.assertIsInstance(research, ResearchCore)
-        self.assertIsInstance(artifacts, Artifacts)
         self.assertIsInstance(feed, Feed)
         self.assertIsInstance(reviews, ResearchReviews)
         self.assertEqual(
@@ -255,10 +221,12 @@ class ComponentFacadeTest(unittest.TestCase):
             "experiments/fake/exhibit.json",
         )
         self.assertEqual(
-            artifacts.metric_file_sources(
-                experiment_id="exp_fake", attempt_index=1
+            artifacts.scan(
+                project_id="proj_fake",
+                target_type="experiment",
+                target_ids=("exp_fake",),
             ),
-            [],
+            (),
         )
         self.assertIsNone(
             feed.transition_advisory(
@@ -471,67 +439,6 @@ class ComponentFacadeTest(unittest.TestCase):
 
         self.assertEqual(list(result), ["count", "reflections"])
         self.assertEqual(result, {"count": 1, "reflections": [{"id": "syn_1"}]})
-
-    def test_artifacts_facade_normalizes_only_the_experiment_target(self) -> None:
-        service = RecordingSubmissionsService()
-        facade = ArtifactsFacade(submissions=service)
-
-        self.assertIs(facade._submissions, service)
-        self.assertIsInstance(facade, Artifacts)
-        self.assertIs(
-            facade.metric_file_sources(experiment_id="exp_1", attempt_index=2),
-            service.sources,
-        )
-        self.assertIsNone(
-            facade.pin_system_artifact(
-                path="experiments/First_Run/metrics_exhibit.json",
-                experiment_id="exp_1",
-                role="exhibit",
-                content_bytes=b"{}",
-                content_type="application/json",
-                title="Metrics exhibit",
-                project_id="proj_1",
-            )
-        )
-        self.assertEqual(
-            facade.resolve_artifact_reference(
-                project_id="proj_1", artifact_id="art_1"
-            ),
-            {
-                "type": "artifact",
-                "resolved": True,
-                "artifact_id": "art_1",
-                "path": "results.json",
-                "role": "result",
-                "title": "",
-            },
-        )
-        self.assertEqual(
-            service.calls,
-            [
-                (
-                    "metric_sources",
-                    {"target_id": "exp_1", "attempt_index": 2},
-                ),
-                (
-                    "pin_system_artifact",
-                    {
-                        "path": "experiments/First_Run/metrics_exhibit.json",
-                        "target_type": "experiment",
-                        "target_id": "exp_1",
-                        "role": "exhibit",
-                        "content_bytes": b"{}",
-                        "content_type": "application/json",
-                        "title": "Metrics exhibit",
-                        "project_id": "proj_1",
-                    },
-                ),
-                (
-                    "resolve",
-                    {"artifact_id": "art_1", "project_id": "proj_1"},
-                ),
-            ],
-        )
 
     def test_committed_transition_is_the_research_owned_identity(self) -> None:
         self.assertIs(CommittedExperimentTransition, OwnedCommittedTransition)

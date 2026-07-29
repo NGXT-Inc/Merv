@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ...artifacts.submissions import ArtifactSubmissionService
+from ...artifacts import Artifacts
 from ...research_core.association_targets import AssociationTargets
 from ...research_core.claims import ClaimService
 from ...research_core.experiments import ExperimentService
@@ -28,7 +28,7 @@ class RecordCore:
     projects: ProjectService
     claims: ClaimService
     experiments: ExperimentService
-    artifact_submissions: ArtifactSubmissionService
+    artifacts: Artifacts
     graph_refs: GraphRefResolver
     reflection_waves: ReflectionService
     reviews: ReviewService
@@ -43,30 +43,27 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
     projects = ProjectService(store=store)
     claims = ClaimService(store=store)
     # Artifacts receives the narrow Research-owned association target resolver.
-    artifact_submissions = ArtifactSubmissionService(
+    artifacts = Artifacts(
         store=store,
         blobs=blobs,
-        association_targets=AssociationTargets(store=store),
+        targets=AssociationTargets(),
     )
     experiments = ExperimentService(
         store=store,
-        evidence_reader=artifact_submissions,
-        submissions=artifact_submissions,
+        artifacts=artifacts,
     )
     graph_refs = GraphRefResolver(store=store)
     reflection_waves = ReflectionService(
         store=store,
         claims=claims,
         experiment_writer=experiments,
-        evidence_reader=artifact_submissions,
-        submissions=artifact_submissions,
+        artifacts=artifacts,
     )
     reviews = ReviewService(
         store=store,
         experiments=experiments,
         reflections=reflection_waves,
-        evidence_reader=artifact_submissions,
-        submissions=artifact_submissions,
+        artifacts=artifacts,
     )
     feed = FeedService(store=store, blobs=blobs, link_unfurl=NetworkLinkUnfurl())
     literature = LiteratureService(store=store, unfurl=AllowlistedPaperUnfurl())
@@ -76,7 +73,7 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         projects=projects,
         claims=claims,
         experiments=experiments,
-        artifact_submissions=artifact_submissions,
+        artifacts=artifacts,
         graph_refs=graph_refs,
         reflection_waves=reflection_waves,
         reviews=reviews,

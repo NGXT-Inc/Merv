@@ -20,7 +20,7 @@ from ....application.facade import (
     TenantCountersQuery,
 )
 from ....application.ports.storage import ObjectStorage
-from ....artifacts.facade import ArtifactSubmissions
+from ....artifacts import Artifacts
 from ...user_settings import UserHfTokenSettings
 from ....feed.facade import FeedDelivery
 from ....research_core.facade import (
@@ -61,7 +61,7 @@ class HttpDependencies:
 
     projects: ResearchProjects
     reviews: ResearchReviewDelivery
-    artifact_submissions: ArtifactSubmissions
+    artifacts: Artifacts
     feed: FeedDelivery
     sandboxes: SandboxFacade
     storage: ObjectStorage | None

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock
 
-from merv.brain.artifacts.association_policy import validate_artifact_association
+from merv.brain.artifacts import ArtifactTarget, Artifacts
 from merv.brain.kernel.utils import PermissionDeniedError, ValidationError
 from merv.brain.research_core.domain.review_validation import (
     validate_review_role,
@@ -21,15 +22,28 @@ class OwnedPermissionPolicyTest(unittest.TestCase):
             validate_review_verdict(verdict="maybe")
 
     def test_artifacts_validates_association_vocabulary(self) -> None:
-        validate_artifact_association(target_type="experiment", role="plan")
+        artifacts = Artifacts(store=Mock(), blobs=Mock(), targets=Mock())
+
         with self.assertRaises(ValidationError) as target_error:
-            validate_artifact_association(target_type="project", role="plan")
+            artifacts.submit(
+                target=ArtifactTarget("project", "project_1"),
+                role="plan",
+                path="plan.md",
+            )
         self.assertIn("experiment", target_error.exception.details["allowed_target_types"])
         with self.assertRaises(ValidationError) as legacy_error:
-            validate_artifact_association(target_type="reflection", role="synthesis_doc")
+            artifacts.submit(
+                target=ArtifactTarget("reflection", "reflection_1"),
+                role="synthesis_doc",
+                path="synthesis.md",
+            )
         self.assertEqual(legacy_error.exception.details["replacement_role"], "reflection_doc")
         with self.assertRaises(ValidationError) as graph_error:
-            validate_artifact_association(target_type="reflection", role="graph")
+            artifacts.submit(
+                target=ArtifactTarget("reflection", "reflection_1"),
+                role="graph",
+                path="graph.json",
+            )
         self.assertEqual(graph_error.exception.details["replacement_role"], "project_graph")
 
     def test_surface_permission_is_only_tool_authorization(self) -> None:

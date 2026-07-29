@@ -119,10 +119,12 @@ class TrackingBoundaryTest(unittest.TestCase):
 
         class Resources:
             @staticmethod
-            def metric_file_sources(
-                *, experiment_id: str, attempt_index: int
-            ) -> list[dict[str, object]]:
-                return []
+            def scan(**_kwargs):
+                return ()
+
+            @staticmethod
+            def get(**_kwargs):
+                return ()
 
         tracking = TrackingWithoutPublicUris()
         exhibit = ExperimentExhibits(

@@ -7,7 +7,7 @@ from typing import Any
 
 from merv.shared.content_summaries import content_tldr
 
-from ...artifacts.facade import Artifacts
+from ...artifacts import Artifacts
 from ...research_core.facade import (
     EXPERIMENT_TERMINAL_STATUSES,
     ExperimentState,
@@ -42,6 +42,9 @@ class ExperimentContextQuery:
         pinned_artifacts: Iterable[Mapping[str, Any]] | None = None,
     ) -> Record:
         status = str(state.get("status") or "")
+        artifact_project_id = (
+            str(state.get("project_id") or project_id or "") or None
+        )
         rows, pinned_content = self._artifact_rows(
             state=state, pinned_artifacts=pinned_artifacts
         )
@@ -72,12 +75,14 @@ class ExperimentContextQuery:
                 state=state,
                 status=status,
                 pinned_content=pinned_content,
+                project_id=artifact_project_id,
             ),
             "report": self._report(
                 artifact=report,
                 state=state,
                 status=status,
                 pinned_content=pinned_content,
+                project_id=artifact_project_id,
             ),
             "artifacts": [
                 self._artifact_reference(artifact)
@@ -152,6 +157,7 @@ class ExperimentContextQuery:
         state: ExperimentState | Record,
         status: str,
         pinned_content: Mapping[str, str | None],
+        project_id: str | None,
     ) -> Record:
         if artifact is None:
             return {"status": "missing"}
@@ -163,7 +169,11 @@ class ExperimentContextQuery:
                 state=state, artifact_id=str(artifact.get("id") or "")
             ),
         }
-        content = self._content(artifact=artifact, pinned_content=pinned_content)
+        content = self._content(
+            artifact=artifact,
+            pinned_content=pinned_content,
+            project_id=project_id,
+        )
         if status in EXPERIMENT_TERMINAL_STATUSES:
             result["summary"] = str(artifact.get("tldr") or "").strip() or content_tldr(
                 content,
@@ -181,6 +191,7 @@ class ExperimentContextQuery:
         state: ExperimentState | Record,
         status: str,
         pinned_content: Mapping[str, str | None],
+        project_id: str | None,
     ) -> Record:
         if artifact is None:
             return {"status": "missing"}
@@ -192,7 +203,9 @@ class ExperimentContextQuery:
                 status=status,
             ),
             "content": self._content(
-                artifact=artifact, pinned_content=pinned_content
+                artifact=artifact,
+                pinned_content=pinned_content,
+                project_id=project_id,
             )
             or "",
         }
@@ -202,11 +215,20 @@ class ExperimentContextQuery:
         *,
         artifact: Record,
         pinned_content: Mapping[str, str | None],
+        project_id: str | None,
     ) -> str | None:
         artifact_id = str(artifact.get("id") or "")
         if artifact_id in pinned_content:
             return pinned_content[artifact_id]
-        return self.artifacts.submitted_text_for_artifact(artifact_id=artifact_id)
+        if not artifact_id:
+            return None
+        payloads = self.artifacts.get(
+            artifact_ids=(artifact_id,),
+            project_id=project_id,
+            include="content",
+        )
+        data = payloads[0].data if payloads else None
+        return data.decode("utf-8", errors="replace") if data is not None else None
 
     @staticmethod
     def _document_identity(artifact: Record) -> Record:

@@ -43,14 +43,6 @@ from merv.brain.application.ports.tracking import (
     TrackingRun,
     TrackingSnapshotRun,
 )
-from merv.brain.artifacts.facade import MetricFileSource
-from merv.brain.artifacts.ports import (
-    AssociatedEvidence,
-    AssociationTarget,
-    SubmittedContent,
-    SubmittedDocument,
-    SubmittedEvidence,
-)
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.kernel.ports.blob_store import (
     BlobDownloadTarget,
@@ -171,45 +163,6 @@ RUN: TrackingRun = {
 # One non-empty sample per discovered value type. TypedDicts are ordinary dicts
 # at runtime; including every declared field makes their nested shapes visible.
 SAMPLES: dict[type, object] = {
-    AssociatedEvidence: AssociatedEvidence(
-        artifact_id="art_1",
-        project_id="proj_1",
-        role="report",
-        attempt_index=2,
-        lens_id="",
-        path="experiments/example/report.md",
-        title="Report",
-        content_sha256="a" * 64,
-        size_bytes=3,
-        content_type="text/markdown",
-        created_by="agent",
-        created_at="2026-07-21T12:00:00Z",
-        updated_at="2026-07-21T12:00:00Z",
-        order=7,
-    ),
-    AssociationTarget: AssociationTarget("proj_1", 2),
-    SubmittedContent: SubmittedContent(
-        artifact_id="art_1",
-        content="# Report",
-        size_bytes=8,
-        truncated=False,
-    ),
-    SubmittedDocument: SubmittedDocument(
-        text="# Report",
-        artifact_id="art_1",
-        path="experiments/example/report.md",
-        role="report",
-        figure_links=("figures/result.png",),
-    ),
-    SubmittedEvidence: SubmittedEvidence(
-        role="report",
-        lens_id="",
-        path="experiments/example/report.md",
-        artifact_id="art_1",
-        submission_id="sub_1",
-        order=7,
-        content="# Report",
-    ),
     TrackingCapabilities: TrackingCapabilities(True, True, True),
     TrackingContextPayload: {
         "configured": True,
@@ -260,13 +213,6 @@ SAMPLES: dict[type, object] = {
         "created_at": "2026-07-21T12:00:00Z",
         "updated_at": "2026-07-21T12:00:00Z",
         "last_accessed_at": None,
-    },
-    MetricFileSource: {
-        "path": "experiments/example/results.json",
-        "artifact_id": "art_1",
-        "sha256": "a" * 64,
-        "submitted_at": "2026-07-21T12:00:00Z",
-        "data": {"accuracy": 0.9},
     },
     TrackingContextResponse: {
         "project_id": "proj_1",
@@ -492,7 +438,6 @@ ANNOTATION_DEBT = frozenset(
     {
         ("merv.brain.application.ports.tracking.TrackingMetric.step", "object"),
         ("merv.brain.application.ports.tracking.TrackingSnapshotRun.params", "object"),
-        ("merv.brain.artifacts.facade.MetricFileSource.data", "object"),
         (
             "merv.brain.application.experiments.tracking.ExperimentDetailResponse.mlflow",
             "Any",

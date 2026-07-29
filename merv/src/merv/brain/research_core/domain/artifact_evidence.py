@@ -10,9 +10,52 @@ how a rejected prior attempt's graph came to be presented as current.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from ...artifacts.ports import AssociatedEvidence
+from ...kernel.utils import WorkflowError
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDocument:
+    text: str
+    artifact_id: str
+    path: str
+    role: str
+    figure_links: tuple[str, ...]
+
+
+def require_artifact_document(
+    artifact: Any | None,
+    *,
+    artifact_id: str,
+    what: str,
+) -> ArtifactDocument:
+    """Turn one submitted artifact into the strict text a gate can validate."""
+    if not artifact_id:
+        raise WorkflowError(
+            f"{what} has no submitted artifact — submit it with artifact.submit"
+        )
+    if artifact is None or artifact.status != "complete":
+        raise WorkflowError(f"{what}: artifact not found: {artifact_id}")
+    if artifact.data is None:
+        raise WorkflowError(
+            f"{what} ({artifact.path}) has no submitted content — resubmit it "
+            "with artifact.submit"
+        )
+    try:
+        text = artifact.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(
+            f"{what} ({artifact.path}) is not valid UTF-8 text"
+        ) from exc
+    return ArtifactDocument(
+        text=text,
+        artifact_id=artifact_id,
+        path=artifact.path,
+        role=artifact.role,
+        figure_links=artifact.figures,
+    )
 
 
 def artifact_submission_recency_key(
@@ -30,7 +73,7 @@ def artifact_submission_recency_key(
 def artifact_slot_key(artifact: dict[str, Any]) -> tuple[str, str, str]:
     """The slot an artifact occupies, within a fixed target and attempt.
 
-    MUST mirror _supersede_slot's key (artifacts/submissions.py) minus the
+    MUST mirror Artifacts._replace_slot's key minus the
     target and attempt, which are already fixed by the caller. Kept in lockstep
     by tests/state/test_submission_attempts.py."""
     return (
@@ -97,13 +140,13 @@ def historical_latest_artifacts(
     return latest_per_slot(artifacts)
 
 
-def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
+def artifact_state_record(evidence: Any) -> dict[str, Any]:
     """Project one submitted artifact into the public Research record shape.
 
     `id` is the artifact id; these key names are the stable shape state
     consumers (gates, guidance, UI projections) read."""
     return {
-        "id": evidence.artifact_id,
+        "id": evidence.id,
         "project_id": evidence.project_id,
         "path": evidence.path,
         "title": evidence.title,
@@ -120,6 +163,16 @@ def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
         "submission_id": evidence.submission_id,
     }
 
+
+def submission_state_record(submission: Any) -> dict[str, Any]:
+    """Project one sealed round into the stable public Research state shape."""
+    return {
+        "id": submission.id,
+        "attempt_index": submission.attempt_index,
+        "transition": submission.transition,
+        "created_at": submission.created_at,
+        "created_seq": submission.order,
+    }
 
 def preferred_artifact(
     *,
@@ -153,6 +206,7 @@ def preferred_artifact(
 
 
 __all__ = [
+    "ArtifactDocument",
     "artifact_slot_key",
     "artifact_state_record",
     "artifact_submission_recency_key",
@@ -160,5 +214,7 @@ __all__ = [
     "historical_latest_artifacts",
     "latest_per_slot",
     "preferred_artifact",
+    "require_artifact_document",
     "sealed_submission_artifacts",
+    "submission_state_record",
 ]

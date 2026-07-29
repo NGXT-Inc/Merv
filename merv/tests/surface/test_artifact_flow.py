@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from tests.support.brain import TestBrain
+from merv.brain.artifacts import ArtifactTarget
 from merv.brain.kernel.utils import ValidationError
 from merv.brain.surface.transport.api.gateway import RequestAuthenticator
+from merv.brain.surface.transport.api.artifacts import build_router
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 
 VALID_PLAN = (
@@ -225,14 +230,16 @@ class ArtifactFlowTest(unittest.TestCase):
                 "experiment.transition", project_id=self.project_id,
                 experiment_id=exp_id, transition=transition,
             )
-        self.app.artifacts.pin_system_artifact(
+        self.app.artifacts.pin(
             path="experiments/exhibit-reference/metrics_exhibit.json",
-            experiment_id=exp_id,
+            target=ArtifactTarget(
+                target_type="experiment",
+                target_id=exp_id,
+                project_id=self.project_id,
+            ),
             role="exhibit",
-            content_bytes=b'{"kind": "metrics_exhibit"}',
-            content_type="application/json",
+            data=b'{"kind": "metrics_exhibit"}',
             title="Metrics exhibit",
-            project_id=self.project_id,
         )
         self._submit(
             target_type="experiment", target_id=exp_id,
@@ -403,6 +410,156 @@ class ArtifactFlowTest(unittest.TestCase):
         self.assertEqual(file_response.content.decode(), VALID_PLAN)
         self.assertIn("text/markdown", file_response.headers["content-type"])
 
+    def test_public_artifact_wire_shapes_are_frozen(self) -> None:
+        exp_id = self.call(
+            "experiment.create",
+            project_id=self.project_id,
+            name="contract-shapes",
+            intent="Freeze the Artifact V1 wire contract.",
+        )["id"]
+        body = (VALID_PLAN + "\n![curve](figures/curve.png)\n").encode()
+        pending = self.call(
+            "artifact.submit",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plans/plan.md",
+        )
+        self.assertEqual(set(pending), {"artifact_id", "run"})
+        self.assertTrue(pending["artifact_id"].startswith("art_"))
+        upload = shlex.split(pending["run"])
+        self.assertEqual(upload[:3], ["curl", "-sf", "-T"])
+        self.assertEqual(upload[3], "plans/plan.md")
+        self.assertIn("/api/artifacts/u/", upload[4])
+
+        token = upload[4].rsplit("/", 1)[-1]
+        completed_response = self.app._client.put(
+            f"/api/artifacts/u/{token}", content=body
+        )
+        self.assertEqual(completed_response.status_code, 200)
+        completed = completed_response.json()
+        self.assertEqual(
+            set(completed),
+            {"artifact_id", "role", "path", "sha256", "size_bytes", "figures"},
+        )
+        self.assertEqual(completed["artifact_id"], pending["artifact_id"])
+        self.assertEqual(completed["role"], "plan")
+        self.assertEqual(completed["path"], "plans/plan.md")
+        self.assertEqual(completed["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(completed["size_bytes"], len(body))
+        self.assertEqual(len(completed["figures"]), 1)
+        figure_instruction = completed["figures"][0]
+        self.assertEqual(set(figure_instruction), {"link_path", "run"})
+        self.assertEqual(figure_instruction["link_path"], "figures/curve.png")
+
+        figure_bytes = b"\x89PNG contract"
+        figure_upload = shlex.split(figure_instruction["run"])
+        self.assertEqual(figure_upload[:3], ["curl", "-sf", "-T"])
+        self.assertEqual(figure_upload[3], "plans/figures/curve.png")
+        figure_token = figure_upload[4].rsplit("/", 1)[-1]
+        figure_response = self.app._client.put(
+            f"/api/artifacts/f/{figure_token}", content=figure_bytes
+        )
+        self.assertEqual(figure_response.status_code, 200)
+        self.assertEqual(
+            figure_response.json(),
+            {
+                "artifact_id": pending["artifact_id"],
+                "link_path": "figures/curve.png",
+                "sha256": hashlib.sha256(figure_bytes).hexdigest(),
+                "size_bytes": len(figure_bytes),
+            },
+        )
+
+        listing = self.app._client.get(
+            f"/api/projects/{self.project_id}/artifacts",
+            params={"target_type": "experiment", "target_id": exp_id},
+        ).json()
+        self.assertEqual(set(listing), {"count", "artifacts"})
+        self.assertEqual(listing["count"], len(listing["artifacts"]))
+        self.assertEqual(len(listing["artifacts"]), 1)
+        self.assertEqual(
+            set(listing["artifacts"][0]),
+            {
+                "id",
+                "target_type",
+                "target_id",
+                "role",
+                "attempt_index",
+                "lens_id",
+                "path",
+                "title",
+                "size_bytes",
+                "content_type",
+                "status",
+                "created_by",
+                "created_at",
+                "updated_at",
+            },
+        )
+        self.assertNotIn("upload_token", listing["artifacts"][0])
+        self.assertNotIn("content_sha256", listing["artifacts"][0])
+        self.assertNotIn("created_seq", listing["artifacts"][0])
+
+        content = self.app._client.get(
+            f"/api/projects/{self.project_id}/artifacts/"
+            f"{pending['artifact_id']}/content"
+        ).json()
+        self.assertEqual(
+            set(content),
+            {"content", "is_binary", "size_bytes", "content_type", "available"},
+        )
+        self.assertEqual(content["content"], body.decode())
+        self.assertFalse(content["is_binary"])
+        self.assertTrue(content["available"])
+
+        file_response = self.app._client.get(
+            f"/api/projects/{self.project_id}/artifacts/"
+            f"{pending['artifact_id']}/file"
+        )
+        self.assertEqual(file_response.content, body)
+        self.assertEqual(
+            file_response.headers["content-type"],
+            "text/markdown; charset=utf-8",
+        )
+        self.assertEqual(
+            file_response.headers["content-disposition"],
+            'inline; filename="plan.md"',
+        )
+
+        figure_read = self.app._client.get(
+            f"/api/projects/{self.project_id}/artifacts/"
+            f"{pending['artifact_id']}/figure",
+            params={"rel": "figures/curve.png"},
+        )
+        self.assertEqual(figure_read.content, figure_bytes)
+        self.assertEqual(
+            figure_read.headers["content-type"], "application/octet-stream"
+        )
+
+        with self.app._store.connect() as conn:
+            event = conn.execute(
+                """
+                SELECT type, target_type, target_id, payload_json
+                FROM events
+                WHERE type = 'artifact.submitted' AND target_id = ?
+                """,
+                (exp_id,),
+            ).fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual(str(event["target_type"]), "experiment")
+        self.assertEqual(str(event["target_id"]), exp_id)
+        self.assertEqual(
+            json.loads(str(event["payload_json"])),
+            {
+                "artifact_id": pending["artifact_id"],
+                "attempt_index": 1,
+                "path": "plans/plan.md",
+                "role": "plan",
+            },
+        )
+
     def test_lens_id_is_required_by_the_tool_contract(self) -> None:
         with self.assertRaises(ValidationError):
             self.call(
@@ -469,6 +626,35 @@ class UploadRouteAuthExemptionTest(unittest.TestCase):
         )
         for path in ("/api/artifacts/u/tok_1", "/api/artifacts/f/tok_2"):
             self.assertIsNone(authenticator.authenticate(self._request(path)))
+
+
+class ArtifactRouteContractTest(unittest.TestCase):
+    def test_artifact_router_method_and_path_inventory_is_frozen(self) -> None:
+        routes = {
+            (method, route.path)
+            for route in build_router(artifacts=object()).routes
+            for method in route.methods
+        }
+        self.assertEqual(
+            routes,
+            {
+                ("PUT", "/api/artifacts/u/{token}"),
+                ("PUT", "/api/artifacts/f/{token}"),
+                ("GET", "/api/projects/{project_id}/artifacts"),
+                (
+                    "GET",
+                    "/api/projects/{project_id}/artifacts/{artifact_id}/content",
+                ),
+                (
+                    "GET",
+                    "/api/projects/{project_id}/artifacts/{artifact_id}/file",
+                ),
+                (
+                    "GET",
+                    "/api/projects/{project_id}/artifacts/{artifact_id}/figure",
+                ),
+            },
+        )
 
 
 if __name__ == "__main__":

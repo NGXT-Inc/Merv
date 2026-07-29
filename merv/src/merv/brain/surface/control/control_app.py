@@ -28,7 +28,6 @@ from ...application.status_guidance import StatusGuidancePolicy
 from ...application.workflow import ProjectDashboardQuery, StatusAndNextQuery
 from ...application.reviews import ReadReviewStatus, StartReviewSession
 from ...application.tool_commands import ControlToolOperations
-from ...artifacts.facade import ArtifactsFacade
 from ...research_core.facade import ResearchCoreFacade
 from ...research_core.project_context import ProjectContextFactsReader
 from ...research_core.snapshots import ResearchSnapshotReader
@@ -47,6 +46,7 @@ from ...object_storage.service import StorageLedgerService
 from ...object_storage.catalog import StorageObjectCatalog
 from ...kernel.state import BaseStateStore
 from ...kernel.state.tool_call_ledger import ToolCallLedger
+from ..artifacts import ArtifactTools
 from ..tools.tool_facade import ToolDispatcher
 from ..tools.tool_handlers import build_control_tool_handlers
 from ..transport.api.dependencies import HttpDependencies
@@ -92,10 +92,11 @@ class ControlApp:
         )
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
         self.produced_objects = StorageObjectCatalog(store=store)
-        self.artifacts = ArtifactsFacade(submissions=core.artifact_submissions)
+        self.artifacts = core.artifacts
+        self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
         self.project_context = ProjectContextQuery(
             facts=ProjectContextFactsReader(store=store),
-            evidence=core.artifact_submissions,
+            artifacts=self.artifacts,
         )
         self.experiment_context = ExperimentContextQuery(artifacts=self.artifacts)
         self.experiment_exhibits = ExperimentExhibits(
@@ -203,7 +204,7 @@ class ControlApp:
         self.project_dashboard_query = ProjectDashboardQuery(
             snapshots=self.research_snapshots,
             workflow=self.workflow,
-            artifacts=core.artifact_submissions.find,
+            artifacts=self.artifacts,
             review_queue=core.reviews.queue,
             recent_events=self.event_timeline.recent,
             health=(lambda: self._tracking.health()) if self._tracking else (lambda: {}),
@@ -249,7 +250,7 @@ class ControlApp:
                 claims=core.claims,
                 create_experiment=self.create_experiment,
                 reflection_tools=self.reflection_commands,
-                artifact_submissions=core.artifact_submissions,
+                artifact_submissions=self.artifact_tools,
                 storage=storage,
                 reviews=core.reviews,
                 review_session=self.start_review_session,
@@ -274,7 +275,7 @@ class ControlApp:
         self.http = HttpDependencies(
             projects=core.projects,
             reviews=core.reviews,
-            artifact_submissions=core.artifact_submissions,
+            artifacts=core.artifacts,
             feed=core.feed,
             sandboxes=self.sandboxes,
             storage=storage,

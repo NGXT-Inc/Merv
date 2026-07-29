@@ -446,15 +446,30 @@ load("subprocess")
             self.assertFalse((RESEARCH_CORE_ROOT / obsolete).exists())
         self.assertFalse((RESEARCH_CORE_ROOT / "next_action.py").exists())
 
-    def test_submission_service_owns_association_policy(self) -> None:
-        # ArtifactSubmissionService owns association policy; bytes travel over
-        # the agent's own curl against token-bearer PUT routes.
-        imports = _import_segments(ARTIFACTS_ROOT / "submissions.py")
-        self.assertIn("association_policy", imports)
+    def test_artifacts_is_one_service_with_passive_models_and_a_resolver(self) -> None:
+        self.assertEqual(
+            {
+                path.relative_to(ARTIFACTS_ROOT).as_posix()
+                for path in ARTIFACTS_ROOT.rglob("*.py")
+            },
+            {"__init__.py", "artifacts.py", "models.py"},
+        )
+        source = (ARTIFACTS_ROOT / "artifacts.py").read_text(encoding="utf-8")
+        models = (ARTIFACTS_ROOT / "models.py").read_text(encoding="utf-8")
+        imports = _import_segments(ARTIFACTS_ROOT / "artifacts.py")
+        composition = (SURFACE_ROOT / "control" / "record_core.py").read_text(
+            encoding="utf-8"
+        )
+
         self.assertNotIn("permissions", imports)
-        source = (ARTIFACTS_ROOT / "submissions.py").read_text(encoding="utf-8")
         self.assertNotIn("permissions:", source)
         self.assertNotIn("self.permissions", source)
+        self.assertIn("def _validate_association(", source)
+        self.assertIn("targets: ArtifactTargets", source)
+        self.assertNotIn("research_core", imports)
+        self.assertIn("targets=AssociationTargets()", composition)
+        for behavior in (".execute(", ".transaction(", "record_event(", "_blobs"):
+            self.assertNotIn(behavior, models)
 
     def test_reflection_tools_present_research_facts_in_application(self) -> None:
         self.assertFalse((RESEARCH_CORE_ROOT / "reflection_tools.py").exists())

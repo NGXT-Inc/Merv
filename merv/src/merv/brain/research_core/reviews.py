@@ -9,7 +9,7 @@ from typing import Any
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
-from ..artifacts.ports import EvidenceReader, SubmissionSealer
+from ..artifacts import Artifacts
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.identity import LOCAL_TENANT_ID
@@ -55,14 +55,12 @@ class ReviewService:
         store: BaseStateStore,
         experiments: ExperimentService,
         reflections: ReflectionService,
-        evidence_reader: EvidenceReader,
-        submissions: SubmissionSealer,
+        artifacts: Artifacts,
     ) -> None:
         self.store = store
         self.experiments = experiments
         self.reflections = reflections
-        self.evidence_reader = evidence_reader
-        self.submissions = submissions
+        self.artifacts = artifacts
 
     def request(
         self,
@@ -293,18 +291,29 @@ class ReviewService:
             if str(res.get("role") or "") in GATED_ROLES
             or res.get("role") == EXHIBIT_ROLE
         )
+        found = self.artifacts.get(
+            artifact_ids=visible,
+            include="content",
+        )
         artifacts: list[dict[str, Any]] = []
-        for item in self.evidence_reader.submitted_evidence(artifact_ids=visible):
+        for item in sorted(found, key=lambda artifact: artifact.order):
+            if item.status != "complete":
+                continue
+            content = (
+                None
+                if item.data is None
+                else item.data.decode("utf-8", errors="replace")
+            )
             entry: dict[str, Any] = {
                 "role": item.role,
                 "lens_id": item.lens_id,
                 "path": item.path,
-                "artifact_id": item.artifact_id,
+                "artifact_id": item.id,
                 "submission_id": item.submission_id,
-                "submitted_at": item.submitted_at,
-                "content": item.content,
+                "submitted_at": item.updated_at or item.created_at,
+                "content": content,
             }
-            if item.content is None:
+            if content is None:
                 entry["note"] = (
                     "submitted content unavailable; ask the producer to resubmit "
                     "it with artifact.submit"
@@ -368,6 +377,22 @@ class ReviewService:
                 )
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
+            snapshot = snapshot_from_id(snapshot_id=str(req["target_snapshot_id"]))
+            attempt_index = int(snapshot.get("attempt_index") or 0)
+            target_history = self.artifacts.history(
+                tx=conn,
+                target_type=str(req["target_type"]),
+                target_ids=(str(req["target_id"]),),
+            )[str(req["target_id"])]
+            latest_submission = max(
+                (
+                    submission
+                    for submission in target_history.submissions
+                    if submission.attempt_index == attempt_index
+                ),
+                key=lambda submission: submission.order,
+                default=None,
+            )
             review_id = new_id(prefix="rev")
             conn.execute(
                 """
@@ -398,17 +423,7 @@ class ReviewService:
                     # The round this verdict graded. The seal ran on the
                     # forward transition that put the target under review, so
                     # the newest submission for this attempt is that round.
-                    self.submissions.latest_submission_id(
-                        conn=conn,
-                        target_type=str(req["target_type"]),
-                        target_id=str(req["target_id"]),
-                        attempt_index=int(
-                            snapshot_from_id(
-                                snapshot_id=str(req["target_snapshot_id"])
-                            ).get("attempt_index")
-                            or 0
-                        ),
-                    ),
+                    "" if latest_submission is None else latest_submission.id,
                 ),
             )
             conn.execute(

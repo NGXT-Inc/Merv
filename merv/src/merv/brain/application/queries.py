@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
-from ..artifacts.facade import Artifacts
+from ..artifacts import Artifact, Artifacts
 from ..research_core.facade import (
     ExperimentSummary,
     MAX_GRAPH_NODES,
@@ -221,7 +221,7 @@ class LogicGraphQuery:
         }
         if chosen is None:
             return {**base, "available": False, "graph": None, "problems": []}
-        text = self._associated_text(chosen)
+        text = self._associated_text(chosen, project_id=project_id)
         if text is None:
             return {
                 **base,
@@ -298,7 +298,7 @@ class LogicGraphQuery:
             "attempt_index": reflection.get("attempt_index"),
             "published_at": reflection.get("published_at"),
         }
-        text = self._associated_text(chosen)
+        text = self._associated_text(chosen, project_id=project_id)
         if text is None:
             return {
                 **base,
@@ -342,10 +342,19 @@ class LogicGraphQuery:
             ),
         }
 
-    def _associated_text(self, artifact: Record) -> str | None:
-        return self.artifacts.submitted_text_for_artifact(
-            artifact_id=artifact.get("id")
+    def _associated_text(
+        self, artifact: Record, *, project_id: str
+    ) -> str | None:
+        artifact_id = str(artifact.get("id") or "")
+        if not artifact_id:
+            return None
+        payloads = self.artifacts.get(
+            artifact_ids=(artifact_id,),
+            project_id=project_id,
+            include="content",
         )
+        data = payloads[0].data if payloads else None
+        return data.decode("utf-8", errors="replace") if data is not None else None
 
     def _resolve_graph_refs(
         self, *, project_id: str, graph: Record | None
@@ -356,27 +365,52 @@ class LogicGraphQuery:
         research = self.research.resolve_research_graph_refs(
             project_id=project_id, refs=tuple(refs)
         )
+        artifact_ids = tuple(
+            ref
+            for ref in refs
+            if ref.startswith("art_") and ref not in research
+        )
+        artifacts = {
+            artifact.id: artifact
+            for artifact in (
+                self.artifacts.get(
+                    artifact_ids=artifact_ids,
+                    project_id=project_id,
+                )
+                if artifact_ids
+                else ()
+            )
+        }
         resolved: Record = {}
         for ref in refs:
             if ref in research:
                 resolved[ref] = research[ref]
                 continue
-            artifact = (
-                self.artifacts.resolve_artifact_reference(
-                    project_id=project_id, artifact_id=ref
-                )
-                if ref.startswith("art_")
-                else None
+            artifact = artifacts.get(ref)
+            resolved[ref] = (
+                self._artifact_reference(artifact)
+                if artifact is not None
+                else {
+                    "type": "unknown",
+                    "resolved": False,
+                    "hint": (
+                        "not a submitted artifact id; submit the file with "
+                        "artifact.submit to make this ref resolvable"
+                    ),
+                }
             )
-            resolved[ref] = artifact or {
-                "type": "unknown",
-                "resolved": False,
-                "hint": (
-                    "not a submitted artifact id; submit the file with "
-                    "artifact.submit to make this ref resolvable"
-                ),
-            }
         return resolved
+
+    @staticmethod
+    def _artifact_reference(artifact: Artifact) -> Record:
+        return {
+            "type": "artifact",
+            "resolved": True,
+            "artifact_id": artifact.id,
+            "path": artifact.path,
+            "role": artifact.role,
+            "title": artifact.title,
+        }
 
 
 def _refs_from_graph(graph: Record | None) -> list[str]:

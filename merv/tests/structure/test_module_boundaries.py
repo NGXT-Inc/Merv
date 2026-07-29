@@ -114,7 +114,6 @@ PACKAGE_LAYERS = {
     "research_core": APPLICATION_LAYER,
     "research_core/domain": DOMAIN,
     "artifacts": APPLICATION_LAYER,
-    "artifacts/ports": PORT,
     "feed": APPLICATION_LAYER,
     "sandbox": APPLICATION_LAYER,
     "sandbox/execution/backends": ADAPTER,
@@ -129,7 +128,6 @@ PACKAGE_LAYERS = {
 FILE_LAYERS = {
     "__init__.py": FOUNDATION,
     "kernel/state/dialects.py": ADAPTER,
-    "artifacts/association_policy.py": DOMAIN,
     "feed/feed_policy.py": DOMAIN,
     "feed/feed_unfurl.py": ADAPTER,
     "feed/ports.py": PORT,
@@ -240,7 +238,7 @@ FOREIGN_SQL_TABLE_REF = re.compile(
     re.IGNORECASE,
 )
 
-RESEARCH_ARTIFACT_SQL_BASELINE: Counter[tuple[str, str, str]] = Counter()
+FOREIGN_ARTIFACT_SQL_BASELINE: Counter[tuple[str, str, str]] = Counter()
 
 APPLICATION_FORBIDDEN_IMPORT_ROOTS = frozenset(
     {
@@ -412,7 +410,10 @@ def _component_edge_allowed(*, importer: str, target: str) -> bool:
     importer_component = _component(importer)
     target_component = _component(target)
     if importer_component == RESEARCH_CORE and target_component == ARTIFACTS:
-        return target.startswith(f"{ARTIFACTS}/ports/")
+        # Research shares the one typed public root with Application and
+        # Surface. Artifacts still knows no Research module: its target
+        # resolver is implemented by Research and injected at composition.
+        return target == f"{ARTIFACTS}/__init__.py"
     return (importer_component, target_component) in ALLOWED_COMPONENT_EDGES
 
 
@@ -436,11 +437,8 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
         ):
             continue
         relative_target = target.removeprefix(f"{target_component}/")
-        if (
-            importer_component == RESEARCH_CORE
-            and target_component == ARTIFACTS
-        ):
-            if relative_target.startswith("ports/"):
+        if target_component == ARTIFACTS:
+            if relative_target == "__init__.py":
                 continue
             violations.add((importer, target))
             continue
@@ -475,13 +473,17 @@ def _enclosing_function(
     return "<module>"
 
 
-def _research_artifact_sql() -> Counter[tuple[str, str, str]]:
+def _foreign_artifact_sql() -> Counter[tuple[str, str, str]]:
     references: Counter[tuple[str, str, str]] = Counter()
     artifact_tables = {
         table for table, owner in TABLE_OWNERS.items() if owner == ARTIFACTS
     }
-    for path in sorted((BACKEND_ROOT / RESEARCH_CORE).rglob("*.py")):
+    for path in _backend_files():
         rel = path.relative_to(BACKEND_ROOT).as_posix()
+        # Kernel owns the schema and released migrations. Runtime Artifact SQL
+        # belongs exclusively to the consolidated Artifacts component.
+        if _component(rel) == ARTIFACTS or rel == "kernel/state/store.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         parents = {
             child: parent
@@ -812,16 +814,16 @@ class ModuleBoundaryTest(unittest.TestCase):
             ),
         )
 
-    def test_research_enters_artifacts_through_ports_only(self) -> None:
+    def test_research_enters_only_the_public_artifacts_root(self) -> None:
         importer = "research_core/reflections.py"
         self.assertTrue(
             _component_edge_allowed(
-                importer=importer, target="artifacts/ports/evidence.py"
+                importer=importer, target="artifacts/__init__.py"
             )
         )
         self.assertFalse(
             _component_edge_allowed(
-                importer=importer, target="artifacts/facade.py"
+                importer=importer, target="artifacts/artifacts.py"
             )
         )
 
@@ -896,27 +898,27 @@ class ModuleBoundaryTest(unittest.TestCase):
         )
 
     def test_cross_component_imports_use_public_entrypoints(self) -> None:
-        """Cross-component imports use public entrypoints; Research uses ports."""
+        """Every caller enters components through a typed API, facade, or port."""
         violations = sorted(_public_entrypoint_violations())
         self.assertFalse(
             violations,
-            "cross-component internal import; use facade.py or ports/** "
-            "(Research may enter Artifacts through ports/** only): "
+            "cross-component internal import; use the component's facade/port "
+            "or the Artifacts package entrypoint: "
             + ", ".join(f"{source} -> {target}" for source, target in violations),
         )
 
-    def test_research_artifact_sql_inventory_only_shrinks(self) -> None:
-        current = _research_artifact_sql()
-        new = current - RESEARCH_ARTIFACT_SQL_BASELINE
-        stale = RESEARCH_ARTIFACT_SQL_BASELINE - current
+    def test_artifact_sql_stays_inside_artifacts(self) -> None:
+        current = _foreign_artifact_sql()
+        new = current - FOREIGN_ARTIFACT_SQL_BASELINE
+        stale = FOREIGN_ARTIFACT_SQL_BASELINE - current
         self.assertFalse(
             new,
-            "new Research SQL names Artifact-owned tables: "
+            "SQL outside Artifacts names Artifact-owned tables: "
             + ", ".join(f"{key} x{count}" for key, count in sorted(new.items())),
         )
         self.assertFalse(
             stale,
-            "Research/Artifacts SQL boundary improved; lower the baseline: "
+            "Artifacts SQL boundary improved; lower the baseline: "
             + ", ".join(f"{key} x{count}" for key, count in sorted(stale.items())),
         )
 
@@ -1079,7 +1081,7 @@ def build_router(ctx: ApiRouteContext, *, records: ArtifactRecords):
         self.assertFalse((BACKEND_ROOT / "artifacts/figure_view.py").exists())
         self.assertNotIn(
             "build_experiment_figure",
-            (BACKEND_ROOT / "artifacts/facade.py").read_text(encoding="utf-8"),
+            (BACKEND_ROOT / "artifacts/artifacts.py").read_text(encoding="utf-8"),
         )
         for query in ("StatusAndNextQuery", "ProjectDashboardQuery"):
             with self.subTest(query=query):

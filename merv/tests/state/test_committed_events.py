@@ -13,7 +13,7 @@ from merv.brain.application.events import (
     EventDispatcher,
     EventReaction,
 )
-from merv.brain.artifacts.submissions import ArtifactSubmissionService
+from merv.brain.artifacts import Artifacts
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import (
@@ -21,6 +21,7 @@ from merv.brain.research_core.experiments import (
     ExperimentService,
 )
 from merv.brain.research_core.facade import ResearchCoreFacade
+from tests.fakes import FakeBlobStore
 
 
 _TRANSITION_PRODUCER = (
@@ -33,9 +34,10 @@ class CommittedEventTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
-        self.evidence = ArtifactSubmissionService(
+        self.artifacts = Artifacts(
             store=self.store,
-            association_targets=AssociationTargets(store=self.store),
+            blobs=FakeBlobStore(),
+            targets=AssociationTargets(),
         )
         with closing(self.store.connect()) as conn:
             row = conn.execute("SELECT id FROM projects").fetchone()
@@ -100,8 +102,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_transition_variant_returns_committed_event_and_legacy_returns_state(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence,
-            submissions=self.evidence
+            store=self.store,
+            artifacts=self.artifacts,
         )
         created = experiments.create(
             project_id=self.project_id, name="committed-event", intent="test"
@@ -176,8 +178,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence,
-            submissions=self.evidence
+            store=self.store,
+            artifacts=self.artifacts,
         )
         research = ResearchCoreFacade(experiments)
         created = experiments.create(
@@ -213,8 +215,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_event_insert_failure_rolls_back_state_and_event_together(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence,
-            submissions=self.evidence
+            store=self.store,
+            artifacts=self.artifacts,
         )
         created = experiments.create(
             project_id=self.project_id, name="rollback-event", intent="test"
@@ -265,12 +267,14 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
-        evidence = ArtifactSubmissionService(
+        artifacts = Artifacts(
             store=self.store,
-            association_targets=AssociationTargets(store=self.store),
+            blobs=FakeBlobStore(),
+            targets=AssociationTargets(),
         )
         self.experiments = ExperimentService(
-            store=self.store, evidence_reader=evidence, submissions=evidence
+            store=self.store,
+            artifacts=artifacts,
         )
         with closing(self.store.connect()) as conn:
             row = conn.execute("SELECT id FROM projects").fetchone()
@@ -556,12 +560,14 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = _RecordingStateStore(db_path=Path(self.tmp.name) / "state.sqlite")
-        evidence = ArtifactSubmissionService(
+        artifacts = Artifacts(
             store=self.store,
-            association_targets=AssociationTargets(store=self.store),
+            blobs=FakeBlobStore(),
+            targets=AssociationTargets(),
         )
         self.experiments = ExperimentService(
-            store=self.store, evidence_reader=evidence, submissions=evidence
+            store=self.store,
+            artifacts=artifacts,
         )
         with closing(self.store.connect()) as conn:
             row = conn.execute("SELECT id FROM projects").fetchone()

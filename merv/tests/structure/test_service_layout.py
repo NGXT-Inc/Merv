@@ -492,11 +492,20 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "merv.shared.markdown_images"},
         )
 
-    def test_evidence_contract_is_artifacts_port(self) -> None:
-        self.assertEqual(
-            _import_module_names(ARTIFACTS_ROOT / "ports" / "evidence.py"),
-            {"dataclasses", "typing"},
-        )
+    def test_artifacts_uses_an_injected_research_target_resolver(self) -> None:
+        artifacts_path = ARTIFACTS_ROOT / "artifacts.py"
+        artifacts = artifacts_path.read_text(encoding="utf-8")
+        models = _artifacts_source("models.py")
+        resolver = _rc_source("association_targets.py")
+        composition = (
+            SURFACE_ROOT / "control" / "record_core.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("class ArtifactTargets(Protocol):", models)
+        self.assertIn("targets: ArtifactTargets", artifacts)
+        self.assertNotIn("research_core", _import_segments(artifacts_path))
+        self.assertIn("class AssociationTargets:", resolver)
+        self.assertIn("targets=AssociationTargets()", composition)
 
     def test_http_policy_is_fastapi_free(self) -> None:
         imports = _import_module_names(SURFACE_ROOT / "transport" / "http_policy.py")
@@ -593,26 +602,27 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn("sandbox.rsync_error", source)
             self.assertNotIn("initial_rsynchronized", source)
 
-    def test_submission_service_has_no_local_file_reads(self) -> None:
+    def test_artifacts_service_has_no_local_file_reads(self) -> None:
         # The brain never reads a checkout: every consumed byte arrives via the
-        # token-bearer upload PUT. The submission service owns association
-        # legality but no permissions and no filesystem.
-        source = _artifacts_source("submissions.py")
-        imports = _import_segments(ARTIFACTS_ROOT / "submissions.py")
+        # token-bearer upload PUT. Artifacts owns association legality but no
+        # permissions and no filesystem.
+        source = _artifacts_source("artifacts.py")
+        imports = _import_segments(ARTIFACTS_ROOT / "artifacts.py")
 
-        self.assertNotIn(".read_bytes(", source)
+        for local_read in ("open(", ".read_bytes(", ".read_text("):
+            self.assertNotIn(local_read, source)
         self.assertNotIn("repo_root", source)
         self.assertNotIn("self.workspace", source)
         self.assertNotIn("observe_file", source)
+        self.assertFalse({"pathlib", "tempfile"} & imports)
         self.assertNotIn("permissions", imports)
-        self.assertIn("association_policy", imports)
         self.assertNotIn("permissions:", source)
         self.assertNotIn("self.permissions", source)
-        self.assertIn("validate_artifact_association(", source)
+        self.assertIn("def _validate_association(", source)
 
-        from merv.brain.artifacts.submissions import ArtifactSubmissionService
+        from merv.brain.artifacts import Artifacts
 
-        get_type_hints(ArtifactSubmissionService.__init__)
+        get_type_hints(Artifacts.__init__)
 
     def test_review_service_owns_vocabulary_validation(self) -> None:
         imports = _import_segments(RESEARCH_CORE / "reviews.py")
@@ -944,7 +954,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
         for path in (
-            ARTIFACTS_ROOT / "submissions.py",
+            ARTIFACTS_ROOT / "artifacts.py",
             BACKEND_ROOT / "sandbox" / "facade.py",
         ):
             with self.subTest(module=path.name):
@@ -1156,12 +1166,12 @@ class ServiceLayoutTest(unittest.TestCase):
             with self.subTest(route=route):
                 self.assertNotIn(route, source)
 
-    def test_transport_delegates_artifact_content_to_submissions(self) -> None:
+    def test_transport_delegates_artifact_content_to_artifacts(self) -> None:
         self.assertFalse((HTTP_API_PACKAGE / "resources.py").exists())
         routes = (HTTP_API_PACKAGE / "artifacts.py").read_text(encoding="utf-8")
         views = _api_views_source()
-        self.assertIn("submissions.artifact_content(", routes)
-        self.assertIn("submissions.figure_bytes(", routes)
+        self.assertIn("artifacts.get(", routes)
+        self.assertIn("artifacts.figure(", routes)
         self.assertNotIn("FROM artifacts", routes + views)
         self.assertNotIn(".blobs.get", routes + views)
 
@@ -1297,10 +1307,7 @@ class ServiceLayoutTest(unittest.TestCase):
         application = (BACKEND_ROOT / "application/queries.py").read_text(
             encoding="utf-8"
         )
-        artifacts = (ARTIFACTS_ROOT / "facade.py").read_text(encoding="utf-8")
-        evidence = (ARTIFACTS_ROOT / "ports" / "evidence.py").read_text(
-            encoding="utf-8"
-        )
+        artifacts = (ARTIFACTS_ROOT / "artifacts.py").read_text(encoding="utf-8")
         self.assertIn("class GraphRefType:", source)
         self.assertIn("GRAPH_REF_TYPES: tuple[GraphRefType, ...]", source)
         self.assertEqual(source.count("GraphRefType("), 6)
@@ -1308,10 +1315,11 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("EvidenceReader", source)
         self.assertNotIn("resolve_artifact_reference", source)
         self.assertIn("def _refs_from_graph(", application)
-        self.assertIn("self.artifacts.resolve_artifact_reference", application)
+        self.assertIn("self.artifacts.get(", application)
+        self.assertIn("def _artifact_reference(", application)
         self.assertIn('if ref.startswith("art_")', application)
-        self.assertIn("def resolve_artifact_reference(", artifacts)
-        self.assertNotIn("resolve_artifact_reference", evidence)
+        self.assertIn("def get(", artifacts)
+        self.assertNotIn("resolve_artifact_reference", artifacts)
         for prefix in ("rev_", "claim_", "exp_", "syn_", "lit_", "paper_"):
             self.assertIn(f'prefix="{prefix}"', source)
             self.assertNotIn(f'if ref.startswith("{prefix}")', source)

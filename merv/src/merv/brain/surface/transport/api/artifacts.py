@@ -12,8 +12,14 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
-from ....artifacts.facade import ArtifactSubmissions, upload_command
-from ....kernel.utils import ValidationError
+from ....artifacts import Artifacts, CompletedArtifact, CompletedFigure
+from ....kernel.utils import NotFoundError, ValidationError
+from ...artifacts import (
+    artifact_list_v1,
+    completed_artifact_v1,
+    completed_figure_v1,
+    content_envelope_v1,
+)
 
 
 def _too_large(cap: int) -> JSONResponse:
@@ -46,18 +52,22 @@ async def _read_capped(request: Request, *, cap: int) -> bytes | None:
     return bytes(data)
 
 
-def build_router(*, submissions: ArtifactSubmissions) -> APIRouter:
+def build_router(*, artifacts: Artifacts) -> APIRouter:
     api_router = APIRouter()
 
     @api_router.put("/api/artifacts/u/{token}")
     async def upload_artifact(token: str, request: Request) -> Any:
         # Token first: an unknown token 404s before any body byte is buffered.
-        cap = submissions.pending_upload_cap(token=token)
+        cap = artifacts.upload_cap(token=token, kind="artifact")
         data = await _read_capped(request, cap=cap)
         if data is None:
             return _too_large(cap)
         try:
-            result = submissions.complete_upload(token=token, data=data)
+            completed = artifacts.complete_upload(
+                token=token,
+                kind="artifact",
+                data=data,
+            )
         except ValidationError as exc:
             if "max_bytes" in exc.details:
                 return JSONResponse(
@@ -65,33 +75,25 @@ def build_router(*, submissions: ArtifactSubmissions) -> APIRouter:
                     status_code=413,
                 )
             raise
-        base = str(request.base_url).rstrip("/")
-        # Follow-up one-liners so the agent pushes each referenced figure the
-        # same way it pushed the document. Links are relative to the document,
-        # so the upload source joins them onto its path label's directory.
-        doc_dir = result["path"].rsplit("/", 1)[0] if "/" in result["path"] else ""
-        result["figures"] = [
-            {
-                "link_path": figure["link_path"],
-                "run": upload_command(
-                    base_url=base,
-                    path=f"{doc_dir}/{figure['link_path']}" if doc_dir else figure["link_path"],
-                    token=figure["token"],
-                    kind="f",
-                ),
-            }
-            for figure in result["figures"]
-        ]
-        return result
+        if not isinstance(completed, CompletedArtifact):
+            raise TypeError("artifact upload returned a figure result")
+        return completed_artifact_v1(
+            completed,
+            base_url=str(request.base_url).rstrip("/"),
+        )
 
     @api_router.put("/api/artifacts/f/{token}")
     async def upload_figure(token: str, request: Request) -> Any:
-        cap = submissions.pending_upload_cap(token=token, kind="f")
+        cap = artifacts.upload_cap(token=token, kind="figure")
         data = await _read_capped(request, cap=cap)
         if data is None:
             return _too_large(cap)
         try:
-            return submissions.complete_figure_upload(token=token, data=data)
+            completed = artifacts.complete_upload(
+                token=token,
+                kind="figure",
+                data=data,
+            )
         except ValidationError as exc:
             if "max_bytes" in exc.details:
                 return JSONResponse(
@@ -99,6 +101,9 @@ def build_router(*, submissions: ArtifactSubmissions) -> APIRouter:
                     status_code=413,
                 )
             raise
+        if not isinstance(completed, CompletedFigure):
+            raise TypeError("figure upload returned an artifact result")
+        return completed_figure_v1(completed)
 
     @api_router.get("/api/projects/{project_id}/artifacts")
     def list_artifacts(
@@ -107,34 +112,64 @@ def build_router(*, submissions: ArtifactSubmissions) -> APIRouter:
         target_id: str = "",
         role: str = "",
     ) -> dict[str, Any]:
-        return submissions.find(
-            project_id=project_id,
-            target_type=target_type,
-            target_id=target_id,
-            role=role,
+        return artifact_list_v1(
+            artifacts.scan(
+                project_id=project_id,
+                target_type=target_type,
+                target_ids=(target_id,) if target_id else (),
+                roles=(role,) if role else (),
+            )
         )
 
     @api_router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")
     def artifact_content(project_id: str, artifact_id: str) -> dict[str, Any]:
-        return submissions.artifact_content(
-            project_id=project_id, artifact_id=artifact_id
+        found = artifacts.get(
+            project_id=project_id,
+            artifact_ids=(artifact_id,),
+            include="document",
         )
+        if not found:
+            raise NotFoundError(
+                f"artifact not found in project {project_id}: {artifact_id}"
+            )
+        return content_envelope_v1(found[0])
 
     @api_router.get("/api/projects/{project_id}/artifacts/{artifact_id}/file")
     def artifact_file(project_id: str, artifact_id: str) -> Response:
-        data, content_type, filename = submissions.artifact_file(
-            project_id=project_id, artifact_id=artifact_id
+        found = artifacts.get(
+            project_id=project_id,
+            artifact_ids=(artifact_id,),
+            include="document",
         )
+        if not found:
+            raise NotFoundError(
+                f"artifact not found in project {project_id}: {artifact_id}"
+            )
+        artifact = found[0]
+        if artifact.data is None:
+            if artifact.status == "complete":
+                raise NotFoundError(
+                    "blob not found: "
+                    f"{artifact.project_id}/{artifact.sha256}"
+                )
+            raise NotFoundError(
+                f"artifact has no submitted content: {artifact_id}"
+            )
+        filename = (artifact.path or artifact_id).rsplit("/", 1)[-1]
         return Response(
-            content=data,
-            media_type=content_type,
+            content=artifact.data,
+            media_type=(
+                artifact.content_type or "application/octet-stream"
+            ),
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
 
     @api_router.get("/api/projects/{project_id}/artifacts/{artifact_id}/figure")
     def artifact_figure(project_id: str, artifact_id: str, rel: str) -> Response:
-        data = submissions.figure_bytes(
-            project_id=project_id, artifact_id=artifact_id, link_path=rel
+        data = artifacts.figure(
+            project_id=project_id,
+            artifact_id=artifact_id,
+            link_path=rel,
         )
         if data is None:
             return JSONResponse(

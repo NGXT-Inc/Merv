@@ -757,9 +757,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIn("[redacted]", activity_text)
         self.assertIn("[redacted]", json.dumps(tool_call_details, sort_keys=True))
 
-    def test_application_facades_share_the_composed_service_instances(self) -> None:
+    def test_application_components_share_the_composed_service_instances(self) -> None:
         self.assertIs(self.app.research_core._experiments, self.app.experiments)
-        self.assertIs(self.app.artifacts._submissions, self.app.artifact_submissions)
+        self.assertIs(self.app.artifacts, self.app._record_core.artifacts)
+        self.assertIs(self.app.artifact_tools.artifacts, self.app.artifacts)
         self.assertTrue(callable(self.app.feed.transition_advisory))
         self.assertIs(self.app.transition_experiment.research, self.app.research_core)
         self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)

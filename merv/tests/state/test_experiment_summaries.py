@@ -29,7 +29,7 @@ class ExperimentSummaryTest(unittest.TestCase):
             db_path=Path(self.tmp.name) / "state.sqlite"
         )
         self.experiments = ExperimentService(
-            store=self.store, evidence_reader=Mock(), submissions=Mock()
+            store=self.store, artifacts=Mock()
         )
         self.research = ResearchCoreFacade(self.experiments)
         self.one_ids = self._seed("proj_one", 1)

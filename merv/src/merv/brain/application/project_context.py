@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 from merv.shared.content_summaries import content_tldr
 
-from ..artifacts.ports import EvidenceReader
+from ..artifacts import Artifact, Artifacts
 from ..research_core.facade import preferred_artifact
 
 
@@ -27,43 +27,57 @@ class ProjectContextFacts(Protocol):
 class ProjectContextQuery:
     """Compose one macro packet without hydrating rich child state."""
 
-    def __init__(
-        self, *, facts: ProjectContextFacts, evidence: EvidenceReader
-    ) -> None:
+    def __init__(self, *, facts: ProjectContextFacts, artifacts: Artifacts) -> None:
         self.facts = facts
-        self.evidence = evidence
+        self.artifacts = artifacts
 
     def build(self, *, project_id: str | None = None) -> Record:
         facts = self.facts.read(project_id=project_id)
         project = facts["project"]
+        resolved_project_id = str(project.get("id") or project_id or "") or None
         experiments = facts["experiments"]
         experiment_ids = tuple(str(row["id"]) for row in experiments)
         attempts = {
             str(row["id"]): int(row.get("attempt_index") or 0)
             for row in experiments
         }
-        evidence = self.evidence.artifacts_for_targets(
-            target_type="experiment",
-            target_ids=experiment_ids,
-            roles=("plan", "report"),
-            attempt_indexes=attempts,
+        experiment_evidence = tuple(
+            artifact
+            for artifact in (
+                self.artifacts.scan(
+                    project_id=resolved_project_id,
+                    target_type="experiment",
+                    target_ids=experiment_ids,
+                    roles=("plan", "report"),
+                )
+                if experiment_ids
+                else ()
+            )
+            if artifact.attempt_index == attempts.get(artifact.target_id)
         )
 
         latest_published = facts.get("latest_published_reflection")
-        reflection_evidence: Mapping[str, tuple[Any, ...]] = {}
+        reflection_evidence: tuple[Artifact, ...] = ()
         if isinstance(latest_published, dict):
             reflection_id = str(latest_published.get("id") or "")
             if reflection_id:
-                reflection_evidence = self.evidence.artifacts_for_targets(
-                    target_type="reflection",
-                    target_ids=(reflection_id,),
-                    roles=_PROJECT_REFLECTION_ROLES,
-                    attempt_indexes={
-                        reflection_id: int(
-                            latest_published.get("attempt_index") or 0
-                        )
-                    },
+                reflection_evidence = tuple(
+                    artifact
+                    for artifact in self.artifacts.scan(
+                        project_id=resolved_project_id,
+                        target_type="reflection",
+                        target_ids=(reflection_id,),
+                        roles=_PROJECT_REFLECTION_ROLES,
+                    )
+                    if artifact.attempt_index
+                    == int(latest_published.get("attempt_index") or 0)
                 )
+        summaries = self._artifact_summaries(
+            artifacts=experiment_evidence + reflection_evidence,
+            project_id=resolved_project_id,
+        )
+        evidence = _by_target(experiment_evidence)
+        reflection_evidence_by_target = _by_target(reflection_evidence)
 
         return {
             "project": {
@@ -74,7 +88,8 @@ class ProjectContextQuery:
             "reflection": self._reflection(
                 latest=latest_published,
                 open_wave=facts.get("open_reflection"),
-                evidence=reflection_evidence,
+                evidence=reflection_evidence_by_target,
+                summaries=summaries,
             ),
             "literature": self._literature(facts),
             "claims": [dict(claim) for claim in facts["claims"]],
@@ -82,16 +97,53 @@ class ProjectContextQuery:
                 self._experiment(
                     experiment=row,
                     evidence=evidence.get(str(row["id"]), ()),
+                    summaries=summaries,
                 )
                 for row in experiments
             ],
         }
 
+    def _artifact_summaries(
+        self,
+        *,
+        artifacts: tuple[Artifact, ...],
+        project_id: str | None,
+    ) -> dict[str, str]:
+        if not artifacts:
+            return {}
+        found = self.artifacts.get(
+            artifact_ids=tuple(artifact.id for artifact in artifacts),
+            project_id=project_id,
+            include="content",
+        )
+        content_by_id = {
+            artifact.id: (
+                artifact.data.decode("utf-8", errors="replace")
+                if artifact.data is not None
+                else None
+            )
+            for artifact in found
+        }
+        return {
+            artifact.id: content_tldr(
+                content_by_id.get(artifact.id),
+                role=artifact.role,
+                path=artifact.path,
+            )
+            for artifact in artifacts
+        }
+
     @staticmethod
     def _experiment(
-        *, experiment: Record, evidence: tuple[Any, ...]
+        *,
+        experiment: Record,
+        evidence: tuple[Artifact, ...],
+        summaries: Mapping[str, str],
     ) -> Record:
-        artifacts = [_artifact_record(item) for item in evidence]
+        artifacts = [
+            _artifact_record(item, tldr=summaries.get(item.id, ""))
+            for item in evidence
+        ]
         plan = preferred_artifact(artifacts=artifacts, roles=("plan",))
         report = preferred_artifact(artifacts=artifacts, roles=("report",))
         status = str(experiment.get("status") or "")
@@ -118,13 +170,14 @@ class ProjectContextQuery:
         *,
         latest: Record | None,
         open_wave: Record | None,
-        evidence: Mapping[str, tuple[Any, ...]],
+        evidence: Mapping[str, tuple[Artifact, ...]],
+        summaries: Mapping[str, str],
     ) -> Record:
         published = None
         if latest:
             reflection_id = str(latest.get("id") or "")
             artifacts = [
-                _artifact_record(item)
+                _artifact_record(item, tldr=summaries.get(item.id, ""))
                 for item in evidence.get(reflection_id, ())
             ]
             document = preferred_artifact(
@@ -196,18 +249,30 @@ class ProjectContextQuery:
         }
 
 
-def _artifact_record(evidence: Any) -> Record:
+def _artifact_record(evidence: Artifact, *, tldr: str) -> Record:
     """Project the public evidence value into selector/presentation fields."""
 
     return {
-        "id": evidence.artifact_id,
+        "id": evidence.id,
         "role": evidence.role,
         "path": evidence.path,
         "attempt_index": evidence.attempt_index,
         "created_at": evidence.created_at,
         "updated_at": evidence.updated_at,
         "submitted_order": evidence.order,
-        "tldr": evidence.tldr,
+        "tldr": tldr,
+    }
+
+
+def _by_target(
+    artifacts: tuple[Artifact, ...],
+) -> dict[str, tuple[Artifact, ...]]:
+    grouped: dict[str, list[Artifact]] = {}
+    for artifact in artifacts:
+        grouped.setdefault(artifact.target_id, []).append(artifact)
+    return {
+        target_id: tuple(target_artifacts)
+        for target_id, target_artifacts in grouped.items()
     }
 
 

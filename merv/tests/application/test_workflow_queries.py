@@ -55,19 +55,17 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
         singular = Mock(
             side_effect=AssertionError("dashboard used singular state read")
         )
-        singular_evidence = Mock(
-            side_effect=AssertionError("dashboard used singular evidence read")
-        )
+        original_history = self.app.artifacts.history
+        history = Mock(wraps=original_history)
         self.app.experiments.list_states_with_gates = batch
         self.app.experiments.get_state_with_gate = singular
-        original_evidence = self.app.artifact_submissions.artifacts_for_target
-        self.app.artifact_submissions.artifacts_for_target = singular_evidence
+        self.app.artifacts.history = history
         try:
             result = self.app.project_dashboard_query(project_id=self.project_id)
         finally:
             self.app.experiments.list_states_with_gates = original_batch
             self.app.experiments.get_state_with_gate = original_singular
-            self.app.artifact_submissions.artifacts_for_target = original_evidence
+            self.app.artifacts.history = original_history
 
         self.assertCountEqual(
             [experiment["id"] for experiment in result["experiments"]],
@@ -76,7 +74,16 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
         batch.assert_called_once()
         self.assertEqual(batch.call_args.kwargs["project_id"], self.project_id)
         singular.assert_not_called()
-        singular_evidence.assert_not_called()
+        experiment_history_calls = [
+            call
+            for call in history.call_args_list
+            if call.kwargs["target_type"] == "experiment"
+        ]
+        self.assertEqual(len(experiment_history_calls), 1)
+        self.assertCountEqual(
+            experiment_history_calls[0].kwargs["target_ids"],
+            self.experiment_ids,
+        )
 
     def test_scoped_workflow_hydrates_only_the_selected_experiment(self) -> None:
         original = self.app.experiments.get_state_with_gate
@@ -497,11 +504,15 @@ class ReflectionHistoryQueryCeilingTest(unittest.TestCase):
             seed(project_id=f"proj_{prefix}_one", count=1)
             seed(project_id=f"proj_{prefix}_many", count=25)
 
+        # Typed history reads artifact metadata and the sealed-submission
+        # ledger separately, adding one bounded SELECT per reflected state.
+        # A published overview also rehydrates the latest published state,
+        # which adds one fixed artifact/submission history pair.
         for prefix, query, one_ceiling, many_ceiling in (
-            ("abandoned", self.app.research_core.list_reflections, 8, 152),
-            ("abandoned", self.app.research_core.reflection_overview, 15, 159),
-            ("published", self.app.research_core.list_reflections, 8, 248),
-            ("published", self.app.research_core.reflection_overview, 27, 275),
+            ("abandoned", self.app.research_core.list_reflections, 9, 177),
+            ("abandoned", self.app.research_core.reflection_overview, 16, 184),
+            ("published", self.app.research_core.list_reflections, 9, 273),
+            ("published", self.app.research_core.reflection_overview, 30, 302),
         ):
             with self.subTest(history=prefix, query=query.__name__):
                 one, one_count = self._select_count(

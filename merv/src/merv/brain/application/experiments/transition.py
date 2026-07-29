@@ -7,7 +7,7 @@ from typing import Any, TypedDict, cast
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 
-from ...artifacts.facade import Artifacts
+from ...artifacts import ArtifactTarget, Artifacts
 from ...kernel.events import StoredEvent
 from ...research_core.facade import (
     ExperimentState,
@@ -224,14 +224,12 @@ class TransitionExperiment:
         )
         if not pinned:
             return None
-        self.artifacts.pin_system_artifact(
+        self.artifacts.pin(
+            target=ArtifactTarget("experiment", experiment_id, project_id),
             path=self._exhibit_path(experiment_id=experiment_id, state=state),
-            experiment_id=experiment_id,
             role=EXHIBIT_ROLE,
-            content_bytes=exhibit_bytes(exhibit),
-            content_type="application/json",
+            data=exhibit_bytes(exhibit),
             title="Metrics exhibit (system-generated)",
-            project_id=project_id,
         )
         return exhibit
 

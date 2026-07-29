@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Protocol
 
-from ...artifacts.facade import Artifacts
+from ...artifacts import Artifact, Artifacts
 from ...kernel.utils import WorkflowError
 from ...research_core.facade import ExperimentState, ResearchCore
 from ..ports.tracking import ExperimentTracking, tracking_experiment_name
@@ -54,8 +55,10 @@ class ExperimentExhibits:
             ),
             snapshot=snapshot,
             mlflow_configured=configured,
-            file_sources=self.artifacts.metric_file_sources(
-                experiment_id=experiment_id, attempt_index=attempt_index
+            file_sources=self._metric_file_sources(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                attempt_index=attempt_index,
             ),
         )
         if self.tracking is None:
@@ -95,6 +98,58 @@ class ExperimentExhibits:
                 "rather than restate numbers by hand."
             ),
         }
+
+    def _metric_file_sources(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        attempt_index: int,
+    ) -> list[dict[str, object]]:
+        rows = sorted(
+            (
+                artifact
+                for artifact in self.artifacts.scan(
+                    project_id=project_id,
+                    target_type="experiment",
+                    target_ids=(experiment_id,),
+                    roles=("result",),
+                )
+                if artifact.attempt_index == attempt_index
+            ),
+            key=lambda artifact: (artifact.path, artifact.order),
+        )
+        newest: dict[tuple[str, str], Artifact] = {}
+        for artifact in rows:
+            newest[(artifact.lens_id, artifact.path)] = artifact
+        selected = tuple(newest.values())
+        artifact_by_id = {
+            artifact.id: artifact
+            for artifact in self.artifacts.get(
+                artifact_ids=tuple(artifact.id for artifact in selected),
+                project_id=project_id,
+                include="content",
+            )
+        }
+        sources: list[dict[str, object]] = []
+        for artifact in selected:
+            hydrated = artifact_by_id.get(artifact.id)
+            if hydrated is None or hydrated.data is None:
+                continue
+            try:
+                parsed = json.loads(hydrated.data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            sources.append(
+                {
+                    "path": artifact.path,
+                    "artifact_id": artifact.id,
+                    "sha256": artifact.sha256,
+                    "submitted_at": artifact.updated_at,
+                    "data": parsed,
+                }
+            )
+        return sources
 
 
 def should_pin_exhibit(

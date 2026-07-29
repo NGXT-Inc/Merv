@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
 from merv.brain.application.project_context import ProjectContextQuery
-from merv.brain.artifacts.ports import AssociatedEvidence
+from merv.brain.artifacts import Artifact
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.project_context import ProjectContextFactsReader
 from tests.support.brain import TestBrain
@@ -19,18 +20,23 @@ def artifact(
     role: str,
     attempt_index: int,
     tldr: str,
-) -> AssociatedEvidence:
-    return AssociatedEvidence(
-        artifact_id=artifact_id,
+) -> Artifact:
+    return Artifact(
+        id=artifact_id,
         project_id="proj_1",
+        target_type=(
+            "reflection" if target_id.startswith("syn_") else "experiment"
+        ),
+        target_id=target_id,
         role=role,
         attempt_index=attempt_index,
         lens_id="",
         path=f"{target_id}/{role}.md",
         title="",
-        content_sha256=f"sha-{artifact_id}",
+        sha256=f"sha-{artifact_id}",
         size_bytes=10,
         content_type="text/markdown",
+        status="complete",
         created_by="agent",
         created_at="2026-07-27T10:00:00Z",
         updated_at="2026-07-27T11:00:00Z",
@@ -42,9 +48,9 @@ def artifact(
 class ProjectContextQueryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.facts = Mock()
-        self.evidence = Mock()
+        self.artifacts = Mock()
         self.query = ProjectContextQuery(
-            facts=self.facts, evidence=self.evidence
+            facts=self.facts, artifacts=self.artifacts
         )
         self.facts.read.return_value = {
             "project": {
@@ -116,58 +122,65 @@ class ProjectContextQueryTest(unittest.TestCase):
             },
             "paper_count": 18,
         }
-        experiment_evidence = {
-            "exp_live": (
-                artifact(
-                    artifact_id="art_plan",
-                    target_id="exp_live",
-                    role="plan",
-                    attempt_index=2,
-                    tldr="Run the bounded reranking comparison.",
-                ),
-                artifact(
-                    artifact_id="art_rejected_report",
-                    target_id="exp_live",
-                    role="report",
-                    attempt_index=2,
-                    tldr="Rejected report must not drive a running experiment.",
-                ),
+        experiment_evidence = (
+            artifact(
+                artifact_id="art_plan",
+                target_id="exp_live",
+                role="plan",
+                attempt_index=2,
+                tldr="Run the bounded reranking comparison.",
             ),
-            "exp_done": (
-                artifact(
-                    artifact_id="art_report",
-                    target_id="exp_done",
-                    role="report",
-                    attempt_index=1,
-                    tldr="Candidate recall improved by five points.",
-                ),
+            artifact(
+                artifact_id="art_rejected_report",
+                target_id="exp_live",
+                role="report",
+                attempt_index=2,
+                tldr="Rejected report must not drive a running experiment.",
             ),
-            "exp_legacy": (),
+            artifact(
+                artifact_id="art_report",
+                target_id="exp_done",
+                role="report",
+                attempt_index=1,
+                tldr="Candidate recall improved by five points.",
+            ),
+        )
+        reflection_evidence = (
+            artifact(
+                artifact_id="art_reflection",
+                target_id="syn_1",
+                role="reflection_doc",
+                attempt_index=1,
+                tldr="Ranking quality is now the primary bottleneck.",
+            ),
+            artifact(
+                artifact_id="art_graph",
+                target_id="syn_1",
+                role="project_graph",
+                attempt_index=1,
+                tldr="Graph summary is not the reflection summary.",
+            ),
+        )
+        evidence_by_id = {
+            item.id: item for item in experiment_evidence + reflection_evidence
         }
-        reflection_evidence = {
-            "syn_1": (
-                artifact(
-                    artifact_id="art_reflection",
-                    target_id="syn_1",
-                    role="reflection_doc",
-                    attempt_index=1,
-                    tldr="Ranking quality is now the primary bottleneck.",
-                ),
-                artifact(
-                    artifact_id="art_graph",
-                    target_id="syn_1",
-                    role="project_graph",
-                    attempt_index=1,
-                    tldr="Graph summary is not the reflection summary.",
-                ),
-            )
-        }
-        self.evidence.artifacts_for_targets.side_effect = (
+        self.artifacts.scan.side_effect = (
             lambda **kwargs: (
                 experiment_evidence
                 if kwargs["target_type"] == "experiment"
                 else reflection_evidence
             )
+        )
+        self.artifacts.get.side_effect = lambda **kwargs: tuple(
+            replace(
+                evidence_by_id[artifact_id],
+                data=(
+                    "# Summary\n"
+                    f"{evidence_by_id[artifact_id].tldr}"
+                ).encode()
+            )
+            for artifact_id in kwargs["artifact_ids"]
+            if artifact_id in evidence_by_id
         )
 
     def test_builds_the_five_section_macro_packet(self) -> None:
@@ -228,17 +241,29 @@ class ProjectContextQueryTest(unittest.TestCase):
 
         experiment_call, reflection_call = (
             call.kwargs
-            for call in self.evidence.artifacts_for_targets.call_args_list
+            for call in self.artifacts.scan.call_args_list
         )
         self.assertEqual(experiment_call["roles"], ("plan", "report"))
         self.assertEqual(
-            experiment_call["attempt_indexes"],
-            {"exp_live": 2, "exp_done": 1, "exp_legacy": 3},
+            experiment_call["target_ids"],
+            ("exp_live", "exp_done", "exp_legacy"),
         )
         self.assertEqual(
             reflection_call["roles"], ("reflection_doc", "project_graph")
         )
-        self.assertEqual(reflection_call["attempt_indexes"], {"syn_1": 1})
+        self.assertEqual(reflection_call["target_ids"], ("syn_1",))
+        hydration = self.artifacts.get.call_args.kwargs
+        self.assertEqual(
+            hydration["artifact_ids"],
+            (
+                "art_plan",
+                "art_rejected_report",
+                "art_report",
+                "art_reflection",
+                "art_graph",
+            ),
+        )
+        self.assertEqual(hydration["include"], "content")
 
     def test_forbidden_rich_state_is_absent(self) -> None:
         result = self.query.build(project_id="proj_1")
@@ -441,20 +466,20 @@ class ProjectContextBatchingTest(unittest.TestCase):
                         sequence,
                     ),
                 )
-        original = self.app.artifact_submissions._content_tldr
-        summarized_roles: list[str] = []
+        original = self.app.artifacts.get
+        hydrated_ids: list[str] = []
 
-        def record_role(*, row):
-            summarized_roles.append(str(row["role"]))
-            return original(row=row)
+        def record_get(**kwargs):
+            hydrated_ids.extend(kwargs["artifact_ids"])
+            return original(**kwargs)
 
-        self.app.artifact_submissions._content_tldr = record_role
+        self.app.artifacts.get = record_get
         try:
             self.app.project_context.build(project_id="proj_roles")
         finally:
-            self.app.artifact_submissions._content_tldr = original
+            self.app.artifacts.get = original
 
-        self.assertCountEqual(summarized_roles, ["plan", "report"])
+        self.assertCountEqual(hydrated_ids, ["art_plan", "art_report"])
 
 
 if __name__ == "__main__":  # pragma: no cover

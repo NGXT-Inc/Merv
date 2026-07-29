@@ -9,6 +9,7 @@ from typing import Any
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
+from ..artifacts import Artifact, Artifacts
 from ..research_core.facade import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
@@ -294,7 +295,7 @@ class ProjectDashboardQuery:
 
     snapshots: ResearchSnapshots
     workflow: StatusAndNextQuery
-    artifacts: RecordQuery
+    artifacts: Artifacts
     review_queue: RecordQuery
     recent_events: RecordQuery
     health: Callable[[], dict[str, object]]
@@ -308,7 +309,10 @@ class ProjectDashboardQuery:
             snapshot=snapshot,
             sandboxes=self.workflow.sandboxes.for_project(project_id=project_id),
         )
-        artifacts = self.artifacts(project_id=project_id)["artifacts"]
+        artifacts = [
+            _artifact_list_record(artifact)
+            for artifact in self.artifacts.scan(project_id=project_id)
+        ]
         reviews = self.review_queue(project_id=project_id)
         events = self.recent_events(project_id=project_id, limit=25)["events"]
         claims = status["project"]["active_claims"]
@@ -441,6 +445,27 @@ class ProjectDashboardQuery:
                 snapshot.open_reflection.get("id") if snapshot.open_reflection else None
             ),
         }
+
+
+def _artifact_list_record(artifact: Artifact) -> Record:
+    """Preserve the dashboard's existing compact artifact wire shape."""
+
+    return {
+        "id": artifact.id,
+        "target_type": artifact.target_type,
+        "target_id": artifact.target_id,
+        "role": artifact.role,
+        "attempt_index": artifact.attempt_index,
+        "lens_id": artifact.lens_id,
+        "path": artifact.path,
+        "title": artifact.title,
+        "size_bytes": artifact.size_bytes,
+        "content_type": artifact.content_type,
+        "status": artifact.status,
+        "created_by": artifact.created_by,
+        "created_at": artifact.created_at,
+        "updated_at": artifact.updated_at,
+    }
 
 
 def _sort_active(items: list[Record], priority: dict[str, int]) -> list[Record]:
