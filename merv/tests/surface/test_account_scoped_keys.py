@@ -146,7 +146,7 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         import httpx
         from fastapi.testclient import TestClient
 
-        from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+        from tests.support.sandbox_backend import FakeSandboxBackend
         from merv.brain.surface.auth import SupabaseVerifier
         from merv.brain.surface.project_key_store import SqlProjectKeyRepository
         from merv.brain.surface.project_keys import ProjectKeys

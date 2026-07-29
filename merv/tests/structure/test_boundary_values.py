@@ -55,7 +55,6 @@ from merv.brain.kernel.ports.object_store import (
     UploadPart,
     UploadTarget,
 )
-from merv.brain.kernel.ports.quota_admission import AdmissionRequest
 from merv.brain.research_core.facade import (
     ExperimentCreateArgs,
     LiteratureSignal,
@@ -323,7 +322,6 @@ SAMPLES: dict[type, object] = {
         "expires_in": 300,
     },
     DownloadTarget: {"url": "https://download.example"},
-    AdmissionRequest: AdmissionRequest("tenant_1", 3600, 1.25),
     PersistedRunState: RUN,
     ExperimentCreateArgs: {
         "name": "example",

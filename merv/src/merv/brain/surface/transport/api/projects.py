@@ -10,7 +10,7 @@ from fastapi.responses import Response
 
 from ....application.facade import EventTimelineQuery, ProjectDashboardQuery, StatusAndNextQuery
 from ....research_core.facade import ResearchProjects
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 from .shared import (
     JsonBody, conditional_json_from_signal, path_scoped_body,
     require_membership_author,

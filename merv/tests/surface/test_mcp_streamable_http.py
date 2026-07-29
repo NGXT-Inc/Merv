@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain import __version__
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.mcp_http import register_mcp_routes
 from merv.brain.surface.transport.mcp_streamable_http import (

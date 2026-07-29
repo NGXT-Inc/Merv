@@ -8,14 +8,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from merv.brain.sandbox.execution import build_sandbox_backend
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.execution.multiplexer import MultiplexingSandboxBackend
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.adapters import (
+    MultiplexingSandboxBackend,
+    build_sandbox_backend,
+)
+from merv.brain.sandbox.adapters.lambda_labs import LambdaLabsSandboxBackend
+from merv.brain.sandbox.adapters.thunder_compute import (
+    ThunderComputeSandboxBackend,
+)
+from tests.support.sandbox_backend import FakeSandboxBackend
+from merv.brain.sandbox.models import (
     BackendCapabilities,
     BackendUnavailableError,
     BackendValidationError,
     SandboxRequest,
+    SandboxTarget,
 )
 
 
@@ -213,11 +220,14 @@ class MultiplexerTest(unittest.TestCase):
     def test_write_secrets_routes_by_prefix(self) -> None:
         calls: list[str] = []
         self.beta.write_secrets = (  # type: ignore[method-assign]
-            lambda *, sandbox_id, secrets, **_kw: calls.append(sandbox_id) or True
+            lambda *, target, secrets: calls.append(target.sandbox_id) or True
         )
 
         self.assertTrue(
-            self.mux.write_secrets(sandbox_id="beta:sb-9", secrets={"T": "v"})
+            self.mux.write_secrets(
+                target=SandboxTarget(sandbox_id="beta:sb-9"),
+                secrets={"T": "v"},
+            )
         )
         self.assertEqual(calls, ["sb-9"])
 
@@ -677,15 +687,15 @@ class BuildFactoryTest(unittest.TestCase):
 
     def test_single_name_env_builds_direct_backend(self) -> None:
         with mock.patch.dict(
-            os.environ, {"MERV_EXECUTION_BACKENDS": "fake"}, clear=False
+            os.environ, {"MERV_EXECUTION_BACKENDS": "lambda_labs"}, clear=False
         ):
             backend = build_sandbox_backend(repo_root=self.repo)
 
-        self.assertIsInstance(backend, FakeSandboxBackend)
+        self.assertIsInstance(backend, LambdaLabsSandboxBackend)
 
     def test_multiple_names_build_multiplexer_with_legacy_default(self) -> None:
         env = {
-            "MERV_EXECUTION_BACKENDS": "fake, lambda_labs",
+            "MERV_EXECUTION_BACKENDS": "thunder_compute, lambda_labs",
             "MERV_EXECUTION_BACKEND": "lambda_labs",
         }
         with mock.patch.dict(os.environ, env, clear=False):
@@ -693,23 +703,27 @@ class BuildFactoryTest(unittest.TestCase):
 
         self.assertIsInstance(backend, MultiplexingSandboxBackend)
         self.assertEqual(backend.default, "lambda_labs")
-        self.assertEqual(sorted(backend.backends), ["fake", "lambda_labs"])
+        self.assertEqual(
+            sorted(backend.backends), ["lambda_labs", "thunder_compute"]
+        )
 
     def test_multiple_names_default_to_first_configured(self) -> None:
-        env = {"MERV_EXECUTION_BACKENDS": "fake,lambda_labs"}
+        env = {"MERV_EXECUTION_BACKENDS": "thunder_compute,lambda_labs"}
         with mock.patch.dict(os.environ, env, clear=False):
             os.environ.pop("MERV_EXECUTION_BACKEND", None)
             backend = build_sandbox_backend(repo_root=self.repo)
 
         self.assertIsInstance(backend, MultiplexingSandboxBackend)
-        self.assertEqual(backend.default, "fake")
+        self.assertEqual(backend.default, "thunder_compute")
 
     def test_explicit_name_arg_bypasses_multi_config(self) -> None:
-        env = {"MERV_EXECUTION_BACKENDS": "fake,lambda_labs"}
+        env = {"MERV_EXECUTION_BACKENDS": "thunder_compute,lambda_labs"}
         with mock.patch.dict(os.environ, env, clear=False):
-            backend = build_sandbox_backend(repo_root=self.repo, name="fake")
+            backend = build_sandbox_backend(
+                repo_root=self.repo, name="lambda_labs"
+            )
 
-        self.assertIsInstance(backend, FakeSandboxBackend)
+        self.assertIsInstance(backend, LambdaLabsSandboxBackend)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from merv.brain.surface.composition import build_local_server
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
 from merv.brain.kernel.utils import NotFoundError, ValidationError
@@ -47,7 +47,7 @@ class TestBrain:
     )
     _PRIVATE_ALIASES = {
         "store": "_store", "blobs": "_blobs", "storage": "_storage",
-        "execution_backend": "_execution_backend", "mlflow_tracking": "_tracking",
+        "mlflow_tracking": "_tracking",
     }
     _SANDBOX_TEST_PARTS = {
         "sandbox_storage": "_storage",
@@ -112,6 +112,8 @@ class TestBrain:
         return self.db_path.parent
 
     def __getattr__(self, name: str) -> Any:
+        if name == "execution_backend":
+            return self._app.sandboxes._backend
         if name in self._RECORD_SERVICES:
             return getattr(self._app._record_core, name)
         if name in self._SANDBOX_TEST_PARTS:

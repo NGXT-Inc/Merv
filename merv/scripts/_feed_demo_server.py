@@ -7,16 +7,19 @@ For local visualization only — not part of the product.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import uvicorn
 
 from merv.brain.surface.composition import build_local_server
 from merv.brain.feed import feed as feed_module
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
 

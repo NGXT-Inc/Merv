@@ -2,90 +2,70 @@
 
 ## Purpose and boundary
 
-`merv.brain.sandbox` is the provider-neutral control plane for temporary
-research compute. `SandboxEngine` is its only public control object: surface
-tools and HTTP views call the engine, while provider SDKs, SQL/state primitives,
-and transport contracts remain outside the engine API. The package owns
-reservation, provisioning, attachment, observation, retained-output commands,
-extension, release, expiry/idle cleanup, and spend/accounting projections. It
-does not own experiment workflow, authentication, HTTP/MCP rendering, provider
-credentials, or artifact/blob persistence.
+`merv.brain.sandbox` is the control plane for temporary research compute.
+`SandboxEngine` is the application-facing API; `SandboxBackend` is its one
+injected provider contract. Composition alone imports concrete construction
+code. Sandbox owns reservation, provisioning, attachment, observation,
+extension, release, cleanup, and compute accounting. It does not own research
+workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
 
-## Main control and data flow
+## Main flow
 
-1. Composition builds one or more drivers through `execution.driver_registry`
-   and `execution.build_sandbox_backend`; a `MultiplexingSandboxBackend` routes
-   provider-qualified IDs while lazily importing only configured adapters.
-2. `SandboxEngine.request` validates caller-owned SSH material and resource
-   selection, consults `QuotaService`, and reserves a durable `provisioning`
-   row through `SandboxStorage`. The durable row, not an in-process thread, is
-   authoritative.
-3. `SandboxAcquisition` provisions asynchronously. Phase callbacks update the
-   row; the provider resource ID is persisted immediately after creation so a
-   crash cannot erase the cleanup handle. Publishing `running` and opening its
-   spend generation happen in one store transaction.
-4. The engine renders stable agent views and delegates provider work through
-   `SandboxBackend`: liveness, transcript/run reads, metrics, SSH endpoint
-   refresh, secret delivery, extension, and termination. Management keys and
-   write-only transient secrets are addressed by immutable `sandbox_uid`.
-5. `SandboxRunLedger`, `RunsObserver`, `SandboxMetrics`, and `TranscriptCache`
-   reconcile remote receipts and observations into bounded, owner-checked
-   views. Remote paths come from `sandbox_paths`; run/transcript wire formats
-   live under `execution`.
-6. Release, failed provisioning, expiry, idleness, and stale provisioning all
-   converge on `SandboxLifecycle`. `SandboxScheduler` supplies cadence only:
-   lifecycle and acquisition own decisions and destructive effects.
+1. `adapters.build_sandbox_backend` lazily selects one provider or builds a
+   `MultiplexingSandboxBackend` for several. Provider-qualified IDs keep every
+   later operation routed to the resource's durable owner.
+2. `SandboxEngine.request` validates the request, applies quota policy, and
+   reserves a durable `provisioning` row. The row—not a worker thread—is the
+   source of truth.
+3. `SandboxProvisioner` acquires compute asynchronously. It persists the native
+   resource ID immediately, then atomically publishes `running` and opens the
+   spend generation.
+4. Reads use one row-derived `SandboxTarget` for provider, SSH, work directory,
+   and key coordinates. Observation caches and reconciles remote runs, metrics,
+   and transcript bytes.
+5. Release, provisioning failure, expiry, idleness, and crash recovery converge
+   on `SandboxLifecycle`. `SandboxScheduler` supplies cadence; it does not own
+   lifecycle decisions.
 
-## Responsibilities by area
+## File map
 
-- `core.py`: public operations, validation, response projection, and component
-  wiring; it must not contain provider SDK, subprocess, HTTP, or SQL details.
-- `storage.py`: durable rows, attachments, generations/spend, events, and
-  compare-and-set transitions with project/user ownership guards.
-- `acquisition.py`, `sandbox_lifecycle.py`, `scheduler.py`: asynchronous acquire,
-  tri-state liveness and fenced cleanup, then periodic ordering respectively.
-- `observation.py`, `sandbox_heartbeat.py`, `quotas.py`: run/metrics observation,
-  activity/idle policy, and tenant capacity/spend limits.
-- `sandbox_backend.py`: provider protocol, capability model, request/result
-  values, normalized errors, and conservative default behavior.
-- `execution/`: portable bootstrap/SSH/run/transcript formats plus driver
-  discovery, multiplexing, and concrete provider adapters. Each adapter keeps
-  API/config/catalog translation behind the common backend contract.
-- `keys.py`, `mgmt_keys.py`, `managed_mgmt_keys.py`, `ssh_keys.py`: ephemeral
-  secret custody and management-key implementations; caller private keys never
-  enter durable brain state.
+- `__init__.py`: public imports; `core.py`: application-facing operations and
+  wiring; `models.py`: protocol, request/target values, statuses, and fences.
+- `storage.py`: scoped SQL, attachments, generations, events, and
+  compare-and-set transitions.
+- `provisioning.py`: asynchronous acquire/cancel recovery; `lifecycle.py`:
+  destructive and recovery transitions; `scheduler.py`: timer ordering.
+- `observation.py`: run ledger, remote run reads, metrics, and transcript cache;
+  `heartbeat.py`: activity and idle policy; `quotas.py`: admission and spend.
+- `keys.py`: management-key adapters; `sandbox_paths.py`: canonical remote
+  paths. Lifecycle keeps process-local, write-only pending secrets.
+- `adapters/__init__.py`: lazy registry, factory, aliases, and multi-provider
+  routing; `adapters/base.py`: shared configuration/HTTP/catalog and VM+SSH
+  mechanics.
+- `adapters/{lambda_labs,thunder_compute,modal,hyperstack,digitalocean,verda,
+  voltage_park,tensordock}.py`: one explicit provider adapter per file.
+- `remote/bootstrap_tools.py`, `remote/vm_bootstrap.py`, and
+  `remote/vm_ssh.py`: portable remote setup and SSH execution.
+- `remote/run_receipts.py`, `remote/transcript_wire.py`, and
+  `remote/usage_metrics.py`: bounded remote wire formats and parsers.
 
 ## Safety and consistency invariants
 
-- A provider error is `unknown`, never proof that a resource is gone. Only
-  confirmed absence permits a terminal row; otherwise the row stays
-  `cleanup_pending` and is retried because it may still bill.
-- Destructive transitions are fenced by `sandbox_uid`, project ownership, row
-  status/phase, and cleanup claim tokens. A late worker may not overwrite a
-  newer request or reclaimed cleanup attempt.
-- Provider ownership is durable. New IDs are `<provider>:<native-id>`; legacy
-  IDs must be qualified from the row's recorded provider. Unknown/unconfigured
-  owners fail closed rather than falling through to the current default.
-- An experiment has at most one default active sandbox, while explicit
-  attachment supports controlled sharing. Ownership fields are immutable and
-  every read/write is project-scoped.
-- Expiry enforcement protects provider billing. Scheduler order is: expiry,
-  run reconciliation, idle judgment, stale-provision cleanup, then retry of
-  uncertain cleanup; detached run receipts must be refreshed before idleness.
-- Terminal state closes the spend generation and removes brain management keys
-  and transient secrets. Valuable remote outputs must be retained before the
-  confirmed release step.
-- Provider adapters must satisfy `SandboxBackend`, translate errors into the
-  shared taxonomy, persist an ID through `on_created` as soon as one exists,
-  and avoid importing optional SDKs until their driver is selected.
-
-## Integration boundaries
-
-Inbound callers are the control composition root, tool handlers, and HTTP views;
-they depend only on `SandboxEngine` and its JSON-compatible results. Durable
-state is accessed through kernel store/management-key ports. Outbound compute
-access is exclusively through `SandboxBackend`; VM-like drivers share
-`VmSshSandboxBackend`, bootstrap scripts, and management SSH helpers, while
-Modal implements the same contract with its native runtime. Tests under
-`tests/sandbox` enforce backend contracts, lifecycle/event semantics, tenancy,
-and this guide's maintenance rules.
+- Provider failure is unknown, never proof that a resource is gone. Only
+  confirmed absence permits a terminal row; uncertain destruction remains
+  visible as `cleanup_pending` and is retried.
+- Destructive transitions are fenced by `sandbox_uid`, project ownership,
+  status/phase, cleanup token, and row version. Heartbeats and endpoint refresh
+  cannot advance a cleanup claim.
+- New IDs are `<provider>:<native-id>`. Legacy IDs are qualified from the row's
+  recorded provider; an unavailable owner fails closed.
+- An experiment has at most one default active sandbox. Explicit attachments
+  control sharing; every state operation remains project-scoped.
+- Expiry, final receipt observation, idle judgment, stale provisioning, and
+  cleanup retry remain ordered so detached work is not destroyed prematurely.
+- Terminal state closes compute spend and removes management keys and transient
+  secrets. Valuable outputs must be retained before confirmed release.
+- Provider adapters translate errors into the shared taxonomy, call
+  `on_created` as soon as an ID exists, and avoid optional SDK imports until
+  selected. Shared VM code may encode only truly common SSH/bootstrap behavior;
+  provider-specific auth, procurement, billing, and state mapping stay explicit.

@@ -14,8 +14,7 @@ from tests.paths import BACKEND_ROOT
 
 
 _BOOTSTRAP_FILES = {
-    "sandbox/execution/__init__.py",
-    "sandbox/execution/driver_registry.py",
+    "sandbox/adapters/__init__.py",
     "surface/config.py",
     "surface/control/control_app.py",
     "surface/control/record_core.py",
@@ -48,14 +47,10 @@ kernel/state/dialects.py | PostgresConnection.__init__ | raw | Any
 mlflow/tracking.py | CentralMlflowService.__init__ | health_check | Callable[[], bool] | None
 object_storage/s3_blobs.py | S3BlobStore.__init__ | client | Any | None
 object_storage/s3_object_store.py | S3CompatibleObjectStore.__init__ | client | Any | None
-sandbox/execution/backends/modal/sandbox_backend.py | ModalSandboxBackend.__init__ | modal_module | Any | None
-sandbox/execution/backends/modal/sandbox_backend.py | ModalSandboxBackend.__init__ | activity | ActivityHook | None
-sandbox/execution/backends/modal/sandbox_backend.py | build_modal_sandbox_backend | activity | ActivityHook | None
-sandbox/execution/backends/thunder_compute/sandbox_backend.py | ThunderComputeSandboxBackend.__init__ | bootstrap_runner | BootstrapRunner | None
-sandbox/scheduler.py | SandboxScheduler.__init__ | sample_metrics | Callable[..., dict[str, Any]] | None
-sandbox/scheduler.py | SandboxScheduler.__init__ | reconcile_runs | Callable[[], int] | None
-sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | repository | Any
-sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | sample_metrics | Callable[..., dict[str, Any]]
+sandbox/adapters/modal.py | ModalSandboxBackend.__init__ | modal_module | Any | None
+sandbox/adapters/modal.py | ModalSandboxBackend.__init__ | activity | ActivityHook | None
+sandbox/adapters/modal.py | build_modal_sandbox_backend | activity | ActivityHook | None
+sandbox/adapters/thunder_compute.py | ThunderComputeSandboxBackend.__init__ | bootstrap_runner | BootstrapRunner | None
 sandbox/observation.py | TranscriptCache.__init__ | clock | Callable[[], float] | None
 surface/observability.py | StructuredLogger.__init__ | stream | Any | None
 surface/transport/admin_http.py | register_admin_routes | cleanup | Any | None

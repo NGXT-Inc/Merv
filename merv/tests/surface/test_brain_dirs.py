@@ -18,7 +18,7 @@ from merv.brain.surface.composition.brain_dirs import (
     resolve_brain_state_root,
     resolve_local_brain_staging,
 )
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 
 
 def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:

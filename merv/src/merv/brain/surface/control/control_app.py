@@ -38,8 +38,7 @@ from ..user_settings import UserHfTokenSettings
 from ...kernel.ports.mgmt_keys import MgmtKeyStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
 from .record_core import build_record_core
-from ...sandbox.sandbox_backend import SandboxBackend
-from ...sandbox.core import SandboxEngine
+from ...sandbox import SandboxBackend, SandboxEngine
 from ...object_storage.service import StorageLedgerService
 from ...object_storage.catalog import StorageObjectCatalog
 from ...kernel.state import BaseStateStore
@@ -72,10 +71,10 @@ class ControlApp:
         # UI's raw payload view; the ledger keeps sizes and outcomes past a
         # restart. A dropped row announces itself through the activity feed.
         self.tool_ledger = ToolCallLedger(store=store, on_failure=self._ledger_dropped)
+        self.tool_ledger.start_retention()
         self.structured_logger = StructuredLogger(enabled=structured_logging)
         self._blobs = blobs
         self._storage = storage
-        self._execution_backend = execution_backend
         # The legacy tracking adapter remains injectable for compatibility and
         # a later reintroduction, but it is no longer auto-composed from the
         # environment.  A normal product build therefore has no tracking
@@ -171,11 +170,7 @@ class ControlApp:
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=self.research_core.assert_experiment_in_project,
         )
-        # Retention has to be enforced IN PROCESS: the hosted runtime schedules
-        # no cleanup pass, so a 30-day horizon that waits on an external cron is
-        # a horizon nothing enforces. The reaper is the only timer this process
-        # owns, and the prune it now carries is bounded and batched.
-        self.sandboxes.start(periodic_maintenance=self.tool_ledger.prune)
+        self.sandboxes.start()
         self.research_snapshots = ResearchSnapshotReader(
             store=store,
             experiments=core.experiments,
@@ -301,18 +296,10 @@ class ControlApp:
     def shutdown(self) -> None:
         """Stop what still calls the subsystems, then close the subsystems.
 
-        The order is load-bearing, not alphabetical: the reaper thread is what
-        drives the ledger's retention sweep (``periodic_maintenance`` above), so
-        it is signalled and joined FIRST. Closing the ledger under a live sweep
-        would be closing a database connection out from under a running
-        statement. ``ToolCallLedger.close()`` defends itself as well — it takes
-        the writer lock, and declines to close a handle whose owner may still be
-        mid-row — but a shutdown that raced its own daemons would be leaning on
-        that defense every time rather than in the case it exists for.
+        Sandbox stops its timer, provision jobs, and provider resources. The
+        ledger then stops its own retention timer before closing cached writers.
         """
         with suppress(Exception):
             self.sandboxes.shutdown()  # signals + joins the reaper
-        with suppress(Exception):
-            self._execution_backend.shutdown()
         with suppress(Exception):  # the ledger holds one connection per writer
             self.tool_ledger.close()

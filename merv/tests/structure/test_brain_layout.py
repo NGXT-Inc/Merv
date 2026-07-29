@@ -45,7 +45,7 @@ CONTROL_MODULES = (
     *ARTIFACTS_MODULES,
     *DOMAIN_MODULES,
     *PORT_MODULES,
-    BACKEND_ROOT / "sandbox" / "sandbox_backend.py",
+    BACKEND_ROOT / "sandbox" / "models.py",
     BACKEND_ROOT / "sandbox" / "sandbox_paths.py",
     SURFACE_ROOT / "tools" / "tool_facade.py",
     SURFACE_ROOT / "tools" / "tool_handlers.py",
@@ -68,7 +68,6 @@ CONTROL_MODULES = (
     SURFACE_ROOT / "control" / "control_runtime.py",
     BACKEND_ROOT / "kernel" / "state" / "store.py",
     BACKEND_ROOT / "kernel" / "state" / "dialects.py",
-    BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py",
 )
 
 # Module names (any dotted segment) control modules may never import.
@@ -223,14 +222,14 @@ def _imports_management_key_adapter(path: Path) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.endswith("sandbox.mgmt_keys"):
+                if alias.name.endswith("sandbox.keys"):
                     return True
         elif isinstance(node, ast.ImportFrom) and node.module:
             module = node.module
-            if module.endswith("sandbox.mgmt_keys"):
+            if module.endswith("sandbox.keys"):
                 return True
             if module.endswith("sandbox") and any(
-                alias.name == "mgmt_keys" for alias in node.names
+                alias.name == "keys" for alias in node.names
             ):
                 return True
     return False
@@ -279,9 +278,9 @@ load("subprocess")
 
     def test_management_key_adapter_lint_catches_import_forms(self) -> None:
         cases = (
-            "import merv.brain.sandbox.mgmt_keys\n",
-            "from merv.brain.sandbox import mgmt_keys\n",
-            "from ..sandbox.mgmt_keys import LocalMgmtKeyStore\n",
+            "import merv.brain.sandbox.keys\n",
+            "from merv.brain.sandbox import keys\n",
+            "from ..sandbox.keys import LocalMgmtKeyStore\n",
         )
         with tempfile.TemporaryDirectory() as tmp:
             for index, source in enumerate(cases):
@@ -292,11 +291,11 @@ load("subprocess")
 
     def test_only_sandbox_io_modules_spawn_processes(self) -> None:
         # Everything service-shaped is spawn-free; inside the sandbox module
-        # only execution/ (provider IO) and ssh_keys.py (keygen) may spawn.
+        # only execution/ (provider IO) and keys.py (keygen) may spawn.
         sandbox_record_modules = [
             path
             for path in (BACKEND_ROOT / "sandbox").glob("*.py")
-            if path.name != "ssh_keys.py"
+            if path.name != "keys.py"
         ]
         for path in sorted(
             (
@@ -362,27 +361,22 @@ load("subprocess")
 
     def test_sandbox_core_does_not_import_provider_implementations(self) -> None:
         path = BACKEND_ROOT / "sandbox" / "core.py"
-        self.assertFalse(
-            any(
-                segment.startswith("execution.backends.")
-                for segment in _import_segments(path)
-            )
-        )
+        self.assertNotIn("adapters", _import_segments(path))
 
-    def test_sandbox_services_use_backend_port_not_execution_package(self) -> None:
+    def test_sandbox_services_use_models_not_adapters(self) -> None:
         # Record/control sandbox services depend on the provider-neutral port,
-        # while concrete provider machinery stays under execution/.
-        for name in ("scheduler.py", "acquisition.py", "core.py"):
+        # while concrete provider machinery stays under adapters/.
+        for name in ("scheduler.py", "provisioning.py", "core.py"):
             with self.subTest(module=name):
                 self.assertNotIn(
-                    "execution", _import_segments(BACKEND_ROOT / "sandbox" / name)
+                    "adapters", _import_segments(BACKEND_ROOT / "sandbox" / name)
                 )
 
-    def test_sandbox_backend_port_is_neutral(self) -> None:
-        imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_backend.py")
+    def test_sandbox_models_are_neutral(self) -> None:
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "models.py")
         forbidden = imports & {
+            "adapters",
             "dataplane",
-            "execution",
             "services",
             "state",
             "subprocess",
@@ -408,9 +402,9 @@ load("subprocess")
         # individual record/view services without loading data-plane services.
         self.assertFalse(_imports(SERVICES_ROOT / "__init__.py"))
 
-    def test_sandbox_support_is_neutral(self) -> None:
+    def test_sandbox_domain_values_are_neutral(self) -> None:
         # Shared sandbox constants/helpers stay below service and adapter code.
-        imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_support.py")
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "models.py")
         for forbidden in (
             "services",
             "dataplane",
@@ -669,7 +663,6 @@ load("subprocess")
         # The service layer depends on the MgmtKeyStore port only. The local
         # filesystem key custody adapter belongs to composition-state wiring,
         # not services/.
-        self.assertFalse((SERVICES_ROOT / "sandbox_mgmt_keys.py").exists())
         service_modules = (
             *GLUE_SERVICE_FILES,
             *RESEARCH_CORE_ROOT.rglob("*.py"),
@@ -677,16 +670,15 @@ load("subprocess")
             *(
                 path
                 for path in (BACKEND_ROOT / "sandbox").glob("*.py")
-                if path.name not in {"mgmt_keys.py", "managed_mgmt_keys.py"}
+                if path.name != "keys.py"
             ),
         )
         for path in sorted(service_modules):
             with self.subTest(module=path.name):
                 self.assertFalse(_imports_management_key_adapter(path))
                 self.assertNotIn("LocalMgmtKeyStore", path.read_text(encoding="utf-8"))
-        imports = _import_segments(BACKEND_ROOT / "sandbox" / "mgmt_keys.py")
-        self.assertIn("ssh_keys", imports)
-        self.assertNotIn("subprocess", imports)
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "keys.py")
+        self.assertIn("subprocess", imports)
         self.assertNotIn("services", imports)
         self.assertIn(
             "LocalMgmtKeyStore",
@@ -694,20 +686,17 @@ load("subprocess")
                 encoding="utf-8"
             ),
         )
-        self.assertNotIn(
-            "subprocess",
-            _import_segments(BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py"),
-        )
 
     def test_local_ssh_keygen_is_single_sourced(self) -> None:
+        path = BACKEND_ROOT / "sandbox" / "keys.py"
+        self.assertIn("subprocess", _import_segments(path))
         self.assertEqual(
-            _imports(BACKEND_ROOT / "sandbox" / "ssh_keys.py"),
-            {"os", "pathlib", "subprocess", "kernel"},
+            sum(
+                "ssh-keygen" in candidate.read_text(encoding="utf-8")
+                for candidate in (BACKEND_ROOT / "sandbox").glob("*.py")
+            ),
+            1,
         )
-        path = BACKEND_ROOT / "sandbox" / "mgmt_keys.py"
-        self.assertIn("ssh_keys", _import_segments(path))
-        self.assertNotIn("subprocess", _import_segments(path))
-        self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from ...research_core.facade import (
     ResearchProjects,
     ResearchReviewDelivery,
 )
-from ...sandbox.core import SandboxEngine
+from ...sandbox import SandboxEngine
 from ..artifacts import ArtifactTools
 from .contracts import TOOL_MANIFEST, available_tool_names
 from .tool_facade import ToolHandler

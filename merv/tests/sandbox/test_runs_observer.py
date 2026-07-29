@@ -56,7 +56,7 @@ class RunsObserverTest(unittest.TestCase):
         self.ledger = _StubLedger()
         self.repository = _StubRepository([_row()])
         self.observer = RunsObserver(
-            ledger=self.ledger, repository=self.repository, concurrency=4
+            ledger=self.ledger, storage=self.repository, concurrency=4
         )
 
     def _in_thread(self, target) -> threading.Thread:
@@ -101,7 +101,9 @@ class RunsObserverTest(unittest.TestCase):
         self.assertFalse(
             self.observer.observe(row=_row(status="terminated"), max_age_seconds=60)
         )
-        self.assertEqual(self.ledger.calls, 2)
+        # Normal reads stop at the observer boundary; only an explicit final
+        # read may reach a cleanup-claimed row.
+        self.assertEqual(self.ledger.calls, 1)
 
     # ---------- one box, one read ----------
 
@@ -147,7 +149,7 @@ class RunsObserverConcurrencyCapTest(unittest.TestCase):
     def setUp(self) -> None:
         self.ledger = _StubLedger()
         self.observer = RunsObserver(
-            ledger=self.ledger, repository=_StubRepository(), concurrency=1
+            ledger=self.ledger, storage=_StubRepository(), concurrency=1
         )
         self.ledger.hold = True
         self.occupied = threading.Thread(

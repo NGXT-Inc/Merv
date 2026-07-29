@@ -25,7 +25,7 @@ from ...identity import (
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
                      bind_request_principal, is_local_origin, ledger_direct_call,

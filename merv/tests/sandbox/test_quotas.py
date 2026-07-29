@@ -17,8 +17,8 @@ from pathlib import Path
 from datetime import UTC, datetime
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
-from merv.brain.kernel.ports.quota_admission import AdmissionRequest
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from merv.brain.sandbox.quotas import AdmissionRequest
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.sandbox.quotas import GLOBAL_SCOPE, QuotaService
 from merv.brain.kernel.utils import PermissionDeniedError
 
@@ -362,6 +362,11 @@ class QuotaAdmissionTest(unittest.TestCase):
         spend = self.quotas.tenant_spend(tenant_id="tenant_q", now=now)
         self.assertAlmostEqual(spend["gpu_hours"], 4.0)
         self.assertAlmostEqual(spend["usd"], 8.0)
+        counters = self.quotas.tenant_generation_counters(
+            tenant_id="tenant_q",
+            now=now,
+        )
+        self.assertAlmostEqual(counters["sandbox_hours"], 4.0)
 
     def test_closing_a_generation_freezes_spend(self) -> None:
         # Open generation bills to a far-future now; closing it caps the runtime.

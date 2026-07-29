@@ -22,7 +22,7 @@ from merv.brain.surface.config import (
     resolve_storage_secret_access_key,
     storage_feature_enabled,
 )
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.utils import ValidationError
@@ -490,7 +490,7 @@ class SecretStoreCredentialsTest(unittest.TestCase):
     def test_explicit_env_file_is_the_secret_store_seam_in_control(self) -> None:
         import os
 
-        from merv.brain.sandbox.execution.backends.modal.config import load_modal_env_file
+        from merv.brain.sandbox.adapters.modal import load_modal_env_file
 
         os.environ["RESEARCH_PLUGIN_MODE"] = "control"
         os.environ["RESEARCH_PLUGIN_MODAL_ENV_FILE"] = str(self.env_file)
@@ -500,7 +500,7 @@ class SecretStoreCredentialsTest(unittest.TestCase):
     def test_implicit_dotenv_disabled_in_control(self) -> None:
         import os
 
-        from merv.brain.sandbox.execution.backends.modal import config as modal_config
+        import merv.brain.sandbox.adapters.modal as modal_config
 
         os.environ["RESEARCH_PLUGIN_MODE"] = "control"
         os.environ.pop("RESEARCH_PLUGIN_MODAL_ENV_FILE", None)
@@ -515,7 +515,7 @@ class SecretStoreCredentialsTest(unittest.TestCase):
     def test_implicit_dotenv_still_works_in_local(self) -> None:
         import os
 
-        from merv.brain.sandbox.execution.backends.modal import config as modal_config
+        import merv.brain.sandbox.adapters.modal as modal_config
 
         os.environ["RESEARCH_PLUGIN_MODE"] = "local"
         os.environ.pop("RESEARCH_PLUGIN_MODAL_ENV_FILE", None)

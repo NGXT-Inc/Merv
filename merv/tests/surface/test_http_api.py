@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from tests.support.brain import TestBrain, upload_token
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.surface.transport.http_api import create_fastapi_app
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.utils import now_iso
 
 

@@ -40,7 +40,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.kernel.secret_tokens import WAIT_SECRET_ENV_VAR
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.transport.http_server import make_http_server
 from merv.client import runs_wait
 from merv.client.runs_wait import (

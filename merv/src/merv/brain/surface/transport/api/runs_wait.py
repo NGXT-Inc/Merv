@@ -37,7 +37,7 @@ from ....kernel.secret_tokens import (
     wait_signature_matches,
 )
 from ....kernel.utils import parse_iso
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 
 
 MAX_STREAMS_ENV_VAR = "MERV_WAIT_MAX_STREAMS"

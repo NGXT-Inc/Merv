@@ -58,15 +58,16 @@ The exact component import matrix is:
 | Surface | any component; its independent layer classification still applies |
 
 Outside bootstrap, code enters another component only through its declared
-package root, `api.py`, `facade.py`, or `ports/**` entrypoint. Research is
+package root, `api.py`, `facade.py`, or `ports/**` entrypoint. A module named
+`core.py` is not automatically public. Research is
 deliberately narrower: it may
 enter Artifacts through `artifacts/ports/**` only, never the Artifacts facade.
 This is the executable form of “one stable public facade”; it prevents a new use
 case or adapter from depending on internal services. The legacy
 public-entrypoint exception ledger is now empty: every cross-component import
 must enter through a declared public entrypoint. Workflow reads use
-`ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
-declared `Sandbox` facade.
+`ResearchSnapshots` and `SandboxReads`; Sandbox commands enter through the
+package-root `SandboxEngine`.
 An application service deliberately exported from a component package root is
 itself a valid public entrypoint; Surface may type against it directly when no
 independent projection or capability constraint exists. Internal service-module
@@ -86,10 +87,10 @@ The initial layer mapping is deliberately honest about mixed directories:
 | Layer | Representative paths |
 |---|---|
 | foundation | `kernel/**` |
-| port | `kernel/ports/**`, `application/ports/**`, `artifacts/ports/**`, `sandbox/sandbox_backend.py` |
-| domain | `research_core/domain/**` and pure component policy files |
+| port | `kernel/ports/**`, `application/ports/**`, `artifacts/ports/**` |
+| domain | `research_core/domain/**`, `sandbox/models.py`, and pure component policy files |
 | application | component services and cross-component work under `application/**` |
-| adapter | `mlflow/**`, concrete storage/blob code, sandbox provider drivers, client/runtime adapters |
+| adapter | `mlflow/**`, concrete storage/blob code, `sandbox/adapters/**`, `sandbox/remote/**`, and key custody |
 | delivery | ordinary `surface/**` HTTP/MCP/auth/serialization code |
 | bootstrap | Surface composition/config/control wiring, the HTTP process launcher, sandbox driver registration |
 
@@ -279,14 +280,13 @@ on provider-name literals. Capability flags and the typed `SandboxDriver` /
 provider descriptors form the composition registry; the shared offline driver
 conformance suite applies to every registered implementation.
 
-Sandbox's public facade accepts a composition-owned `SandboxRuntime` rather
-than reconstructing repositories, lifecycle services, provisioners, daemons,
-or keys. Public calls become typed commands/queries; command,
-query, projection, and maintenance handlers own their respective logic. The
-runtime owns thread start/shutdown and `SandboxRepository` owns SQL. The pure
-lifecycle reducer translates reconcile, reap, and explicit-release observations
-into terminal event facts and ordered side-effect intents. Provisioner settle
-paths continue to route terminal writes through `SandboxLifecycle` directly.
-Sandbox read queries scope rows by both project and experiment. Production code
-may not reach through `app.sandboxes` to repositories or runtime collaborators;
-bootstrap uses the separately owned runtime when it needs lifecycle internals.
+Sandbox exposes one package-root `SandboxEngine` for commands, reads, and
+maintenance. The engine owns orchestration and quota policy while
+`SandboxStorage` owns SQL and atomic transitions, provider adapters own external
+compute I/O, and the narrowly scoped lifecycle/provisioning/observation helpers
+protect concurrency and cleanup ordering. Sandbox reads scope rows by both
+project and experiment. Production code may not import Sandbox submodules or
+reach through `app.sandboxes` to storage, providers, observers, lifecycle
+workers, keys, or mutable state. Bootstrap is the sole exception: it constructs
+the injected provider-neutral backend and management-key store from their
+adapter modules before handing them to the engine.

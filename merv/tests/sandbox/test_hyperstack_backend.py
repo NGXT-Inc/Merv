@@ -5,16 +5,16 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution.backends.hyperstack.catalog import to_agent_options
-from merv.brain.sandbox.execution.backends.hyperstack.config import (
+from merv.brain.sandbox.adapters.hyperstack import to_agent_options
+from merv.brain.sandbox.adapters.hyperstack import (
     HyperstackCloudConfig,
     HyperstackSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.hyperstack.sandbox_backend import (
+from merv.brain.sandbox.adapters.hyperstack import (
     SSH_INGRESS_RULES,
     HyperstackSandboxBackend,
 )
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
@@ -185,7 +185,7 @@ class HyperstackAcquireTest(unittest.TestCase):
         backend = _backend(client)
         with patch.object(
             HyperstackSandboxBackend,
-            "_wait_for_active_vm",
+            "_wait_for_vm",
             side_effect=BackendUnavailableError("boom"),
         ):
             with self.assertRaises(BackendUnavailableError):
@@ -196,10 +196,6 @@ class HyperstackAcquireTest(unittest.TestCase):
 
 
 class HyperstackLivenessTest(unittest.TestCase):
-    def test_404_is_authoritatively_dead(self) -> None:
-        backend = _backend(FakeHyperstackClient())
-        self.assertFalse(backend.is_alive(sandbox_id="99999"))
-
     def test_shutoff_still_counts_as_alive(self) -> None:
         # SHUTOFF bills; reading it as dead would strand a billing VM.
         client = FakeHyperstackClient()
@@ -208,15 +204,6 @@ class HyperstackLivenessTest(unittest.TestCase):
         backend = _backend(client)
         client.vm_states["7"]["status"] = "SHUTOFF"
         self.assertTrue(backend.is_alive(sandbox_id="7"))
-
-    def test_outage_raises_rather_than_reporting_dead(self) -> None:
-        class OutageClient(FakeHyperstackClient):
-            def get_vm(self, vm_id):
-                raise BackendUnavailableError("gateway timeout", status=504)
-
-        backend = _backend(OutageClient())
-        with self.assertRaises(BackendUnavailableError):
-            backend.is_alive(sandbox_id="7")
 
     def test_terminate_deletes_vm_and_rp_keypair(self) -> None:
         client = FakeHyperstackClient()

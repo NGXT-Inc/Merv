@@ -6,7 +6,7 @@ from typing import Any
 
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import NotFoundError
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 
 _LOCAL_DATA_PLANE_RESPONSE_KEYS = frozenset(

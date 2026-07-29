@@ -28,7 +28,7 @@ from ....research_core.facade import (
     ResearchProjects,
     ResearchReviewDelivery,
 )
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 from ...observability import StructuredLogger
 from ...tools.tool_facade import ToolDispatcher
 

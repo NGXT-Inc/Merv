@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.tools.contracts import TOOL_MANIFEST
 from merv.brain.surface.tools.tool_facade import ToolValidationError
 

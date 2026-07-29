@@ -11,10 +11,10 @@ from unittest.mock import patch
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import format_iso, now_iso
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.sandbox.storage import SandboxStorage
 from merv.brain.sandbox.observation import SandboxRunLedger
-from merv.brain.sandbox.core import SandboxEngine
+from merv.brain.sandbox import SandboxEngine
 
 
 PUBLIC_SIGNATURES = {
@@ -227,7 +227,7 @@ class SandboxEventContractTest(unittest.TestCase):
                 repository = self.app.sandbox_storage
                 original_cancel = provisioner.cancel
                 original_terminate = lifecycle.terminate_vm
-                original_apply = lifecycle.apply
+                original_record = lifecycle.record_release_outcome
                 original_emit = repository.emit_event
 
                 def cancel(**kwargs):
@@ -238,9 +238,9 @@ class SandboxEventContractTest(unittest.TestCase):
                     trace.append("terminate")
                     return original_terminate(**kwargs)
 
-                def apply(**kwargs):
-                    trace.append("apply")
-                    return original_apply(**kwargs)
+                def record(**kwargs):
+                    trace.append("record")
+                    return original_record(**kwargs)
 
                 def emit(**kwargs):
                     trace.append("event")
@@ -262,7 +262,11 @@ class SandboxEventContractTest(unittest.TestCase):
                     terminate_patch,
                     patch.object(provisioner, "cancel", side_effect=cancel),
                     patch.object(lifecycle, "terminate_vm", side_effect=terminate),
-                    patch.object(lifecycle, "apply", side_effect=apply),
+                    patch.object(
+                        lifecycle,
+                        "record_release_outcome",
+                        side_effect=record,
+                    ),
                     patch.object(repository, "emit_event", side_effect=emit),
                 ):
                     self.app.sandboxes.release(
@@ -271,7 +275,7 @@ class SandboxEventContractTest(unittest.TestCase):
                         confirm_retained=True,
                     )
 
-                self.assertEqual(trace, ["cancel", "terminate", "apply", "event"])
+                self.assertEqual(trace, ["cancel", "terminate", "record", "event"])
                 expected_type = (
                     "sandbox.cleanup_pending"
                     if outcome == "maybe_alive"
@@ -368,7 +372,6 @@ class SandboxEventContractTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         idle_since = now - timedelta(hours=1)
         self.app.sandbox_storage.record_heartbeat(
-            experiment_id=idle_exp,
             sandbox_uid=idle["sandbox_uid"],
             expected_project_id=self.project_id,
             idle_since=format_iso(idle_since),
@@ -492,7 +495,7 @@ class SandboxStorageEventContractScenarios:
         )
         ledger = SandboxRunLedger(
             store=self.store,
-            repository=repository,
+            storage=repository,
             backend=object(),  # type: ignore[arg-type]
             mgmt_keys=object(),  # type: ignore[arg-type]
         )

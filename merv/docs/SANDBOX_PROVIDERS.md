@@ -37,12 +37,11 @@ operational paths that read transcripts, usage metrics, and `merv_run`
 receipts or deliver post-boot secrets. `SandboxBackend` remains the flattened
 compatibility facade consumed by existing services.
 
-`sandbox/execution/driver_registry.py` holds lightweight descriptors and a
+`sandbox/adapters/__init__.py` holds lightweight descriptors and a
 runtime inventory exposed by `sandbox_driver_inventory()`. Descriptors contain
 an import string rather than an imported factory, so listing providers does not
 load their configuration, credentials, implementation modules, or optional
 SDKs. Composition imports and builds only the selected providers. Aliases,
-provider kind, and management-transport kind are registered alongside the
 factory; there is no provider-name dispatch chain in the factory or services.
 
 The two real driver shapes stay explicit:
@@ -53,8 +52,8 @@ The two real driver shapes stay explicit:
   transport. It does not inherit the VM base and its composable GPU/CPU/memory
   catalog is not forced into fixed VM SKUs.
 
-To add a provider, implement its isolated package under
-`sandbox/execution/backends/<provider>/`, expose one lazy builder, register one
+To add a provider, implement one explicit
+`sandbox/adapters/<provider>.py` file, expose one lazy builder, register one
 `SandboxDriverDescriptor`, and run the shared surface/catalog conformance
 assertions plus provider-specific fake-client lifecycle tests. The reusable
 offline lifecycle/management scenario can be adopted by supplying its fixture
@@ -62,12 +61,9 @@ hooks; the in-memory driver exercises that full scenario. The descriptor name,
 backend capability name, persisted provider value, and multiplexed id prefix
 must agree.
 
-During the service migration, registered builders return a
-`SandboxBackend`-compatible facade even though the formal driver and management
-transport contracts are smaller. `SandboxBackendBase` supplies the default
-self-transport adapter, so an existing provider can adopt the driver platform
-without changing its operational behavior; a future service migration can
-remove that compatibility requirement from registry factories.
+Registered builders return the one provider-neutral `SandboxBackend` contract.
+`SandboxBackendBase` supplies harmless defaults for optional observations, so a
+provider file contains only behavior it actually supports.
 
 | Driver | Kind | Management transport | Aliases |
 |---|---|---|---|

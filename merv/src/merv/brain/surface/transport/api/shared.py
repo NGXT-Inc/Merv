@@ -235,7 +235,7 @@ def ledger_direct_call(
 ) -> dict[str, Any]:
     """Run a call that answers OUTSIDE the dispatcher, and record its outcome.
 
-    The hosted sandbox lookup is served straight from the sandbox facade, so
+    The hosted sandbox lookup is served straight from SandboxEngine, so
     the dispatcher never sees it; without this every hosted ``sandbox.get`` —
     success and failure alike — would be missing from the durable ledger.
     """

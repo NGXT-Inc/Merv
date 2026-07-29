@@ -500,7 +500,6 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_ports_are_neutral_and_outside_services(self) -> None:
         expected_imports = {
             "mgmt_keys.py": {"pathlib", "typing"},
-            "quota_admission.py": {"dataclasses", "typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "reflection_writers.py": {"typing"},
         }
@@ -539,29 +538,6 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertIn(Protocol, ReflectionClaimWriter.__mro__)
         self.assertIn(Protocol, ReflectionExperimentWriter.__mro__)
-
-    def test_sandbox_lifecycle_workers_use_ports_not_concrete_services(self) -> None:
-        self.assertNotIn(
-            "experiments",
-            _import_segments(BACKEND_ROOT / "sandbox" / "acquisition.py"),
-        )
-        self.assertNotIn(
-            "sandbox_mgmt_keys",
-            _import_segments(BACKEND_ROOT / "sandbox" / "core.py"),
-        )
-        self.assertFalse((SERVICES / "sandbox_mgmt_keys.py").exists())
-        self.assertNotIn("class QuotaAdmission", _sandbox_source("core.py"))
-        self.assertNotIn(
-            "class ControlPlaneView", _sandbox_source("scheduler.py")
-        )
-        self.assertNotIn(
-            "class SyncSessionIssuer", _sandbox_source("acquisition.py")
-        )
-        daemon_imports = _import_segments(
-            BACKEND_ROOT / "sandbox" / "scheduler.py"
-        )
-        self.assertNotIn("experiments", daemon_imports)
-        self.assertNotIn("acquisition", daemon_imports)
 
     def test_auto_sync_poller_is_removed(self) -> None:
         local_source = _sandbox_source("scheduler.py")
@@ -852,10 +828,10 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_modal_integer_env_parsing_uses_shared_helper(self) -> None:
         source = (
-            BACKEND_ROOT / "sandbox" / "execution" / "backends" / "modal" / "config.py"
+            BACKEND_ROOT / "sandbox" / "adapters" / "modal.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("from .....kernel.env import env_int", source)
+        self.assertIn("from ...kernel.env import env_int", source)
         self.assertNotIn("def _env_int", source)
         self.assertNotIn("def _env_non_negative_int", source)
         self.assertNotIn("_positive_int(os.environ.get", source)

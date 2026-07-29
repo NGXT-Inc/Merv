@@ -11,12 +11,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterator
 
-from ..kernel.ports.quota_admission import AdmissionRequest
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import PermissionDeniedError, now_iso, parse_iso
 
 # Tenant IDs cannot collide with this reserved global scope.
 GLOBAL_SCOPE = "__global__"
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionRequest:
+    """Cost facts needed to admit one Sandbox request."""
+
+    tenant_id: str
+    time_limit_seconds: int
+    price_usd_per_hour: float | None = None
+    price_unknown_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -28,7 +37,36 @@ class TenantQuota:
     max_price_usd_per_hour: float | None = None
     gpu_hours_budget: float | None = None
     usd_budget: float | None = None
-    blob_bytes_budget: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationUsage:
+    started: datetime
+    ended: datetime
+    hours: float
+    price_usd_per_hour: float
+    usd: float
+    open: bool
+
+
+def _generation_usage(
+    generation: dict[str, Any], *, now: datetime
+) -> _GenerationUsage | None:
+    started = parse_iso(generation.get("started_at"))
+    if started is None:
+        return None
+    recorded_end = parse_iso(generation.get("ended_at"))
+    ended = recorded_end or now
+    hours = max(0.0, (ended - started).total_seconds() / 3600.0)
+    price = float(generation.get("price_usd_per_hour") or 0.0)
+    return _GenerationUsage(
+        started=started,
+        ended=ended,
+        hours=hours,
+        price_usd_per_hour=price,
+        usd=hours * price,
+        open=recorded_end is None,
+    )
 
 
 class QuotaService:
@@ -44,8 +82,7 @@ class QuotaService:
         row = conn.execute(
             """
             SELECT max_concurrent_sandboxes, max_time_limit_seconds,
-                   max_price_usd_per_hour, gpu_hours_budget, usd_budget,
-                   blob_bytes_budget
+                   max_price_usd_per_hour, gpu_hours_budget, usd_budget
             FROM tenant_quotas WHERE tenant_id = ?
             """,
             (tenant_id,),
@@ -59,7 +96,6 @@ class QuotaService:
             max_price_usd_per_hour=_float_or_none(data.get("max_price_usd_per_hour")),
             gpu_hours_budget=_float_or_none(data.get("gpu_hours_budget")),
             usd_budget=_float_or_none(data.get("usd_budget")),
-            blob_bytes_budget=_int_or_none(data.get("blob_bytes_budget")),
         )
 
     def set_quota(self, *, tenant_id: str, **fields: Any) -> None:
@@ -69,7 +105,6 @@ class QuotaService:
             "max_price_usd_per_hour",
             "gpu_hours_budget",
             "usd_budget",
-            "blob_bytes_budget",
         )
         values = {col: fields.get(col) for col in columns}
         with self.store.transaction() as conn:
@@ -149,18 +184,21 @@ class QuotaService:
 
     # ---------- running-total spend accounting ----------
 
-    def tenant_generation_counters(self, *, tenant_id: str) -> dict[str, float | int]:
+    def tenant_generation_counters(
+        self, *, tenant_id: str, now: datetime | None = None
+    ) -> dict[str, float | int]:
+        now_dt = now or datetime.now(tz=UTC)
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 "SELECT started_at, ended_at FROM sandbox_generations WHERE tenant_id = ?",
                 (tenant_id,),
             ).fetchall()
-        hours = 0.0
+        usages: list[_GenerationUsage] = []
         for row in rows:
-            data = row_to_dict(row=row) or {}
-            started, ended = parse_iso(data.get("started_at")), parse_iso(data.get("ended_at"))
-            if started is not None and ended is not None:
-                hours += max(0.0, (ended - started).total_seconds() / 3600.0)
+            usage = _generation_usage(row_to_dict(row=row) or {}, now=now_dt)
+            if usage is not None:
+                usages.append(usage)
+        hours = sum(usage.hours for usage in usages)
         return {"sandbox_generations": len(rows), "sandbox_hours": hours}
 
     def tenant_spend(
@@ -189,13 +227,11 @@ class QuotaService:
         gpu_hours = 0.0
         for row in rows:
             data = row_to_dict(row=row) or {}
-            started = parse_iso(data.get("started_at"))
-            if started is None:
+            usage = _generation_usage(data, now=now_dt)
+            if usage is None:
                 continue
-            ended = parse_iso(data.get("ended_at")) or now_dt
-            hours = max(0.0, (ended - started).total_seconds() / 3600.0)
-            gpu_hours += hours
-            usd += hours * float(data.get("price_usd_per_hour") or 0.0)
+            gpu_hours += usage.hours
+            usd += usage.usd
         return {"usd": usd, "gpu_hours": gpu_hours}
 
     def project_spend(
@@ -222,52 +258,50 @@ class QuotaService:
         daily: dict[str, dict[str, Any]] = {}
         for row in rows:
             data = row_to_dict(row=row) or {}
-            started = parse_iso(data.get("started_at"))
-            if started is None:
+            usage = _generation_usage(data, now=now_dt)
+            if usage is None:
                 continue
-            ended = parse_iso(data.get("ended_at"))
-            end = ended or now_dt
-            hours = max(0.0, (end - started).total_seconds() / 3600.0)
-            price = float(data.get("price_usd_per_hour") or 0.0)
-            usd = hours * price
             generations += 1
-            totals["usd"] += usd
-            totals["hours"] += hours
-            if price <= 0:
-                totals["unpriced_hours"] += hours
-            if ended is None:
+            totals["usd"] += usage.usd
+            totals["hours"] += usage.hours
+            if usage.price_usd_per_hour <= 0:
+                totals["unpriced_hours"] += usage.hours
+            if usage.open:
                 open_generations += 1
-                burn_usd_per_hour += price
+                burn_usd_per_hour += usage.price_usd_per_hour
             exp_id = str(data.get("experiment_id") or "")
             exp = by_experiment.setdefault(
                 exp_id,
                 {"experiment_id": exp_id, "usd": 0.0, "hours": 0.0, "generations": 0},
             )
-            exp["usd"] += usd
-            exp["hours"] += hours
+            exp["usd"] += usage.usd
+            exp["hours"] += usage.hours
             exp["generations"] += 1
             hw_key = (
                 str(data.get("instance_type") or ""),
                 str(data.get("gpu") or ""),
-                price,
+                usage.price_usd_per_hour,
             )
             hw = by_hardware.setdefault(
                 hw_key,
                 {
                     "instance_type": hw_key[0],
                     "gpu": hw_key[1],
-                    "price_usd_per_hour": price,
+                    "price_usd_per_hour": usage.price_usd_per_hour,
                     "usd": 0.0,
                     "hours": 0.0,
                     "generations": 0,
                 },
             )
-            hw["usd"] += usd
-            hw["hours"] += hours
+            hw["usd"] += usage.usd
+            hw["hours"] += usage.hours
             hw["generations"] += 1
-            for day, day_hours in _hours_by_utc_day(started=started, ended=end):
+            for day, day_hours in _hours_by_utc_day(
+                started=usage.started,
+                ended=usage.ended,
+            ):
                 bucket = daily.setdefault(day, {"date": day, "usd": 0.0, "hours": 0.0})
-                bucket["usd"] += day_hours * price
+                bucket["usd"] += day_hours * usage.price_usd_per_hour
                 bucket["hours"] += day_hours
         def by_spend(entry: dict[str, Any]) -> tuple[float, float]:
             return (-entry["usd"], -entry["hours"])

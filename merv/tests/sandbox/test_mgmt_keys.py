@@ -14,14 +14,13 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
+from tests.support.sandbox_backend import FakeSandboxBackend
+from merv.brain.sandbox.adapters.lambda_labs import (
     build_user_data,
 )
-from merv.brain.sandbox.execution.vm_bootstrap import MGMT_EXEC_SCRIPT, MGMT_SSH_USER
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import BOOT_SCRIPT
-from merv.brain.sandbox.managed_mgmt_keys import MountedMgmtKeyStore
-from merv.brain.sandbox.mgmt_keys import LocalMgmtKeyStore
+from merv.brain.sandbox.remote.vm_bootstrap import MGMT_EXEC_SCRIPT, MGMT_SSH_USER
+from merv.brain.sandbox.adapters.modal import BOOT_SCRIPT
+from merv.brain.sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
 from merv.brain.kernel.utils import ValidationError
 
 

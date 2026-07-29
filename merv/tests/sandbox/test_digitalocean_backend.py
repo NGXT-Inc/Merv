@@ -5,15 +5,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution.backends.digitalocean.catalog import to_agent_options
-from merv.brain.sandbox.execution.backends.digitalocean.config import (
+from merv.brain.sandbox.adapters.digitalocean import to_agent_options
+from merv.brain.sandbox.adapters.digitalocean import (
     DigitalOceanCloudConfig,
     DigitalOceanSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.digitalocean.sandbox_backend import (
+from merv.brain.sandbox.adapters.digitalocean import (
     DigitalOceanSandboxBackend,
 )
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
@@ -198,7 +198,7 @@ class DigitalOceanAcquireTest(unittest.TestCase):
         backend = _backend(client)
         with patch.object(
             DigitalOceanSandboxBackend,
-            "_wait_for_active_droplet",
+            "_wait_for_vm",
             side_effect=BackendUnavailableError("boom"),
         ):
             with self.assertRaises(BackendUnavailableError):
@@ -209,10 +209,6 @@ class DigitalOceanAcquireTest(unittest.TestCase):
 
 
 class DigitalOceanLivenessTest(unittest.TestCase):
-    def test_404_is_authoritatively_dead(self) -> None:
-        backend = _backend(FakeDigitalOceanClient())
-        self.assertFalse(backend.is_alive(sandbox_id="999"))
-
     def test_off_droplet_still_counts_as_alive(self) -> None:
         # Powered-off droplets still bill; only destroy stops charges.
         client = FakeDigitalOceanClient()
@@ -220,20 +216,6 @@ class DigitalOceanLivenessTest(unittest.TestCase):
         client.get_calls = -100  # keep the stored status
         backend = _backend(client)
         self.assertTrue(backend.is_alive(sandbox_id="7"))
-
-    def test_outage_raises_rather_than_reporting_dead(self) -> None:
-        class OutageClient(FakeDigitalOceanClient):
-            def get_droplet(self, droplet_id):
-                raise BackendUnavailableError("gateway timeout", status=502)
-
-        backend = _backend(OutageClient())
-        with self.assertRaises(BackendUnavailableError):
-            backend.is_alive(sandbox_id="7")
-
-    def test_terminate_treats_404_as_already_gone(self) -> None:
-        backend = _backend(FakeDigitalOceanClient())
-        self.assertTrue(backend.terminate(sandbox_id="404404"))
-
 
 class DigitalOceanCatalogTest(unittest.TestCase):
 

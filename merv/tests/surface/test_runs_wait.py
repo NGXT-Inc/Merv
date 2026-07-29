@@ -34,7 +34,7 @@ from merv.brain.kernel.secret_tokens import (
 )
 from merv.brain.kernel.state.activity import redact_sensitive, scrub_secret_text
 from merv.brain.kernel.utils import ValidationError, now_iso
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.control.control_runtime import ControlToolCallSink
 from merv.brain.surface.config import (
     MGMT_KEY_PATH_ENV_VAR,

@@ -11,12 +11,13 @@ from dataclasses import dataclass, replace
 from typing import Callable
 from unittest import TestCase
 
-from merv.brain.sandbox.execution.driver_registry import SandboxDriverDescriptor
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.adapters import SandboxDriverDescriptor
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     SandboxBackend,
     SandboxDriver,
     SandboxRequest,
+    SandboxTarget,
 )
 
 
@@ -135,29 +136,26 @@ def exercise_offline_driver(case: TestCase, fixture: OfflineDriverFixture) -> No
     case.assertEqual(refreshed, fixture.expected_refreshed_endpoint)
 
     fixture.set_transcript(fixture.request.experiment_id, "alpha-omega")
-    transcript = backend.read_transcript(
+    target = SandboxTarget(
         sandbox_id=provisioned.sandbox_id,
         experiment_id=fixture.request.experiment_id,
         volume_name=provisioned.volume_name,
         workdir=provisioned.workdir,
-        tail=5,
         ssh_host=provisioned.ssh_host,
         ssh_port=provisioned.ssh_port,
         ssh_user=provisioned.ssh_user,
         key_path=fixture.management_key_path,
+    )
+    transcript = backend.read_transcript(
+        target=target,
+        tail=5,
     )
     case.assertEqual(transcript.data, b"omega")
     case.assertEqual(transcript.total_bytes, len(b"alpha-omega"))
 
     fixture.set_metrics(provisioned.sandbox_id, {"cpu_percent": 12.5})
     case.assertEqual(
-        backend.sample_metrics(
-            sandbox_id=provisioned.sandbox_id,
-            ssh_host=provisioned.ssh_host,
-            ssh_port=provisioned.ssh_port,
-            ssh_user=provisioned.ssh_user,
-            key_path=fixture.management_key_path,
-        ),
+        backend.sample_metrics(target=target),
         {"cpu_percent": 12.5},
     )
     fixture.set_runs(
@@ -168,25 +166,15 @@ def exercise_offline_driver(case: TestCase, fixture: OfflineDriverFixture) -> No
         "===META eyJsYWJlbCI6InRyYWluIiwiY29tbWFuZCI6InB5dGhvbiB0cmFpbi5weSJ9\n"
         "===EXIT MA==\n===FIN MjAyNi0wNy0xOVQxMjowMDowMFo=\n",
     )
-    runs = backend.read_runs(
-        sandbox_id=provisioned.sandbox_id,
-        workdir=provisioned.workdir,
-        ssh_host=provisioned.ssh_host,
-        ssh_port=provisioned.ssh_port,
-        ssh_user=provisioned.ssh_user,
-        key_path=fixture.management_key_path,
-    )
+    runs = backend.read_runs(target=target)
     case.assertIsNotNone(runs)
     assert runs is not None
     case.assertEqual(runs[0]["label"], "train")
     case.assertEqual(runs[0]["exit_code"], 0)
     case.assertIsInstance(
         backend.write_secrets(
-            sandbox_id=provisioned.sandbox_id,
+            target=target,
             secrets={"OFFLINE_TEST_TOKEN": "not-a-real-secret"},
-            ssh_host=provisioned.ssh_host,
-            ssh_port=provisioned.ssh_port,
-            key_path=fixture.management_key_path,
         ),
         bool,
     )
@@ -197,23 +185,10 @@ def exercise_offline_driver(case: TestCase, fixture: OfflineDriverFixture) -> No
         backend.refresh_ssh_endpoint(sandbox_id=provisioned.sandbox_id)
     )
     case.assertIsNone(
-        backend.sample_metrics(
-            sandbox_id=provisioned.sandbox_id,
-            ssh_host=provisioned.ssh_host,
-            ssh_port=provisioned.ssh_port,
-            ssh_user=provisioned.ssh_user,
-            key_path=fixture.management_key_path,
-        )
+        backend.sample_metrics(target=target)
     )
     case.assertIsNone(
-        backend.read_runs(
-            sandbox_id=provisioned.sandbox_id,
-            workdir=provisioned.workdir,
-            ssh_host=provisioned.ssh_host,
-            ssh_port=provisioned.ssh_port,
-            ssh_user=provisioned.ssh_user,
-            key_path=fixture.management_key_path,
-        )
+        backend.read_runs(target=target)
     )
 
     cancelled: list[str] = []

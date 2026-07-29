@@ -7,19 +7,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution import build_sandbox_backend
-from merv.brain.sandbox.execution.backends.lambda_labs.catalog import (
+from merv.brain.sandbox.adapters import build_sandbox_backend
+from merv.brain.sandbox.adapters.lambda_labs import (
     summarize_instance_types,
 )
-from merv.brain.sandbox.execution.backends.lambda_labs.config import LambdaCloudConfig
-from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
+from merv.brain.sandbox.adapters.lambda_labs import LambdaCloudConfig
+from merv.brain.sandbox.adapters.lambda_labs import (
     LambdaLabsSandboxBackend,
     build_user_data,
     _sandbox_name,
 )
-from merv.brain.sandbox.execution.backends.lambda_labs.config import LambdaSandboxConfig
-from merv.brain.sandbox.execution.vm_bootstrap import REC_SCRIPT
-from merv.brain.sandbox.sandbox_backend import BackendValidationError, SandboxRequest
+from merv.brain.sandbox.adapters.lambda_labs import LambdaSandboxConfig
+from merv.brain.sandbox.remote.vm_bootstrap import REC_SCRIPT
+from merv.brain.sandbox.models import BackendValidationError, SandboxRequest
 
 
 INSTANCE_TYPES = {
@@ -360,6 +360,16 @@ class LambdaSelectionTest(unittest.TestCase):
         catalog = backend.hardware_catalog(gpu="h100")
         names = [opt["instance_type"] for opt in catalog["options"]]
         self.assertEqual(names, ["gpu_8x_h100_sxm5"])
+
+    def test_liveness_keeps_booting_billable_but_not_terminated(self) -> None:
+        backend, client = self._backend()
+        self.assertTrue(backend.is_alive(sandbox_id="inst_1"))
+        with patch.object(
+            client,
+            "get_instance",
+            return_value={"id": "inst_1", "status": "terminated"},
+        ):
+            self.assertFalse(backend.is_alive(sandbox_id="inst_1"))
 
     def test_acquire_uses_request_instance_type_and_autopicks_region(self) -> None:
         backend, client = self._backend()  # no configured region/instance type

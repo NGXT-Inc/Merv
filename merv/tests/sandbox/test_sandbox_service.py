@@ -10,9 +10,9 @@ from unittest import mock
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.mlflow import CentralMlflowService
-from merv.brain.sandbox.sandbox_backend import BackendCapabilities
+from merv.brain.sandbox.models import BackendCapabilities
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
 
 
@@ -305,6 +305,33 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 1)
 
+        storage = self.app.sandbox_storage
+        original_touch = storage.touch_alive
+
+        def cleanup_wins(**kwargs):
+            row = storage.get_by_uid(sandbox_uid=first["sandbox_uid"])
+            claim = self.app.sandbox_lifecycle.claim_cleanup(row=row)
+            self.assertTrue(claim)
+            self.app.sandbox_lifecycle.mark_cleanup_pending(
+                row=row,
+                reason="release in progress",
+                expected_phase=claim.phase,
+            )
+            return original_touch(**kwargs)
+
+        with mock.patch.object(storage, "touch_alive", side_effect=cleanup_wins):
+            raced = self.call(
+                "sandbox.request",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+            )
+        self.assertFalse(raced["reused"])
+        self.assertNotEqual(raced["sandbox_uid"], first["sandbox_uid"])
+        self.assertEqual(
+            storage.get_by_uid(sandbox_uid=first["sandbox_uid"])["status"],
+            "cleanup_pending",
+        )
+
     def test_attach_associates_live_sandbox_with_another_experiment(self) -> None:
         source = self._experiment(name="exp-1")
         target = self._experiment(name="exp-2")
@@ -490,7 +517,7 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertNotEqual(first["workdir"], second["workdir"])
         self.assertIn(second["sandbox_uid"][:12], second["workdir"])
 
-        rows = self.app.sandbox_storage.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandbox_storage.list_for_experiment(experiment_id=exp_id)
         self.assertEqual(
             {row["sandbox_uid"] for row in rows},
             {first["sandbox_uid"], second["sandbox_uid"]},
@@ -551,8 +578,10 @@ class SandboxEngineTest(unittest.TestCase):
         primary = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
-        pending_uid = self.app.sandbox_storage.create_sandbox(
+        pending_uid = self.app.sandbox_storage.new_sandbox_uid()
+        self.app.sandbox_storage.upsert(
             experiment_id=exp_id,
+            sandbox_uid=pending_uid,
             project_id=self.project_id,
             status="provisioning",
             workdir="/workspace/exp-1-pending",
@@ -602,7 +631,7 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertEqual(released["released_count"], 2)
         self.assertIn(first["sandbox_id"], self.backend.terminated)
         self.assertIn(second["sandbox_id"], self.backend.terminated)
-        rows = self.app.sandbox_storage.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandbox_storage.list_for_experiment(experiment_id=exp_id)
         self.assertEqual(rows, [])
 
     def test_reaper_does_not_change_experiment_status(self) -> None:
@@ -666,6 +695,15 @@ class SandboxEngineTest(unittest.TestCase):
 
     def test_request_recreates_after_death(self) -> None:
         exp_id = self._experiment()
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE projects SET tenant_id = ? WHERE id = ?",
+                ("tenant_reacquire", self.project_id),
+            )
+        self.app.sandboxes._quotas.set_quota(  # noqa: SLF001
+            tenant_id="tenant_reacquire",
+            max_concurrent_sandboxes=1,
+        )
         first = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
@@ -676,6 +714,22 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertFalse(second["reused"])
         self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 2)
+        with self.app.store.connect() as conn:
+            generations = conn.execute(
+                """
+                SELECT sandbox_id, ended_at
+                FROM sandbox_generations
+                WHERE experiment_id = ?
+                ORDER BY created_seq
+                """,
+                (exp_id,),
+            ).fetchall()
+        self.assertEqual([row["sandbox_id"] for row in generations], [
+            first["sandbox_id"],
+            second["sandbox_id"],
+        ])
+        self.assertIsNotNone(generations[0]["ended_at"])
+        self.assertIsNone(generations[1]["ended_at"])
 
     # ---- tunnel endpoint refresh (alive sandbox, moved tunnel) ----
 
@@ -1331,7 +1385,6 @@ class SandboxEngineTest(unittest.TestCase):
     def test_extend_can_target_sandbox_uid_with_smaller_increment(self) -> None:
         created = self.call("sandbox.request", project_id=self.project_id)
         self.app.sandbox_storage.record_heartbeat(
-            experiment_id="",
             sandbox_uid=created["sandbox_uid"],
             expected_project_id=self.project_id,
             idle_since=None,
@@ -1416,7 +1469,7 @@ class SandboxEngineTest(unittest.TestCase):
 
     def _require_hardware_selection(self) -> None:
         """Flip the fake backend into Lambda-style bundled-hardware behavior."""
-        from merv.brain.sandbox.sandbox_backend import BackendCapabilities
+        from merv.brain.sandbox.models import BackendCapabilities
 
         self.backend.capabilities = BackendCapabilities(
             name="fake",
@@ -1615,15 +1668,39 @@ class SandboxEngineTest(unittest.TestCase):
 
     def test_reaper_skips_unexpired_sandbox(self) -> None:
         exp_id = self._experiment()
-        self.call(
+        created = self.call(
             "sandbox.request",
             project_id=self.project_id,
             experiment_id=exp_id,
             time_limit=3600,
         )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE sandboxes
+                SET expires_at = ?, updated_at = ?
+                WHERE sandbox_uid = ?
+                """,
+                (
+                    "2000-01-01T00:00:00Z",
+                    "2000-01-01T00:00:00Z",
+                    created["sandbox_uid"],
+                ),
+            )
+        stale = self.app.sandbox_storage.get_by_uid(
+            sandbox_uid=created["sandbox_uid"]
+        )
+        self.app.sandbox_storage.extend_lifetime(
+            sandbox_uid=created["sandbox_uid"],
+            expires_at="2999-01-01T00:00:00Z",
+            time_limit=7200,
+            expected_project_id=self.project_id,
+        )
+        self.assertFalse(self.app.sandbox_lifecycle.reap_row(row=stale))
         self.assertEqual(self.app.sandboxes.reap_expired(), 0)
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(got["status"], "running")
+        self.assertTrue(self.backend.is_alive(sandbox_id=created["sandbox_id"]))
 
     # ---- async provisioning ----
 
@@ -1918,7 +1995,7 @@ class SandboxRequestToctouGuardTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_two_concurrent_requests_provision_a_single_sandbox(self) -> None:
-        from merv.brain.sandbox.core import SandboxEngine
+        from merv.brain.sandbox import SandboxEngine
 
         exp_id = self.app.call_tool(
             "experiment.create",

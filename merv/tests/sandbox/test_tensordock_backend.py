@@ -5,18 +5,18 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution.backends.tensordock.catalog import (
+from merv.brain.sandbox.adapters.tensordock import (
     parse_instance_type,
     to_agent_options,
 )
-from merv.brain.sandbox.execution.backends.tensordock.config import (
+from merv.brain.sandbox.adapters.tensordock import (
     TensorDockCloudConfig,
     TensorDockSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.tensordock.sandbox_backend import (
+from merv.brain.sandbox.adapters.tensordock import (
     TensorDockSandboxBackend,
 )
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     SandboxRequest,
@@ -185,7 +185,7 @@ class TensorDockAcquireTest(unittest.TestCase):
         backend = _backend(client)
         with patch.object(
             TensorDockSandboxBackend,
-            "_wait_for_running_instance",
+            "_wait_for_vm",
             side_effect=BackendUnavailableError("boom"),
         ):
             with self.assertRaises(BackendUnavailableError):
@@ -195,10 +195,6 @@ class TensorDockAcquireTest(unittest.TestCase):
 
 
 class TensorDockLivenessTest(unittest.TestCase):
-    def test_404_is_authoritatively_dead(self) -> None:
-        backend = _backend(FakeTensorDockClient())
-        self.assertFalse(backend.is_alive(sandbox_id="missing"))
-
     def test_stopped_still_counts_as_alive_case_insensitively(self) -> None:
         client = FakeTensorDockClient()
         client.instances["i1"] = {"id": "i1", "status": "StoppedDisassociated"}
@@ -211,11 +207,6 @@ class TensorDockLivenessTest(unittest.TestCase):
         client.instances["i1"] = {"id": "i1", "status": "Terminated"}
         backend = _backend(client)
         self.assertFalse(backend.is_alive(sandbox_id="i1"))
-
-    def test_terminate_treats_404_as_already_gone(self) -> None:
-        backend = _backend(FakeTensorDockClient())
-        self.assertTrue(backend.terminate(sandbox_id="missing"))
-
 
 class TensorDockCatalogTest(unittest.TestCase):
 

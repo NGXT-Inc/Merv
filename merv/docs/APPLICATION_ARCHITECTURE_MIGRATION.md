@@ -107,9 +107,9 @@ The initial layer table is explicit about mixed packages:
 | `feed/feed.py` | complete Feed behavior and delivery/advisory contracts |
 | `feed/persistence.py` | Feed-owned schema installation and compatibility upgrades |
 | `sandbox/**` | application |
-| `sandbox/sandbox_backend.py` | port |
-| `sandbox/execution/backends/**`, `sandbox/execution/{multiplexer,vm_ssh}.py`, `sandbox/{managed_mgmt_keys,mgmt_keys,ssh_keys}.py` | adapter |
-| `sandbox/execution/{__init__,driver_registry}.py` | bootstrap |
+| `sandbox/models.py` | provider-neutral domain values and contract |
+| `sandbox/adapters/**`, `sandbox/remote/**`, `sandbox/keys.py` | adapter |
+| `sandbox/adapters/__init__.py` | bootstrap |
 | `mlflow/**` | adapter |
 | `object_storage/{blobs,s3_blobs,s3_object_store}.py` | adapter |
 | `object_storage/service.py` | application |
@@ -918,13 +918,13 @@ The follow-on rewrite makes four formerly implicit boundaries executable:
   modules remain delivery-only. URL scope is bound after body parsing and a
   contradictory body scope is rejected, so authorized path identifiers cannot
   be replaced before gateway invocation.
-- Sandbox now exposes a 294-line stable facade over typed command/query values
-  and cohesive handlers. `SandboxRepository` owns every row read/write; the
-  pure lifecycle reducer returns event facts and side-effect intents for
-  reconcile, reap, and explicit release; and the composition root owns
-  provisioners and daemons. Provisioner settle paths still invoke
-  `SandboxLifecycle` directly. Provider drivers, including Modal's explicit
-  non-VM path, are unchanged.
+- The intermediate Sandbox facade/runtime/repository/reducer split described by
+  this migration was subsequently consolidated. Sandbox now exposes the
+  package-root `SandboxEngine`; its core shows command, read, and maintenance
+  ordering directly, while narrow storage, lifecycle, provisioning,
+  observation, provider, scheduler, and key-custody boundaries protect real
+  transaction, concurrency, external-I/O, and security concerns. Modal remains
+  an explicit non-VM provider path.
 
 Formatter-clean structure has a real size cost: the tree is **41,389 brain lines**, 541
 above the 40,848 pre-consolidation checkpoint. The old orchestration hubs still

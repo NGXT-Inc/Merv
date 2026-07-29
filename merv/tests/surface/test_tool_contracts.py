@@ -33,7 +33,7 @@ from merv.brain.surface.tools.contracts import (
     TOOL_MANIFEST,
     available_tool_names,
 )
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
 from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
 

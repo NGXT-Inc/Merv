@@ -8,14 +8,12 @@ import shlex
 import threading
 import time
 from contextlib import closing, contextmanager, suppress
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterator, Literal, Mapping
+from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath
+from typing import Any, Callable, Iterator
 
 from ..kernel.env import env_float
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
-from ..kernel.ports.quota_admission import AdmissionRequest
 from ..kernel.state.store import BaseStateStore, Connection
 from ..kernel.utils import (
     NotFoundError,
@@ -24,43 +22,41 @@ from ..kernel.utils import (
     now_iso,
     parse_iso,
 )
-from .keys import EphemeralSecretCustody
-from .quotas import QuotaService
+from .lifecycle import EphemeralSecretCustody, SandboxLifecycle
+from .quotas import AdmissionRequest, QuotaService
 from .observation import (
     RELEASE_OBSERVE_ACQUIRE_SECONDS,
     RunsObserver,
     SandboxMetrics,
     SandboxRunLedger,
     TranscriptCache,
+    parse_terminal_markers,
+    parse_terminal_snapshot,
     run_records_view,
     run_status,
 )
-from .sandbox_backend import (
+from .provisioning import SandboxProvisioner
+from .models import (
+    ACTIVE_SANDBOX_STATUSES,
     BackendCapabilities,
     BackendValidationError,
-    SandboxBackend,
-    SandboxRequest,
-    TranscriptTail,
-    qualified_row_sandbox_id,
-)
-from .sandbox_heartbeat import SandboxActivityPolicy
-from .sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
-from .sandbox_support import (
-    ACTIVE_SANDBOX_STATUSES,
     CLEANUP_PENDING_STATUS,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
-    MAX_TIME_LIMIT_SECONDS,
     POLL_AFTER_SECONDS,
     RUNS_WAIT_CAP_SECONDS,
     RUNS_WAIT_POLL_SECONDS,
+    SandboxBackend,
+    SandboxRequest,
+    SandboxTarget,
+    TranscriptTail,
     cleanup_attempts,
     cleanup_inflight_token,
-    parse_terminal_markers,
-    parse_terminal_snapshot,
     public_phase,
-    validate_request_inputs,
 )
+from .scheduler import SandboxScheduler
+from .heartbeat import SandboxActivityPolicy, SandboxHeartbeatMonitor
+from .sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
 from .storage import SandboxStorage
 
 
@@ -86,320 +82,46 @@ _RSYNC_PULL_OUTPUTS_TEMPLATE = (
     '-o UserKnownHostsFile=/dev/null" -- {remote_sources} <local-destination>'
 )
 
-
-@dataclass(frozen=True, slots=True)
-class SandboxTarget:
-    sandbox_uid: str
-    sandbox_id: str
-    experiment_id: str
-    volume_name: str
-    workdir: str
-    ssh_host: str
-    ssh_port: int
-    ssh_user: str
-    key_path: str
-
-    @classmethod
-    def from_row(cls, *, row: dict[str, Any], key_path: Path) -> "SandboxTarget":
-        return cls(
-            sandbox_uid=str(row.get("sandbox_uid") or ""),
-            sandbox_id=str(row.get("sandbox_id") or ""),
-            experiment_id=str(row.get("experiment_id") or ""),
-            volume_name=str(row.get("volume_name") or ""),
-            workdir=str(row.get("workdir") or ""),
-            ssh_host=str(row.get("ssh_host") or ""),
-            ssh_port=int(row.get("ssh_port") or 0),
-            ssh_user=str(row.get("ssh_user") or ""),
-            key_path=str(key_path),
-        )
-
-
-IntentKind = Literal[
-    "mark_cleanup_pending",
-    "mark_failed",
-    "mark_terminated",
-    "refresh_endpoint",
-    "touch_alive",
-]
-
-CleanupOutcome = Literal["stopped", "gone", "maybe_alive"]
-
-CLEANUP_PENDING_REASON = (
-    "the provider did not confirm the sandbox was deleted, so it may still "
-    "exist and bill; the cleanup sweep keeps retrying"
+VALID_GPUS = frozenset(
+    {"T4", "L4", "A10G", "L40S", "A100", "A100-80GB", "H100", "B200"}
 )
+MIN_TIME_LIMIT_SECONDS = 60
+MAX_TIME_LIMIT_SECONDS = 24 * 60 * 60
+DEFAULT_TIME_LIMIT_SECONDS = 3600
+DEFAULT_CPU = 2.0
+DEFAULT_MEMORY_MB = 8192
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderLookup:
-    """Provider existence result.
-
-    ``unavailable`` is not ``not_found``: treating an outage as absence can
-    strand a billing VM behind a terminal row.
-    """
-
-    kind: Literal["found", "not_found", "unavailable"]
-    sandbox_id: str = ""
-    error: str = ""
-
-
-LOOKUP_NOT_FOUND = ProviderLookup(kind="not_found")
-
-
-def lookup_found(sandbox_id: str) -> ProviderLookup:
-    return ProviderLookup(kind="found", sandbox_id=str(sandbox_id))
-
-
-def lookup_unavailable(error: str) -> ProviderLookup:
-    return ProviderLookup(kind="unavailable", error=str(error)[:200])
-
-
-@dataclass(frozen=True, slots=True)
-class SideEffectIntent:
-    kind: IntentKind
-    payload: Mapping[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class LifecycleEvent:
-    type: str
-    payload: Mapping[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class LifecycleDecision:
-    intents: tuple[SideEffectIntent, ...] = ()
-    event: LifecycleEvent | None = None
-
-
-def cleanup_pending_decision(
+def _validated_resources(
     *,
-    row: Mapping[str, Any],
-    trigger: str,
-    error: str = "",
-    attempts: int = 0,
-    fence_phase: str = "",
-) -> LifecycleDecision:
-    """Park a row whose provider deletion was never confirmed.
-
-    ``error`` is the verdict the row was headed for; it rides along so the
-    retry that finally confirms the delete can finish the original journey
-    (a failed provision must not quietly land as a clean ``terminated``).
-
-    ``fence_phase`` is the in-flight marker the caller claimed, when it holds
-    one. Carrying it makes the re-park conditional on still owning the row, so
-    a worker whose claim was reclaimed cannot rewind the new holder's attempt
-    count to its own.
-    """
-    sandbox_id = str(row.get("sandbox_id") or "")
-    sandbox_uid = str(row.get("sandbox_uid") or "")
-    return LifecycleDecision(
-        intents=(
-            SideEffectIntent(
-                "mark_cleanup_pending",
-                {
-                    "reason": CLEANUP_PENDING_REASON,
-                    "error": error,
-                    "attempts": max(int(attempts), 1),
-                    "expected_phase": fence_phase,
-                },
-            ),
-        ),
-        event=LifecycleEvent(
-            "sandbox.cleanup_pending",
-            {
-                "sandbox_id": sandbox_id,
-                "sandbox_uid": sandbox_uid,
-                "trigger": trigger,
-                "attempts": max(int(attempts), 1),
-                "reason": CLEANUP_PENDING_REASON,
-            },
-        ),
+    gpu: str | None,
+    cpu: float | None,
+    memory: int | None,
+    time_limit: int | None,
+    configurable: bool,
+) -> tuple[str | None, float, int, int]:
+    normalized_gpu = str(gpu).upper() if gpu not in (None, "") else None
+    if configurable and normalized_gpu and normalized_gpu not in VALID_GPUS:
+        raise ValidationError(
+            f"invalid gpu: {gpu}; allowed: {', '.join(sorted(VALID_GPUS))}"
+        )
+    normalized_cpu = float(cpu) if cpu is not None else DEFAULT_CPU
+    if normalized_cpu <= 0:
+        raise ValidationError("cpu must be positive")
+    normalized_memory = int(memory) if memory is not None else DEFAULT_MEMORY_MB
+    if normalized_memory < 512:
+        raise ValidationError("memory must be at least 512 (MiB)")
+    normalized_time = (
+        int(time_limit)
+        if time_limit is not None
+        else DEFAULT_TIME_LIMIT_SECONDS
     )
-
-
-def settle_decision(
-    *,
-    row: Mapping[str, Any],
-    outcome: CleanupOutcome,
-    trigger: str,
-    event_type: str,
-    payload: Mapping[str, Any] | None = None,
-    error: str = "",
-    fence_phase: str = "",
-    attempts: int = 0,
-) -> LifecycleDecision:
-    """Settle a row once its cleanup attempt has finished.
-
-    An unconfirmed delete never becomes a terminal row. ``error`` chooses
-    failed rather than ended.
-    """
-    if outcome == "maybe_alive":
-        return cleanup_pending_decision(
-            row=row,
-            trigger=trigger,
-            error=error,
-            attempts=attempts,
-            fence_phase=fence_phase,
+    if not MIN_TIME_LIMIT_SECONDS <= normalized_time <= MAX_TIME_LIMIT_SECONDS:
+        raise ValidationError(
+            f"time_limit must be between {MIN_TIME_LIMIT_SECONDS} and "
+            f"{MAX_TIME_LIMIT_SECONDS} seconds"
         )
-    return LifecycleDecision(
-        intents=(
-            (
-                SideEffectIntent(
-                    "mark_failed",
-                    {"error": error, "expected_phase": fence_phase},
-                )
-                if error
-                else SideEffectIntent(
-                    "mark_terminated", {"expected_phase": fence_phase}
-                )
-            ),
-        ),
-        event=LifecycleEvent(event_type, dict(payload or {})),
-    )
-
-
-def reconcile_decision(
-    *,
-    row: Mapping[str, Any],
-    alive: bool | None,
-    job_live: bool = False,
-    cleanup: CleanupOutcome = "maybe_alive",
-    fence_phase: str = "",
-    attempts: int = 0,
-) -> LifecycleDecision:
-    """Decide how one observed row should converge toward provider reality.
-
-    ``cleanup`` is what the caller's termination attempt established for a
-    wedged ``provisioning`` row; it defaults to the safe answer, so a caller
-    that skipped the attempt parks the row instead of stranding a live VM.
-    """
-    status = str(row.get("status") or "")
-    sandbox_id = str(row.get("sandbox_id") or "")
-    sandbox_uid = str(row.get("sandbox_uid") or "")
-    if status == "running" and sandbox_id:
-        if alive is None:
-            return LifecycleDecision()
-        if alive:
-            return LifecycleDecision(
-                intents=(
-                    SideEffectIntent("touch_alive", {}),
-                    SideEffectIntent("refresh_endpoint", {}),
-                )
-            )
-        return LifecycleDecision(
-            intents=(
-                SideEffectIntent("mark_terminated", {"expected_phase": fence_phase}),
-            ),
-            event=LifecycleEvent(
-                "sandbox.expired",
-                {"sandbox_id": sandbox_id, "sandbox_uid": sandbox_uid},
-            ),
-        )
-    if status == "provisioning" and not job_live:
-        return settle_decision(
-            row=row,
-            outcome=cleanup,
-            trigger="reconcile",
-            event_type="sandbox.failed",
-            payload={"error": "provisioning interrupted"},
-            error="provisioning interrupted; call sandbox.request again",
-            fence_phase=fence_phase,
-            attempts=attempts,
-        )
-    return LifecycleDecision()
-
-
-def reap_decision(
-    *,
-    row: Mapping[str, Any],
-    outcome: CleanupOutcome,
-    event_type: str,
-    payload_extra: Mapping[str, Any] | None = None,
-    fence_phase: str = "",
-    attempts: int = 0,
-) -> LifecycleDecision:
-    """Describe a reap after the provider termination attempt has completed."""
-    sandbox_id = str(row.get("sandbox_id") or "")
-    sandbox_uid = str(row.get("sandbox_uid") or "")
-    extra = dict(payload_extra or {})
-    if outcome == "maybe_alive":
-        return cleanup_pending_decision(
-            row=row,
-            trigger=event_type.removeprefix("sandbox."),
-            attempts=attempts,
-            fence_phase=fence_phase,
-        )
-    return LifecycleDecision(
-        intents=(SideEffectIntent("mark_terminated", {"expected_phase": fence_phase}),),
-        event=LifecycleEvent(
-            event_type,
-            {
-                "sandbox_id": sandbox_id,
-                "sandbox_uid": sandbox_uid,
-                "reaped": True,
-                "expires_at": row.get("expires_at"),
-                "stopped": outcome == "stopped",
-                **extra,
-            },
-        ),
-    )
-
-
-def release_decision(
-    *,
-    row: Mapping[str, Any],
-    outcome: CleanupOutcome,
-    active_experiment_ids: list[str],
-    error: str = "",
-    fence_phase: str = "",
-    attempts: int = 0,
-) -> LifecycleDecision:
-    """Describe an explicitly confirmed release.
-
-    ``error`` is the verdict the row was already headed for — a parked row
-    carries the failure that stalled it. A manual release must finish that
-    journey rather than overwrite it with a clean ``terminated``: the agent
-    reading the terminal status would otherwise never learn the provision
-    failed at all.
-
-    ``fence_phase``/``attempts`` come from the cleanup claim a release takes
-    over a parked row: every write below asserts the claim, and a re-park keeps
-    the attempt the claim actually took instead of restarting the backoff at 1.
-    """
-    sandbox_id = str(row.get("sandbox_id") or "")
-    sandbox_uid = str(row.get("sandbox_uid") or "")
-    if outcome == "maybe_alive":
-        return cleanup_pending_decision(
-            row=row,
-            trigger="release",
-            error=error,
-            attempts=attempts,
-            fence_phase=fence_phase,
-        )
-    return LifecycleDecision(
-        intents=(
-            (
-                SideEffectIntent(
-                    "mark_failed", {"error": error, "expected_phase": fence_phase}
-                )
-                if error
-                else SideEffectIntent(
-                    "mark_terminated", {"expected_phase": fence_phase}
-                )
-            ),
-        ),
-        event=LifecycleEvent(
-            "sandbox.released",
-            {
-                "sandbox_id": sandbox_id,
-                "sandbox_uid": sandbox_uid,
-                "active_experiment_ids": list(active_experiment_ids),
-                "stopped": outcome == "stopped",
-                "status": "failed" if error else "terminated",
-            },
-        ),
-    )
+    return normalized_gpu, normalized_cpu, normalized_memory, normalized_time
 
 
 def _sandbox_dirs(row: dict[str, Any]) -> tuple[str, str]:
@@ -527,10 +249,6 @@ class SandboxEngine:
         storage_hint: str = "",
         attachment_check: Callable[..., None] | None = None,
     ) -> None:
-        from .acquisition import SandboxAcquisition
-        from .sandbox_lifecycle import SandboxLifecycle
-        from .scheduler import SandboxScheduler
-
         self._quotas = QuotaService(store=store)
         self.storage_enabled = bool(storage_enabled)
         self.storage_hint = str(storage_hint or "")
@@ -552,39 +270,38 @@ class SandboxEngine:
         self._secret_custody = EphemeralSecretCustody()
         self._storage = SandboxStorage(store=store)
         self._metrics = SandboxMetrics(
-            repository=self._storage, backend=backend, mgmt_keys=mgmt_keys
+            storage=self._storage, backend=backend, mgmt_keys=mgmt_keys
         )
         self._runs = SandboxRunLedger(
             store=store,
-            repository=self._storage,
+            storage=self._storage,
             backend=backend,
             mgmt_keys=mgmt_keys,
         )
-        self._observer = RunsObserver(ledger=self._runs, repository=self._storage)
+        self._observer = RunsObserver(ledger=self._runs, storage=self._storage)
         self._lifecycle = SandboxLifecycle(
-            repository=self._storage,
+            storage=self._storage,
             backend=backend,
             mgmt_keys=mgmt_keys,
             secret_custody=self._secret_custody,
+            observer=self._observer,
+            runs=self._runs,
         )
-        self._provisioner = SandboxAcquisition(
-            repository=self._storage,
+        self._provisioner = SandboxProvisioner(
+            storage=self._storage,
             backend=backend,
             lifecycle=self._lifecycle,
-            stale_provision_seconds=self._stale_provision_seconds,
         )
-        self._lifecycle.job_probe = self._provisioner.job_is_live
-        self._lifecycle.observe_runs = self._observer.observe_forced
-        self._lifecycle.stamp_runs_observed = self._runs.mark_final_observed
+        self._heartbeat = SandboxHeartbeatMonitor(
+            storage=self._storage,
+            metrics=self._metrics,
+            runs=self._runs,
+            observer=self._observer,
+            reap_row=self._lifecycle.reap_row,
+        )
         self._scheduler = SandboxScheduler(
-            repository=self._storage,
-            backend=backend,
-            provisioner=self._provisioner,
-            lifecycle=self._lifecycle,
-            sample_metrics=self._metrics.sample_metrics,
-            reconcile_runs=self._observer.observe_live,
-            runs_active=self._runs.has_running_runs,
-            refresh_runs=self._observer.observe_forced,
+            sweep=self._maintenance_sweep,
+            enforce_expiry=backend.capabilities.enforce_expiry,
             force_expiry_reaper=force_expiry_reaper,
         )
         self._transcripts = TranscriptCache()
@@ -594,59 +311,79 @@ class SandboxEngine:
         self._request_locks: dict[str, threading.Lock] = {}
         self._request_locks_guard = threading.Lock()
 
-    def start(self, *, periodic_maintenance: Callable[[], Any] | None = None) -> None:
-        self._scheduler.periodic_maintenance = periodic_maintenance
+    def start(self) -> None:
         self._scheduler.start()
 
     def shutdown(self) -> None:
         self._scheduler.stop()
         self._provisioner.shutdown()
         self._secret_custody.clear()
+        self._backend.shutdown()
 
-    def _deliver_secrets_once(self, *, row: dict[str, Any], experiment_id: str) -> None:
+    def _maintenance_sweep(
+        self,
+        *,
+        stale_deadline_seconds: float,
+        expiry_enabled: bool,
+        idle_threshold_seconds: float,
+    ) -> None:
+        """Run one safety-ordered sweep without letting one row kill the timer."""
+        now = datetime.now(tz=UTC)
+        with suppress(Exception):
+            if expiry_enabled:
+                self._lifecycle.reap_expired(now=now)
+        # Detached work appears in receipts before it appears in gauges.
+        with suppress(Exception):
+            self._observer.observe_live()
+        with suppress(Exception):
+            self._heartbeat.reap_idle(
+                now=now,
+                threshold_seconds=idle_threshold_seconds,
+            )
+        with suppress(Exception):
+            if expiry_enabled:
+                self._provisioner.reap_stale_provisions(
+                    now=now,
+                    deadline_seconds=stale_deadline_seconds,
+                )
+        with suppress(Exception):
+            self._lifecycle.retry_cleanup_pending(now=now)
+
+    def _deliver_secrets_once(self, *, row: dict[str, Any]) -> None:
         uid = str(row.get("sandbox_uid") or "")
         if row.get("status") != "running" or not self._secret_custody.pending(
             sandbox_uid=uid
         ):
             return
-        if self._deliver_secrets(row=row, experiment_id=experiment_id):
-            self._secret_custody.mark_delivered(sandbox_uid=uid)
-
-    def _deliver_secrets(self, *, row: dict[str, Any], experiment_id: str) -> bool:
-        _ = experiment_id
-        if row.get("status") != "running":
-            return False
         sandbox_id = str(row.get("sandbox_id") or "")
         if not sandbox_id:
-            return False
+            return
         try:
-            sandbox_id = qualified_row_sandbox_id(backend=self._backend, row=row)
+            target = SandboxTarget.from_row(
+                row,
+                key_path=str(self._keys.key_path(sandbox_uid=uid)),
+            ).addressed(self._backend)
         except Exception:
-            return False
+            return
         hf_token = self._secret_custody.hf_token(
-            sandbox_uid=str(row.get("sandbox_uid") or "")
+            sandbox_uid=uid
         )
         try:
             secrets = self._backend.sandbox_secrets(hf_token=hf_token)
         except Exception:
-            return False
+            return
         if not secrets:
-            return True
+            self._secret_custody.mark_delivered(sandbox_uid=uid)
+            return
         try:
-            return bool(
-                self._backend.write_secrets(
-                    sandbox_id=sandbox_id,
-                    secrets=secrets,
-                    ssh_host=str(row.get("ssh_host") or ""),
-                    ssh_port=int(row.get("ssh_port") or 0),
-                    key_path=str(self._mgmt_key_path(row=row)),
-                )
+            delivered = self._backend.write_secrets(
+                target=target,
+                secrets=secrets,
             )
         except Exception:
-            return False
-
-    def _mgmt_key_path(self, *, row: dict[str, Any]) -> Path:
-        return self._keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))
+            return
+        if delivered:
+            self._secret_custody.mark_delivered(sandbox_uid=uid)
 
     @contextmanager
     def _experiment_request_guard(self, experiment_id: str) -> Iterator[None]:
@@ -669,6 +406,18 @@ class SandboxEngine:
             return False
         return (now - started).total_seconds() < self._stale_provision_seconds
 
+    def _reconcile(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        job_live = False
+        if row.get("status") == "provisioning":
+            with suppress(Exception):
+                job_live = self._provisioner.job_is_live(
+                    sandbox_uid=str(row.get("sandbox_uid") or ""),
+                )
+        return self._lifecycle.reconcile(
+            row=row,
+            provisioning_job_live=job_live,
+        )
+
     def _resolve_hf_token(self, *, user_id: str) -> str:
         """Read the write-only token; lookup failure means public models only."""
         if not user_id:
@@ -684,7 +433,6 @@ class SandboxEngine:
         row: dict[str, Any],
         reused: bool | None,
     ) -> dict[str, Any]:
-        row = self._with_active_experiment_ids(row=row)
         return self._with_runs_nudge(
             view=self._agent_facts(row=row, reused=reused),
             sandbox_uid=str(row.get("sandbox_uid") or ""),
@@ -709,28 +457,29 @@ class SandboxEngine:
         snapshot = self._canonical_snapshot(row=row)
         status = str(snapshot["status"])
         facts: dict[str, Any] = {
-            key: snapshot[key]
-            for key in (
-                "sandbox_uid",
-                "experiment_id",
-                "active_experiment_ids",
-                "project_id",
-                "sandbox_id",
-                "status",
-                "ssh",
-                "workdir",
-                "experiment_dir",
-                "data_dir",
-                "volume",
-                "gpu",
-                "cpu",
-                "memory",
-                "provider",
-                "instance_type",
-                "region",
-                "public_key_source",
-                "expires_at",
-            )
+            "sandbox_uid": snapshot["sandbox_uid"],
+            "experiment_id": snapshot["experiment_id"],
+            "active_experiment_ids": snapshot["active_experiment_ids"],
+            "project_id": snapshot["project_id"],
+            "sandbox_id": snapshot["sandbox_id"],
+            "status": status,
+            "ssh": {
+                "host": snapshot["ssh_host"],
+                "port": snapshot["ssh_port"],
+                "user": snapshot["ssh_user"],
+            },
+            "workdir": snapshot["workdir"],
+            "experiment_dir": snapshot["sync_dir"],
+            "data_dir": snapshot["sandbox_data_dir"],
+            "volume": snapshot["volume_name"],
+            "gpu": snapshot["gpu"] or None,
+            "cpu": snapshot["cpu"],
+            "memory": snapshot["memory"],
+            "provider": snapshot["provider"] or None,
+            "instance_type": snapshot["instance_type"] or None,
+            "region": snapshot["region"] or None,
+            "public_key_source": snapshot["public_key_source"],
+            "expires_at": snapshot["expires_at"],
         }
         facts["storage_enabled"] = self.storage_enabled
         facts["hint"] = _runtime_hint(
@@ -765,35 +514,31 @@ class SandboxEngine:
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
         snapshot = self._canonical_snapshot(row=row)
         return {
-            key: snapshot[key]
-            for key in (
-                "sandbox_uid",
-                "experiment_id",
-                "active_experiment_ids",
-                "sandbox_id",
-                "status",
-                "gpu",
-                "provider",
-                "instance_type",
-                "region",
-                "expires_at",
-            )
+            "sandbox_uid": snapshot["sandbox_uid"],
+            "experiment_id": snapshot["experiment_id"],
+            "active_experiment_ids": snapshot["active_experiment_ids"],
+            "sandbox_id": snapshot["sandbox_id"],
+            "status": snapshot["status"],
+            "gpu": snapshot["gpu"] or None,
+            "provider": snapshot["provider"] or None,
+            "instance_type": snapshot["instance_type"] or None,
+            "region": snapshot["region"] or None,
+            "expires_at": snapshot["expires_at"],
         }
 
-    def _row_view(
-        self, *, row: dict[str, Any], conn: Connection | None = None
-    ) -> dict[str, Any]:
-        return self._canonical_snapshot(row=row, conn=conn)["row_view"]
-
-    def _canonical_snapshot(
-        self, *, row: dict[str, Any], conn: Connection | None = None
-    ) -> dict[str, Any]:
+    def _canonical_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Build every public projection from one hydrated row."""
-        hydrated = self._with_active_experiment_ids(row=row, conn=conn)
+        hydrated = dict(row)
+        active = [
+            str(experiment_id)
+            for experiment_id in hydrated.get("active_experiment_ids") or []
+            if str(experiment_id)
+        ]
+        if not hydrated.get("experiment_id") and active:
+            hydrated["experiment_id"] = active[0]
         remote_dir, data_dir = _sandbox_dirs(hydrated)
-        active = list(hydrated.get("active_experiment_ids") or [])
         status = hydrated.get("status") or "none"
-        snapshot: dict[str, Any] = {
+        return {
             "sandbox_uid": hydrated.get("sandbox_uid"),
             "experiment_id": hydrated.get("experiment_id"),
             "active_experiment_ids": active,
@@ -803,41 +548,13 @@ class SandboxEngine:
             "phase": public_phase(phase=hydrated.get("phase")),
             "detail": hydrated.get("detail") or "",
             "error": hydrated.get("error") or "",
-            "gpu": hydrated.get("gpu") or None,
+            "gpu": hydrated.get("gpu") or "",
             "cpu": hydrated.get("cpu"),
             "memory": hydrated.get("memory"),
-            "provider": hydrated.get("provider") or None,
-            "instance_type": hydrated.get("instance_type") or None,
-            "region": hydrated.get("region") or None,
-            "public_key_source": hydrated.get("public_key_source") or "managed",
-            "expires_at": hydrated.get("expires_at"),
-            "ssh": {
-                "host": hydrated.get("ssh_host"),
-                "port": hydrated.get("ssh_port"),
-                "user": hydrated.get("ssh_user"),
-            },
-            "workdir": hydrated.get("workdir"),
-            "experiment_dir": remote_dir,
-            "data_dir": data_dir,
-            "volume": hydrated.get("volume_name"),
-        }
-        snapshot["row_view"] = {
-            "sandbox_uid": snapshot["sandbox_uid"],
-            "experiment_id": snapshot["experiment_id"],
-            "active_experiment_ids": active,
-            "project_id": snapshot["project_id"],
-            "sandbox_id": snapshot["sandbox_id"],
-            "status": status,
-            "phase": snapshot["phase"],
-            "detail": snapshot["detail"],
-            "error": snapshot["error"],
-            "gpu": hydrated.get("gpu") or "",
-            "cpu": snapshot["cpu"],
-            "memory": snapshot["memory"],
             "provider": hydrated.get("provider") or "",
             "instance_type": hydrated.get("instance_type") or "",
             "region": hydrated.get("region") or "",
-            "public_key_source": snapshot["public_key_source"],
+            "public_key_source": hydrated.get("public_key_source") or "managed",
             "time_limit": hydrated.get("time_limit"),
             "ssh_host": hydrated.get("ssh_host"),
             "ssh_port": hydrated.get("ssh_port"),
@@ -847,34 +564,12 @@ class SandboxEngine:
             "sandbox_data_dir": data_dir,
             "volume_name": hydrated.get("volume_name"),
             "requested_at": hydrated.get("requested_at"),
-            "expires_at": snapshot["expires_at"],
+            "expires_at": hydrated.get("expires_at"),
             "last_seen_at": hydrated.get("last_seen_at"),
             "terminated_at": hydrated.get("terminated_at"),
             "created_at": hydrated.get("created_at"),
             "updated_at": hydrated.get("updated_at"),
         }
-        return snapshot
-
-    def _active_experiment_ids_for_row(
-        self, *, row: dict[str, Any], conn: Connection | None = None
-    ) -> list[str]:
-        raw = row.get("active_experiment_ids")
-        if isinstance(raw, list):
-            return [str(item) for item in raw if str(item)]
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        if not sandbox_uid:
-            return []
-        return self._storage.active_experiment_ids(sandbox_uid=sandbox_uid, conn=conn)
-
-    def _with_active_experiment_ids(
-        self, *, row: dict[str, Any], conn: Connection | None = None
-    ) -> dict[str, Any]:
-        out = dict(row)
-        active = self._active_experiment_ids_for_row(row=row, conn=conn)
-        out["active_experiment_ids"] = active
-        if not out.get("experiment_id") and active:
-            out["experiment_id"] = active[0]
-        return out
 
     def _capabilities_for(self, *, provider: str | None) -> BackendCapabilities:
         try:
@@ -1000,53 +695,21 @@ class SandboxEngine:
         admission: AdmissionRequest,
         provider_name: str,
         additional: bool,
-        replace_sandbox_uid: str = "",
     ) -> dict[str, Any] | None:
         """Atomically admit and reserve one potentially billable slot."""
         if experiment_id and not additional:
             existing = self._storage.active_reservation(
                 conn=conn, experiment_id=experiment_id
             )
-            if existing is not None and str(existing.get("sandbox_uid") or "") != str(
-                replace_sandbox_uid or ""
-            ):
+            if existing is not None:
                 return existing
         self._quotas.check_admission(request=admission, conn=conn, _serialize=True)
-        now = now_iso()
-        self._storage.upsert_in_transaction(
+        self._storage.reserve_provisioning(
             conn=conn,
             experiment_id=experiment_id,
-            sandbox_uid=request.sandbox_uid,
-            expected_project_id=project_id,
             project_id=project_id,
-            status="provisioning",
-            phase="starting",
-            detail="",
-            error="",
-            sandbox_id="",
-            sandbox_name="",
-            ssh_host="",
-            ssh_port=0,
-            ssh_user="root",
-            workdir=request.remote_workdir
-            or remote_experiment_dir(experiment_id=experiment_id),
-            sync_dir=request.remote_workdir
-            or remote_experiment_dir(experiment_id=experiment_id),
-            unsynced_dir=DEFAULT_DATA_DIR,
-            mgmt_key_ref=(request.sandbox_uid if request.management_public_key else ""),
-            public_key_source=request.public_key_source,
-            gpu=request.gpu or "",
-            cpu=request.cpu,
-            memory=request.memory,
+            request=request,
             provider=provider_name,
-            instance_type=request.instance_type or "",
-            region=request.region or "",
-            time_limit=request.time_limit,
-            requested_at=now,
-            provision_started_at=now,
-            expires_at="",
-            last_seen_at=now,
-            terminated_at="",
         )
         return None
 
@@ -1069,26 +732,32 @@ class SandboxEngine:
         provisioning_user_id: str = "",
         provisioning_key_id: str = "",
     ) -> dict[str, Any]:
-        experiment_id = (experiment_id or "").strip()
         if (sandbox_uid or "").strip():
-            # The brain mints UIDs; caller-selected values could target another
-            # project's row.
             raise ValidationError(
                 "sandbox.request does not take sandbox_uid — the brain mints it "
                 "and returns it; use sandbox.attach or sandbox.get to reach a "
                 "sandbox that already exists"
             )
+        experiment_id = (experiment_id or "").strip()
+        instance_type = (instance_type or "").strip() or None
+        region = (region or "").strip() or None
         provider = (provider or "").strip() or None
+        public_key = (
+            str(public_key_override).strip()
+            if public_key_override is not None
+            else str(public_key or "").strip()
+        )
+        additional = bool(additional)
+        provisioning_user_id = str(provisioning_user_id or "")
+        provisioning_key_id = str(provisioning_key_id or "")
         caps = self._capabilities_for(provider=provider)
-        gpu, cpu, memory, time_limit = validate_request_inputs(
+        gpu, cpu, memory, time_limit = _validated_resources(
             gpu=gpu,
             cpu=cpu,
             memory=memory,
             time_limit=time_limit,
-            configurable_resources=caps.configurable_resources,
+            configurable=caps.configurable_resources,
         )
-        instance_type = (instance_type or "").strip() or None
-        region = (region or "").strip() or None
         with self._store.transaction() as conn:
             project_id = self._store.require_project_id(
                 conn=conn, project_id=project_id
@@ -1104,8 +773,10 @@ class SandboxEngine:
             else:
                 existing = None
                 additional = False
-            replace_sandbox_uid = ""
-            if existing and existing.get("status") == CLEANUP_PENDING_STATUS:
+            parked_cleanup = bool(
+                existing and existing.get("status") == CLEANUP_PENDING_STATUS
+            )
+            if parked_cleanup:
                 # Its VM may still be up and billing, and that row is the only
                 # record of it — provisioning over it would erase the provider
                 # id. Leave it to the cleanup sweep and mint a fresh row.
@@ -1122,7 +793,6 @@ class SandboxEngine:
             job_live = bool(
                 existing
                 and self._provisioner.job_is_live(
-                    experiment_id=experiment_id,
                     sandbox_uid=str(existing.get("sandbox_uid") or ""),
                 )
             )
@@ -1135,15 +805,18 @@ class SandboxEngine:
                 result = self._agent_result(row=existing, reused=None)
                 result["public_key_source"] = "caller"
                 return result
-            if not additional and not reuse_live and not job_live:
+            if (
+                not additional
+                and not reuse_live
+                and not job_live
+                and not parked_cleanup
+            ):
                 # Unconfirmed deletion parks the old provider ID for retry.
                 cleanup = self._lifecycle.clear_for_reacquisition(
                     experiment_id=experiment_id, row=existing
                 )
                 if cleanup == "maybe_alive":
                     existing = None
-                elif existing is not None:
-                    replace_sandbox_uid = str(existing.get("sandbox_uid") or "")
             sandbox_uid = (
                 self._storage.new_sandbox_uid()
                 if additional
@@ -1152,46 +825,45 @@ class SandboxEngine:
                     or self._storage.new_sandbox_uid()
                 )
             )
-            supplied_public_key = (
-                str(public_key_override).strip()
-                if public_key_override is not None
-                else str(public_key or "").strip()
-            )
-            if not supplied_public_key:
+            if not public_key:
                 raise ValidationError(
                     "sandbox.request requires public_key; generate a caller-owned OpenSSH keypair and pass the single-line .pub contents"
                 )
-            public_key = supplied_public_key
             public_key_source = "caller"
             if reuse_live and existing:
-                self._storage.touch_alive(
-                    experiment_id=experiment_id,
+                touched = self._storage.touch_alive(
                     sandbox_uid=str(existing.get("sandbox_uid") or ""),
                     expected_project_id=project_id,
                 )
-                row = self._lifecycle.refresh_endpoint(
-                    row=self._storage.get_by_uid(
-                        sandbox_uid=str(existing.get("sandbox_uid") or "")
-                    )
-                )
-                self._storage.emit_event(
-                    project_id=project_id,
-                    event_type="sandbox.reused",
-                    experiment_id=experiment_id,
-                    payload={
-                        "sandbox_id": existing["sandbox_id"],
-                        "sandbox_uid": existing.get("sandbox_uid", ""),
-                        "active_experiment_ids": self._storage.active_experiment_ids(
+                if touched:
+                    row = self._lifecycle.refresh_endpoint(
+                        row=self._storage.get_by_uid(
                             sandbox_uid=str(existing.get("sandbox_uid") or "")
-                        ),
-                    },
-                )
-                result = self._agent_result(
-                    row=row,
-                    reused=True,
-                )
-                result["public_key_source"] = public_key_source
-                return result
+                        )
+                    )
+                    self._storage.emit_event(
+                        project_id=project_id,
+                        event_type="sandbox.reused",
+                        experiment_id=experiment_id,
+                        payload={
+                            "sandbox_id": existing["sandbox_id"],
+                            "sandbox_uid": existing.get("sandbox_uid", ""),
+                            "active_experiment_ids": (
+                                self._storage.active_experiment_ids(
+                                    sandbox_uid=str(existing.get("sandbox_uid") or "")
+                                )
+                            ),
+                        },
+                    )
+                    result = self._agent_result(
+                        row=row,
+                        reused=True,
+                    )
+                    result["public_key_source"] = public_key_source
+                    return result
+                # A concurrent cleanup claimed the row after the liveness read.
+                existing = None
+                sandbox_uid = self._storage.new_sandbox_uid()
             if caps.requires_hardware_selection and (not instance_type):
                 catalog = self._hardware_catalog(gpu=gpu, region=region)
                 return self._needs_selection_view(
@@ -1216,7 +888,9 @@ class SandboxEngine:
             )
             # Modal injects at provision; VM/SSH backends deliver post-boot.
             # The token is never persisted.
-            hf_token = self._resolve_hf_token(user_id=provisioning_user_id)
+            hf_token = self._resolve_hf_token(
+                user_id=provisioning_user_id
+            )
             if hf_token:
                 self._secret_custody.remember(
                     sandbox_uid=sandbox_uid,
@@ -1239,7 +913,7 @@ class SandboxEngine:
                 remote_workdir=remote_dir,
                 public_key_source=public_key_source,
                 hf_token=hf_token,
-                key_id=str(provisioning_key_id or ""),
+                key_id=provisioning_key_id,
             )
             if not job_live:
                 try:
@@ -1252,7 +926,6 @@ class SandboxEngine:
                             admission=admission,
                             provider_name=caps.name,
                             additional=additional,
-                            replace_sandbox_uid=replace_sandbox_uid,
                         )
                 except Exception:
                     self._secret_custody.forget(sandbox_uid=sandbox_uid)
@@ -1286,7 +959,7 @@ class SandboxEngine:
         job.done.wait(timeout=self.request_wait_seconds)
         row = self._storage.get_by_uid(sandbox_uid=sandbox_uid)
         reused = False if row.get("status") == "running" else None
-        self._deliver_secrets_once(row=row, experiment_id=experiment_id)
+        self._deliver_secrets_once(row=row)
         result = self._agent_result(
             row=row,
             reused=reused,
@@ -1322,8 +995,8 @@ class SandboxEngine:
                 "status": "none",
                 "hint": "No sandbox for this experiment — call sandbox.request to create one.",
             }
-        row = self._lifecycle.reconcile(row=row)
-        self._deliver_secrets_once(row=row, experiment_id=experiment_id)
+        row = self._reconcile(row=row)
+        self._deliver_secrets_once(row=row)
         return self._agent_result(row=row, reused=None)
 
     def attach(
@@ -1350,7 +1023,7 @@ class SandboxEngine:
             raise NotFoundError(
                 f"sandbox not found in project {project_id}: {sandbox_uid}"
             )
-        source_row = self._lifecycle.reconcile(row=source_row)
+        source_row = self._reconcile(row=source_row)
         if source_row.get("status") != "running" or not source_row.get("sandbox_id"):
             raise ValidationError("sandbox.attach requires a running sandbox")
         # Legacy IDs must be asked of the provider recorded on the row.
@@ -1410,7 +1083,7 @@ class SandboxEngine:
             raise ValidationError(
                 f"{caps.name} sandboxes do not support lifetime extension"
             )
-        row = self._lifecycle.reconcile(row=row)
+        row = self._reconcile(row=row)
         if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
             raise ValidationError("sandbox.extend requires a running sandbox")
         expires_at = parse_iso(row.get("expires_at"))
@@ -1495,7 +1168,7 @@ class SandboxEngine:
         return {"backend": caps.name, **catalog, "hint": hint}
 
     def list_sandboxes(self, *, project_id: str | None = None) -> dict[str, Any]:
-        rows = self._storage.list_rows(project_id=project_id)
+        rows = self._storage.list_for_project(project_id=project_id)
         return {"sandboxes": [self._agent_summary(row=row) for row in rows]}
 
     def release(
@@ -1518,8 +1191,9 @@ class SandboxEngine:
         if experiment_id and (not sandbox_uid):
             rows = [
                 item
-                for item in self._storage.list_by_experiment(
-                    experiment_id=experiment_id
+                for item in self._storage.list_for_experiment(
+                    experiment_id=experiment_id,
+                    project_id=str(row.get("project_id") or ""),
                 )
                 if item.get("project_id") == row.get("project_id")
             ]
@@ -1600,7 +1274,6 @@ class SandboxEngine:
         }
 
     def _release_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
         # Manual release may jump backoff, but never another worker's claim.
         claim = self._lifecycle.claim_cleanup(row=row)
@@ -1612,12 +1285,14 @@ class SandboxEngine:
                 if claim:
                     row = fresh
         if not claim:
-            view = self._row_view(row=self._storage.get_by_uid(sandbox_uid=sandbox_uid))
+            view = self._canonical_snapshot(
+                row=self._storage.get_by_uid(sandbox_uid=sandbox_uid)
+            )
             view["hint"] = (
                 "Nothing was sent to the provider: another cleanup attempt for this sandbox was already in flight, and a second one would terminate the same VM twice and settle it twice. `status` above is the row as it stands right now — if it is still cleanup_pending, that attempt has not reported yet; re-call sandbox.release to try again, or check the provider console."
             )
             return view
-        self._provisioner.cancel(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
+        self._provisioner.cancel(sandbox_uid=sandbox_uid)
         was_active = bool(
             row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES
         )
@@ -1634,43 +1309,45 @@ class SandboxEngine:
                 in ACTIVE_SANDBOX_STATUSES | {"provisioning", CLEANUP_PENDING_STATUS}
             ),
         )
-        decision = release_decision(
-            row=row,
-            outcome=outcome,
-            active_experiment_ids=self._active_experiment_ids_for_row(row=row),
-            # Preserve the failed verdict recorded before cleanup was parked.
-            error=(
-                str(row.get("error") or "")
-                if row.get("status") == CLEANUP_PENDING_STATUS
-                else ""
-            ),
-            fence_phase=claim.phase,
-            attempts=claim.attempts,
+        # Preserve the failed verdict recorded before cleanup was parked.
+        error = (
+            str(row.get("error") or "")
+            if row.get("status") == CLEANUP_PENDING_STATUS
+            else ""
         )
         # Stamp only after provider absence is known, but before the fenced mark.
         if outcome != "maybe_alive":
             self._lifecycle.commit_runs_observation(
                 row=row, observed=observed, expected_phase=claim.phase
             )
-        applied = self._lifecycle.apply(row=row, decision=decision)
+        applied = self._lifecycle.record_release_outcome(
+            row=row,
+            outcome=outcome,
+            error=error,
+            claim=claim,
+        )
         if (
             outcome != "maybe_alive"
             and claim.phase
             and str(applied.get("status") or "") == CLEANUP_PENDING_STATUS
         ):
             # Another worker reclaimed the fence; report the row it owns.
-            view = self._row_view(row=applied)
+            view = self._canonical_snapshot(row=applied)
             view["hint"] = (
                 "The provider terminate call went through, but this release took longer than the cleanup deadline and another attempt reclaimed the sandbox, so the row was NOT settled here. `status` above is the row as it stands right now; the holding attempt will confirm it. Re-call sandbox.release if it stays cleanup_pending, or check the provider console."
             )
             return view
         if outcome == "maybe_alive":
-            view = self._row_view(row=self._storage.get_by_uid(sandbox_uid=sandbox_uid))
+            view = self._canonical_snapshot(
+                row=self._storage.get_by_uid(sandbox_uid=sandbox_uid)
+            )
             view["hint"] = (
                 "Release did NOT complete: the provider terminate call failed and the VM may still be running (and billing). The sandbox is now cleanup_pending — it stays visible and the cleanup sweep keeps asking the provider until it confirms the VM is gone. Do not assume the bill stopped; re-call sandbox.release to retry sooner, or check the provider console."
             )
             return view
-        view = self._row_view(row=self._storage.get_by_uid(sandbox_uid=sandbox_uid))
+        view = self._canonical_snapshot(
+            row=self._storage.get_by_uid(sandbox_uid=sandbox_uid)
+        )
         if view.get("status") == "failed":
             view["hint"] = (
                 "The VM is confirmed gone, but this sandbox is recorded as FAILED, not cleanly terminated: it carried a provisioning failure that release does not erase. See `error` for what went wrong."
@@ -1702,22 +1379,20 @@ class SandboxEngine:
             project_id=project_id,
             sandbox_uid=sandbox_uid,
         )
-        target = SandboxTarget.from_row(row=row, key_path=self._mgmt_key_path(row=row))
+        target = SandboxTarget.from_row(
+            row,
+            key_path=str(
+                self._keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))
+            ),
+        )
         status = str(row.get("status", "none"))
         resolved_experiment_id = experiment_id or target.experiment_id
         transcript_key = target.sandbox_uid or resolved_experiment_id
 
         def read_for(key: str) -> TranscriptTail:
             return self._backend.read_transcript(
-                sandbox_id=addressed_sandbox_id,
-                experiment_id=key,
-                volume_name=target.volume_name,
-                workdir=target.workdir,
+                target=addressed_target.for_experiment(key),
                 tail=None,
-                ssh_host=target.ssh_host,
-                ssh_port=target.ssh_port,
-                ssh_user=target.ssh_user,
-                key_path=target.key_path,
             )
 
         def read_transcript() -> TranscriptTail:
@@ -1734,11 +1409,9 @@ class SandboxEngine:
         unavailable = False
         window = TranscriptTail(data=b"", total_bytes=0)
         try:
-            addressed_sandbox_id = qualified_row_sandbox_id(
-                backend=self._backend, row=row
-            )
+            addressed_target = target.addressed(self._backend)
             window = self._transcripts.get_or_read(
-                sandbox_id=addressed_sandbox_id,
+                sandbox_id=addressed_target.sandbox_id,
                 read=read_transcript,
                 since=since,
             )
@@ -1900,8 +1573,9 @@ class SandboxEngine:
         sandbox_uid = (sandbox_uid or "").strip()
         if not experiment_id and not sandbox_uid:
             raise ValidationError("sandbox.runs requires experiment_id or sandbox_uid")
+        scoped_row: dict[str, Any] | None = None
         try:
-            self._storage.fetch_scoped(
+            scoped_row = self._storage.fetch_scoped(
                 experiment_id=experiment_id,
                 project_id=project_id,
                 tenant_id=tenant_id,
@@ -1913,9 +1587,14 @@ class SandboxEngine:
         wait = min(max(float(wait_seconds or 0), 0.0), RUNS_WAIT_CAP_SECONDS)
         deadline = time.monotonic() + wait
         baseline_finished: set[tuple[str, str]] | None = None
+        resolved_project_id = (
+            str((scoped_row or {}).get("project_id") or project_id or "") or None
+        )
         while True:
             self._observe_run_targets(
-                experiment_id=experiment_id, sandbox_uid=sandbox_uid
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid,
+                project_id=resolved_project_id,
             )
             records = (
                 self._runs.records_for_sandbox(sandbox_uid=sandbox_uid)
@@ -1945,14 +1624,23 @@ class SandboxEngine:
                 min(self.runs_wait_poll_seconds, max(deadline - time.monotonic(), 0.1))
             )
 
-    def _observe_run_targets(self, *, experiment_id: str, sandbox_uid: str) -> None:
+    def _observe_run_targets(
+        self,
+        *,
+        experiment_id: str,
+        sandbox_uid: str,
+        project_id: str | None,
+    ) -> None:
         if sandbox_uid:
             try:
                 rows = [self._storage.get_by_uid(sandbox_uid=sandbox_uid)]
             except NotFoundError:
                 rows = []
         else:
-            rows = self._storage.list_by_experiment(experiment_id=experiment_id)
+            rows = self._storage.list_for_experiment(
+                experiment_id=experiment_id,
+                project_id=project_id,
+            )
         for row in rows:
             self._observer.observe(row=row, max_age_seconds=self.runs_wait_poll_seconds)
 
@@ -1973,8 +1661,10 @@ class SandboxEngine:
     def run_wait_facts(self, *, sandbox_uid: str, label: str) -> dict[str, Any] | None:
         return self._runs.wait_facts(sandbox_uid=sandbox_uid, label=label)
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, details: bool = False) -> dict[str, Any]:
         health = self._backend.health()
+        if details:
+            return dict(health)
         result = {"ok": bool(health.get("ok"))}
         if not result["ok"] and health.get("error"):
             result["error"] = health["error"]
@@ -1995,10 +1685,7 @@ class SandboxEngine:
             )
         except NotFoundError:
             return None
-        return self._row_view(row=self._lifecycle.reconcile(row=row))
-
-    def backend_health(self) -> dict[str, Any]:
-        return dict(self._backend.health())
+        return self._canonical_snapshot(row=self._reconcile(row=row))
 
     def project_signal(self, *, project_id: str) -> str:
         return self._store.project_sandbox_signal(project_id=project_id)
@@ -2017,30 +1704,40 @@ class SandboxEngine:
     def for_experiment(
         self, *, project_id: str, experiment_id: str
     ) -> list[dict[str, Any]]:
-        with self._store.transaction() as conn:
-            self._store.require_project_id(conn=conn, project_id=project_id)
-            rows = self._storage.rows_for_experiment(
-                conn=conn, project_id=project_id, experiment_id=experiment_id
-            )
-            return [self._row_view(row=row, conn=conn) for row in rows]
+        rows = self._storage.list_for_experiment(
+            project_id=project_id,
+            experiment_id=experiment_id,
+        )
+        return [self._canonical_snapshot(row=row) for row in rows]
 
     def for_project(self, *, project_id: str) -> list[dict[str, Any]]:
-        with self._store.transaction() as conn:
-            self._store.require_project_id(conn=conn, project_id=project_id)
-            rows = self._storage.rows_for_project(conn=conn, project_id=project_id)
-            return [self._row_view(row=row, conn=conn) for row in rows]
+        rows = self._storage.list_for_project(project_id=project_id)
+        return [self._canonical_snapshot(row=row) for row in rows]
 
-    def reap_expired(self, **kwargs: Any) -> int:
-        return self._lifecycle.reap_expired(**kwargs)
+    def reap_expired(self, *, now: datetime | None = None) -> int:
+        return self._lifecycle.reap_expired(now=now)
 
-    def reap_idle(self, **kwargs: Any) -> int:
-        return self._scheduler.reap_idle(**kwargs)
+    def reap_idle(
+        self,
+        *,
+        now: datetime | None = None,
+        threshold_seconds: float | None = None,
+    ) -> int:
+        threshold = (
+            self._scheduler._idle_reap_threshold()
+            if threshold_seconds is None
+            else float(threshold_seconds)
+        )
+        return self._heartbeat.reap_idle(
+            now=now,
+            threshold_seconds=threshold,
+        )
 
     def reconcile_running_rows(self) -> int:
         left_running = 0
         for row in self._storage.list_running_rows():
             try:
-                fresh = self._lifecycle.reconcile(row=row)
+                fresh = self._reconcile(row=row)
             except Exception:
                 continue
             if (fresh or {}).get("status") != "running":
@@ -2073,4 +1770,4 @@ class SandboxEngine:
         return self._quotas.tenant_generation_counters(tenant_id=tenant_id)
 
 
-__all__ = ["SandboxEngine", "SandboxTarget"]
+__all__ = ["SandboxEngine"]

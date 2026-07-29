@@ -8,6 +8,8 @@ therefore produces ``unknown``, never a false ``lost`` result.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import threading
 import time
 from contextlib import closing
@@ -20,13 +22,9 @@ from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from ..kernel.secret_tokens import wait_url
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import NotFoundError, format_iso, now_iso, parse_iso
-from .sandbox_backend import (
-    SandboxBackend,
-    TranscriptTail,
-    qualified_row_sandbox_id,
-)
+from .models import SandboxBackend, SandboxTarget, TranscriptTail
 from .storage import SandboxStorage
-from .sandbox_support import (
+from .models import (
     ACTIVE_SANDBOX_STATUSES,
     METRICS_CACHE_TTL_SECONDS,
 )
@@ -43,6 +41,79 @@ RELEASE_OBSERVE_ACQUIRE_SECONDS = 20.0
 _GATE_REGISTRY_LIMIT = 512
 _GATE_IDLE_SECONDS = 300.0
 
+_EXIT_MARKER_RE = re.compile(
+    r"^\[([^\]]*)\] \(exit (-?\d+)\)[ \t]*$",
+    re.MULTILINE,
+)
+_CMD_MARKER_RE = re.compile(r"^\[([^\]]*)\] \$ (.*)$", re.MULTILINE)
+COMMAND_OUTPUT_TAIL_CHARS = 2000
+
+
+def parse_terminal_snapshot(transcript: str) -> dict[str, Any]:
+    empty = {
+        "command_id": None,
+        "command": "",
+        "started_at": None,
+        "status": "unknown",
+        "exit_code": None,
+        "finished_at": None,
+        "output_tail": "",
+    }
+    if not transcript:
+        return empty
+    commands = list(_CMD_MARKER_RE.finditer(transcript))
+    if not commands:
+        return empty
+    command = commands[-1]
+    started_at = command.group(1).strip() or None
+    command_text = command.group(2).strip()
+    exits = list(_EXIT_MARKER_RE.finditer(transcript, command.end()))
+    exit_match = exits[0] if exits else None
+    if exit_match is None:
+        output = transcript[command.end():]
+        exit_code = None
+        finished_at = None
+        status = "running"
+    else:
+        output = transcript[command.end():exit_match.start()]
+        exit_code = int(exit_match.group(2))
+        finished_at = exit_match.group(1).strip() or None
+        status = "succeeded" if exit_code == 0 else "failed"
+    command_key = f"{len(commands)}\0{started_at or ''}\0{command_text}"
+    return {
+        "command_id": (
+            "cmd_"
+            + hashlib.sha1(command_key.encode("utf-8")).hexdigest()[:12]
+        ),
+        "command": command_text,
+        "started_at": started_at,
+        "status": status,
+        "exit_code": exit_code,
+        "finished_at": finished_at,
+        "output_tail": output[-COMMAND_OUTPUT_TAIL_CHARS:].lstrip("\n"),
+    }
+
+
+def parse_terminal_markers(
+    transcript: str,
+) -> tuple[int | None, str | None, bool]:
+    """Report a running command when its latest start has no following exit."""
+    if not transcript:
+        return None, None, False
+    exits = list(_EXIT_MARKER_RE.finditer(transcript))
+    if exits:
+        last_exit = exits[-1]
+        exit_code = int(last_exit.group(2))
+        finished_at = last_exit.group(1).strip() or None
+        last_exit_end = last_exit.end()
+    else:
+        exit_code = None
+        finished_at = None
+        last_exit_end = -1
+    commands = list(_CMD_MARKER_RE.finditer(transcript))
+    running = bool(commands and commands[-1].start() > last_exit_end)
+    return exit_code, finished_at, running
+
 
 @dataclass(slots=True)
 class _UidGate:
@@ -58,11 +129,11 @@ class RunsObserver:
         self,
         *,
         ledger: SandboxRunLedger,
-        repository: SandboxStorage,
+        storage: SandboxStorage,
         concurrency: int | None = None,
     ) -> None:
         self.ledger = ledger
-        self.repository = repository
+        self.storage = storage
         permits = (
             int(concurrency)
             if concurrency is not None
@@ -90,9 +161,11 @@ class RunsObserver:
         ``acquire_timeout=None`` is reserved for safety-critical reaper reads.
         """
         sandbox_uid = str(row.get("sandbox_uid") or "")
-        # Terminal rows cannot reuse an old "current" stamp.
-        if not sandbox_uid or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
-            return bool(self.ledger.reconcile_row(row=row))
+        if not sandbox_uid:
+            return False
+        # Only an explicit final read may inspect a cleanup-claimed row.
+        if not force and row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            return False
         if acquire_timeout is None and not force:
             acquire_timeout = max(float(max_age_seconds), 0.0)
         deadline = (
@@ -143,7 +216,7 @@ class RunsObserver:
     ) -> int:
         """Refresh receipts for every running sandbox."""
         answered = 0
-        for row in self.repository.list_running_rows():
+        for row in self.storage.list_running_rows():
             try:
                 if self.observe(row=row, max_age_seconds=max_age_seconds):
                     answered += 1
@@ -201,12 +274,12 @@ class SandboxRunLedger:
         self,
         *,
         store: BaseStateStore,
-        repository: SandboxStorage,
+        storage: SandboxStorage,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
     ) -> None:
         self.store = store
-        self.repository = repository
+        self.storage = storage
         self.backend = backend
         self.mgmt_keys = mgmt_keys
 
@@ -218,22 +291,17 @@ class SandboxRunLedger:
         ``None`` or a failed mirror write leaves existing records untouched and
         returns False; the idle reaper must treat either as possible work.
         """
-        if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
-            return False
         sandbox_uid = str(row.get("sandbox_uid") or "")
         sandbox_id = str(row.get("sandbox_id") or "")
         if not sandbox_uid or not sandbox_id:
             return False
         try:
-            addressed_id = qualified_row_sandbox_id(backend=self.backend, row=row)
-            listing = self.backend.read_runs(
-                sandbox_id=addressed_id,
-                workdir=str(row.get("workdir") or ""),
-                ssh_host=str(row.get("ssh_host") or ""),
-                ssh_port=int(row.get("ssh_port") or 0),
-                ssh_user=str(row.get("ssh_user") or ""),
+            sandbox_uid = str(row.get("sandbox_uid") or "")
+            target = SandboxTarget.from_row(
+                row,
                 key_path=str(self.mgmt_keys.key_path(sandbox_uid=sandbox_uid)),
             )
+            listing = self.backend.read_runs(target=target.addressed(self.backend))
         except Exception:  # noqa: BLE001 — observation is best-effort
             return False
         if listing is None:
@@ -257,7 +325,7 @@ class SandboxRunLedger:
         """Stamp a fenced final read; only this evidence permits ``lost``."""
         if not sandbox_uid:
             return
-        self.repository.stamp_runs_observed(
+        self.storage.stamp_runs_observed(
             sandbox_uid=sandbox_uid,
             expected_project_id=expected_project_id,
             expected_phase=expected_phase,
@@ -558,11 +626,11 @@ class SandboxMetrics:
     def __init__(
         self,
         *,
-        repository: SandboxStorage,
+        storage: SandboxStorage,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
     ) -> None:
-        self.repository = repository
+        self.storage = storage
         self.backend = backend
         self.mgmt_keys = mgmt_keys
         self._cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
@@ -576,7 +644,7 @@ class SandboxMetrics:
         sandbox_uid: str | None = None,
     ) -> dict[str, Any]:
         try:
-            row = self.repository.fetch_scoped(
+            row = self.storage.fetch_scoped(
                 experiment_id=experiment_id,
                 project_id=project_id,
                 sandbox_uid=sandbox_uid,
@@ -607,9 +675,7 @@ class SandboxMetrics:
         }
         if status not in ACTIVE_SANDBOX_STATUSES or not sandbox_id:
             return {**base, "available": False, "metrics": None}
-        metrics = self._sample_cached(
-            experiment_id=resolved_experiment_id, sandbox_id=sandbox_id, row=row
-        )
+        metrics = self._sample_cached(row=row)
         return {
             **base,
             "available": metrics is not None,
@@ -617,35 +683,27 @@ class SandboxMetrics:
             "sampled_at": now_iso(),
         }
 
-    def _sample_cached(
-        self, *, experiment_id: str, sandbox_id: str, row: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    def _sample_cached(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
         try:
-            addressed_id = qualified_row_sandbox_id(backend=self.backend, row=row)
+            sandbox_uid = str(row.get("sandbox_uid") or "")
+            target = SandboxTarget.from_row(
+                row,
+                key_path=str(self.mgmt_keys.key_path(sandbox_uid=sandbox_uid)),
+            ).addressed(self.backend)
         except Exception:
             return None
         now = time.monotonic()
         with self._lock:
-            cached = self._cache.get(addressed_id)
+            cached = self._cache.get(target.sandbox_id)
             if cached is not None and now - cached[0] < METRICS_CACHE_TTL_SECONDS:
                 return cached[1]
         try:
-            metrics = self.backend.sample_metrics(
-                sandbox_id=addressed_id,
-                ssh_host=str(row.get("ssh_host") or ""),
-                ssh_port=int(row.get("ssh_port") or 0),
-                ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(self._mgmt_key_path(row=row)),
-            )
+            metrics = self.backend.sample_metrics(target=target)
         except Exception:  # noqa: BLE001 - metrics are best-effort
             metrics = None
         with self._lock:
-            self._cache[addressed_id] = (time.monotonic(), metrics)
+            self._cache[target.sandbox_id] = (time.monotonic(), metrics)
         return metrics
-
-    def _mgmt_key_path(self, *, row: dict[str, Any]) -> Any:
-        return self.mgmt_keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))
-
 
 # Coalesce viewers while retaining near-live output.
 DEFAULT_TTL_SECONDS = 2.0

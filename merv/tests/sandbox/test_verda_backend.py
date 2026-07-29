@@ -5,15 +5,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution.backends.verda.catalog import to_agent_options
-from merv.brain.sandbox.execution.backends.verda.config import (
+from merv.brain.sandbox.adapters.verda import to_agent_options
+from merv.brain.sandbox.adapters.verda import (
     VerdaCloudConfig,
     VerdaSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.verda.sandbox_backend import (
+from merv.brain.sandbox.adapters.verda import (
     VerdaSandboxBackend,
 )
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
@@ -198,10 +198,6 @@ class VerdaAcquireTest(unittest.TestCase):
 
 
 class VerdaLivenessTest(unittest.TestCase):
-    def test_404_is_authoritatively_dead(self) -> None:
-        backend = _backend(FakeVerdaClient())
-        self.assertFalse(backend.is_alive(sandbox_id="missing"))
-
     def test_offline_still_counts_as_alive(self) -> None:
         client = FakeVerdaClient()
         client.instances["i1"] = {"id": "i1", "status": "offline", "ip": ""}

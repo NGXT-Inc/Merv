@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import format_iso, parse_iso
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier
 from merv.brain.surface.oauth import MAX_CLIENTS_ENV_VAR, OAuthError, OAuthService
 from merv.brain.surface.oauth_store import SqlOAuthRepository

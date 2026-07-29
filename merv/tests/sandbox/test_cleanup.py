@@ -15,16 +15,15 @@ import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import parse_iso
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.sandbox_backend import BackendCapabilities
-from merv.brain.sandbox import sandbox_support
+from tests.support.sandbox_backend import FakeSandboxBackend
+from merv.brain.sandbox import models as sandbox_models
+from merv.brain.sandbox.models import BackendCapabilities
 from merv.brain.sandbox.scheduler import SandboxScheduler
-from merv.brain.sandbox.sandbox_support import (
+from merv.brain.sandbox.models import (
     CLEANUP_INFLIGHT_DEADLINE_SECONDS,
     cleanup_inflight_token,
 )
@@ -286,101 +285,11 @@ class CleanupSweepTest(unittest.TestCase):
             ]
         self.assertNotIn("ancient", remaining)
 
-    def test_retention_runs_in_process_without_any_operator_or_cron(self) -> None:
-        """Production schedules no cleanup pass, so the 30-day horizon has to be
-        enforced by the one timer this process already owns."""
-        daemons = self.app.sandbox_scheduler
-        self.assertEqual(daemons.periodic_maintenance, self.app.tool_ledger.prune)
-
-        self.app.call_tool("claim.list", {"project_id": self.project_id})
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT INTO tool_calls (ts, tool, source, status) VALUES (?, ?, ?, ?)",
-                ("2020-01-01T00:00:00Z", "ancient", "mcp", "ok"),
-            )
-
-        self.assertTrue(daemons.maintenance_tick(now=0.0))
-        with self.store.transaction() as conn:
-            remaining = [
-                str(row["tool"])
-                for row in conn.execute("SELECT tool FROM tool_calls").fetchall()
-            ]
-        self.assertNotIn("ancient", remaining)
-        self.assertIn("claim.list", remaining)
-
-    def test_the_maintenance_tick_keeps_its_own_low_frequency_cadence(self) -> None:
-        """It rides the reaper's tick without running on every one of them."""
-        runs: list[int] = []
-        daemons = self.app.sandbox_scheduler
-        daemons.periodic_maintenance = lambda: runs.append(1)
-        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
-
-        self.assertTrue(daemons.maintenance_tick(now=0.0))
-        self.assertFalse(daemons.maintenance_tick(now=60.0))
-        self.assertTrue(daemons.maintenance_tick(now=100_000.0))
-        self.assertEqual(len(runs), 2)
-
-    def test_the_daemon_starts_for_retention_even_with_every_reaper_off(self) -> None:
-        """A composition with expiry AND idle reaping disabled still has to
-        prune — this thread is the only timer the process owns, so retention
-        cannot be a passenger that never boards."""
-        off = {
-            "RESEARCH_PLUGIN_SANDBOX_REAPER": "0",
-            "MERV_SANDBOX_IDLE_SECONDS": "",
-        }
-        with patch.dict(os.environ, off, clear=False):
-            daemons = SandboxScheduler(
-                repository=object(),  # type: ignore[arg-type]
-                backend=SimpleNamespace(
-                    capabilities=BackendCapabilities(name="stub", enforce_expiry=False)
-                ),  # type: ignore[arg-type]
-                provisioner=object(),  # type: ignore[arg-type]
-                lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
-                sample_metrics=lambda **_kwargs: {},
-            )
-            self.addCleanup(daemons.stop)
-            self.assertFalse(daemons._reaper_enabled())  # noqa: SLF001 -- the gate under test
-            self.assertEqual(daemons._idle_reap_threshold(), 0.0)  # noqa: SLF001
-
-            daemons.start()
-            self.assertIsNone(daemons.reaper_thread, "nothing to do, nothing to run")
-
-            daemons.periodic_maintenance = lambda: {"ok": True, "deleted": 0}
-            daemons.start()
-            self.assertIsNotNone(daemons.reaper_thread)
-            self.assertTrue(daemons.reaper_thread.is_alive())
-
-    def test_a_failing_maintenance_callback_never_kills_the_reaper(self) -> None:
-        def explode() -> None:
-            raise RuntimeError("database unreachable")
-
-        daemons = self.app.sandbox_scheduler
-        daemons.periodic_maintenance = explode
-        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
-        self.assertTrue(daemons.maintenance_tick(now=0.0))
-        self.assertEqual(daemons.maintenance_failures, 1)
-
-    def test_a_maintenance_callback_that_reports_failure_is_not_ignored(self) -> None:
-        """The callback's verdict is the composition's only warning that
-        housekeeping has stopped; discarding the return value is what let a
-        dead connection disable retention until restart."""
-        reported = {"ok": False, "deleted": 0, "error": "connection closed"}
-        daemons = self.app.sandbox_scheduler
-        daemons.periodic_maintenance = lambda: reported
-        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
-
-        with self.assertLogs(
-            "merv.brain.sandbox.scheduler", level="WARNING"
-        ) as logs:
-            self.assertTrue(daemons.maintenance_tick(now=0.0))
-
-        self.assertEqual(daemons.maintenance_failures, 1)
-        self.assertEqual(daemons.last_maintenance, reported)
-        self.assertIn("connection closed", "\n".join(logs.output))
-
-        daemons.periodic_maintenance = lambda: {"ok": True, "deleted": 0}
-        self.assertTrue(daemons.maintenance_tick(now=100_000.0))
-        self.assertEqual(daemons.maintenance_failures, 1)
+    def test_retention_timer_belongs_to_the_ledger(self) -> None:
+        self.assertTrue(self.app.tool_ledger._retention_thread.is_alive())
+        self.assertFalse(
+            hasattr(self.app.sandbox_scheduler, "periodic_maintenance")
+        )
 
     def test_a_failing_blob_sweep_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingBlobs:
@@ -642,6 +551,10 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
         self.backend.liveness_unavailable = False
+        lookups: list[dict] = []
+        self.backend.find_sandbox_id = (  # type: ignore[method-assign]
+            lambda **kwargs: lookups.append(kwargs) or None
+        )
 
         fresh = self.app.sandboxes.request(
             project_id=self.project_id,
@@ -652,6 +565,7 @@ class CleanupSweepTest(unittest.TestCase):
         parked = self._row(uid)
         self.assertEqual(parked["status"], "cleanup_pending")
         self.assertEqual(parked["sandbox_id"], "sb-no-clobber")
+        self.assertEqual(lookups, [])
 
     # ---- a row is never rewritten over an unconfirmed cleanup (SAN-05) ----
 
@@ -921,11 +835,9 @@ class CleanupSweepTest(unittest.TestCase):
         # B must not drag a row whose attachments and spend generation are
         # already closed back to cleanup_pending.
         uid = "uid_cas_race"
-        exp_id = self._running_row(sandbox_uid=uid, sandbox_id="sb-cas")
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-cas")
         self.app.sandbox_lifecycle.mark_terminated(
-            experiment_id=exp_id,
-            sandbox_uid=uid,
-            expected_project_id=self.project_id,
+            row=self._row(uid),
         )
         self.assertEqual(self._row(uid)["status"], "terminated")
 
@@ -1015,7 +927,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
         lifecycle = self.app.sandbox_lifecycle
-        repository = lifecycle.repository
+        repository = lifecycle.storage
         inner_get = repository.get_by_uid
         # Hold each worker at the instant after its re-read, so neither can
         # settle the row before the other has seen it pending.
@@ -1238,9 +1150,7 @@ class CleanupSweepTest(unittest.TestCase):
         # A finally reports. Its settlement lands nowhere.
         self.assertFalse(
             lifecycle.mark_terminated(
-                experiment_id="",
-                sandbox_uid=uid,
-                expected_project_id=self.project_id,
+                row=self._row(uid),
                 expected_phase=worker_a.phase,
             )
         )
@@ -1279,7 +1189,7 @@ class CleanupSweepTest(unittest.TestCase):
             # release has been gone longer than any bounded provider call.
             if not reclaimed:
                 with patch.object(
-                    sandbox_support, "CLEANUP_INFLIGHT_DEADLINE_SECONDS", 0.0
+                    sandbox_models, "CLEANUP_INFLIGHT_DEADLINE_SECONDS", 0.0
                 ):
                     claim = lifecycle.claim_cleanup(row=self._row(uid))
                 reclaimed.append(claim.phase if claim else "")

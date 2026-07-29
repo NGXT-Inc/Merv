@@ -4,12 +4,12 @@ import base64
 import sys
 import unittest
 
-from merv.brain.sandbox.execution.transcript_wire import (
+from merv.brain.sandbox.remote.transcript_wire import (
     parse_transcript_tail,
     transcript_tail_command,
 )
-from merv.brain.sandbox.execution.vm_ssh import run_ssh, run_ssh_input
-from merv.brain.sandbox.sandbox_backend import TranscriptTail
+from merv.brain.sandbox.remote.vm_ssh import run_ssh, run_ssh_input
+from merv.brain.sandbox.models import TranscriptTail
 
 
 class VmSshSubprocessDecodeTest(unittest.TestCase):

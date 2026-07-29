@@ -18,7 +18,7 @@ import jwt
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.auth import (
     ALLOW_OPEN_CONTROL_ENV_VAR,
     SupabaseVerifier,

@@ -9,24 +9,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.execution.backends.lambda_labs import (
-    sandbox_backend as lambda_backend,
-)
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+from tests.support.sandbox_backend import FakeSandboxBackend
+import merv.brain.sandbox.adapters.lambda_labs as lambda_backend
+from merv.brain.sandbox.adapters.modal import (
     ModalSandboxBackend,
 )
-from merv.brain.sandbox.execution.backends.vm_ssh_backend import VmSshSandboxBackend
-from merv.brain.sandbox.execution.driver_registry import (
+from merv.brain.sandbox.adapters.base import VmSshSandboxBackend
+from merv.brain.sandbox.adapters import (
     build_sandbox_driver,
     sandbox_driver_inventory,
 )
-from merv.brain.sandbox.execution.multiplexer import MultiplexingSandboxBackend
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.adapters import MultiplexingSandboxBackend
+from merv.brain.sandbox.models import (
     BackendCapabilities,
+    BackendUnavailableError,
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
+    SandboxTarget,
     TranscriptTail,
 )
 from merv.brain.sandbox.scheduler import SandboxScheduler
@@ -39,7 +39,7 @@ def _provider_neutral_sandbox_sources():
     return (
         path
         for path in SANDBOX_ROOT.rglob("*.py")
-        if "execution" not in path.relative_to(SANDBOX_ROOT).parts
+        if "adapters" not in path.relative_to(SANDBOX_ROOT).parts
     )
 
 
@@ -83,15 +83,8 @@ class MinimalBackend(SandboxBackendBase):
     def read_transcript(
         self,
         *,
-        sandbox_id: str,
-        experiment_id: str,
-        volume_name: str,
-        workdir: str,
+        target: SandboxTarget,
         tail: int | None = None,
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        ssh_user: str = "",
-        key_path: str = "",
     ) -> TranscriptTail:
         return TranscriptTail(data=b"", total_bytes=0)
 
@@ -102,16 +95,43 @@ class MinimalBackend(SandboxBackendBase):
         return {"ok": True}
 
 
+class VmLifecycleProbe(VmSshSandboxBackend):
+    live_statuses = frozenset({"booting", "active"})
+    ready_statuses = frozenset({"active"})
+    terminal_statuses = frozenset({"terminated"})
+
+    def __init__(
+        self,
+        resource: dict | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self.resource = resource or {}
+        self.error = error
+
+    @property
+    def config(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            poll_timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    def _get_resource(self, sandbox_id: str) -> dict:
+        if self.error:
+            raise self.error
+        return dict(self.resource, id=sandbox_id)
+
+    def _resource_is_addressable(self, resource: dict) -> bool:
+        return bool(resource.get("ip"))
+
+
 class SandboxBackendContractTest(unittest.TestCase):
     def _daemons_for_backend(
         self, backend: SandboxBackendBase, *, force_expiry_reaper: bool = False
     ) -> SandboxScheduler:
         return SandboxScheduler(
-            repository=object(),  # type: ignore[arg-type]
-            backend=backend,
-            provisioner=object(),  # type: ignore[arg-type]
-            lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
-            sample_metrics=lambda **_kwargs: {},
+            sweep=lambda **_kwargs: None,
+            enforce_expiry=backend.capabilities.enforce_expiry,
             force_expiry_reaper=force_expiry_reaper,
         )
 
@@ -156,17 +176,18 @@ class SandboxBackendContractTest(unittest.TestCase):
 
     def test_base_optional_methods_return_sentinel_defaults(self) -> None:
         backend = MinimalBackend()
+        target = SandboxTarget(sandbox_id="sb", workdir="/workspace")
 
         # Single-provider default: one backend serves every request.
         self.assertIs(backend.capabilities_for(provider="anything"), backend.capabilities)
-        self.assertIsNone(backend.sample_metrics(sandbox_id="sb"))
-        self.assertIsNone(backend.read_runs(sandbox_id="sb", workdir="/workspace"))
+        self.assertIsNone(backend.sample_metrics(target=target))
+        self.assertIsNone(backend.read_runs(target=target))
         self.assertIsNone(backend.refresh_ssh_endpoint(sandbox_id="sb"))
         self.assertIsNone(backend.hardware_catalog())
         self.assertIsNone(backend.find_sandbox_id(experiment_id="exp"))
         self.assertEqual(backend.sandbox_secrets(), {})
         self.assertFalse(
-            backend.write_secrets(sandbox_id="sb", secrets={"TOKEN": "value"})
+            backend.write_secrets(target=target, secrets={"TOKEN": "value"})
         )
         self.assertIsNone(backend.shutdown())
 
@@ -203,6 +224,75 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertIsNot(
             MultiplexingSandboxBackend.sandbox_environment,
             SandboxBackendBase.sandbox_environment,
+        )
+
+    def test_vm_liveness_and_named_lookup_preserve_unknown_as_live(self) -> None:
+        self.assertFalse(VmLifecycleProbe().is_alive(sandbox_id=""))
+        self.assertTrue(
+            VmLifecycleProbe({"status": "booting"}).is_alive(sandbox_id="vm")
+        )
+        self.assertFalse(
+            VmLifecycleProbe({"status": "terminated"}).is_alive(sandbox_id="vm")
+        )
+        self.assertFalse(
+            VmLifecycleProbe(
+                error=BackendUnavailableError("gone", status=404)
+            ).is_alive(sandbox_id="vm")
+        )
+        with self.assertRaisesRegex(BackendUnavailableError, "outage"):
+            VmLifecycleProbe(
+                error=BackendUnavailableError("outage", status=503)
+            ).is_alive(sandbox_id="vm")
+
+        conservative = VmLifecycleProbe()
+        conservative.live_statuses = None
+        self.assertTrue(
+            conservative._status_is_live("provider-status-we-do-not-recognize")
+        )
+        self.assertEqual(
+            conservative._find_named_resource_id(
+                name="rp-exp",
+                resources=[
+                    {"id": "dead", "name": "rp-exp", "status": "terminated"},
+                    {"id": "live", "name": "rp-exp", "status": "offline"},
+                ],
+            ),
+            "live",
+        )
+
+    def test_vm_wait_requires_ready_status_and_an_address(self) -> None:
+        ready = {"status": "active", "ip": "203.0.113.8"}
+        self.assertEqual(
+            VmLifecycleProbe(ready)._wait_for_vm(sandbox_id="vm"),
+            {**ready, "id": "vm"},
+        )
+        with self.assertRaisesRegex(
+            BackendUnavailableError, "terminal status terminated"
+        ):
+            VmLifecycleProbe({"status": "terminated"})._wait_for_vm(
+                sandbox_id="vm"
+            )
+
+    def test_vm_delete_accepts_only_success_or_authoritative_404(self) -> None:
+        def fail(status: int) -> None:
+            raise BackendUnavailableError("delete failed", status=status)
+
+        backend = VmLifecycleProbe()
+        self.assertFalse(
+            backend._delete_with_404(sandbox_id="", delete=lambda _id: None)
+        )
+        self.assertTrue(
+            backend._delete_with_404(sandbox_id="vm", delete=lambda _id: None)
+        )
+        self.assertTrue(
+            backend._delete_with_404(
+                sandbox_id="vm", delete=lambda _id: fail(404)
+            )
+        )
+        self.assertFalse(
+            backend._delete_with_404(
+                sandbox_id="vm", delete=lambda _id: fail(503)
+            )
         )
 
     def test_vm_provider_dependencies_are_lazy_cached_and_retry_failures(self) -> None:
@@ -390,7 +480,6 @@ class SandboxBackendContractTest(unittest.TestCase):
         provider_names = {
             descriptor.name
             for descriptor in sandbox_driver_inventory()
-            if not descriptor.test_only
         }
         for path in (*SERVICES_ROOT.rglob("*.py"), *_provider_neutral_sandbox_sources()):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

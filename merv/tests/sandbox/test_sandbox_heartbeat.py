@@ -5,14 +5,12 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.support.brain import TestBrain
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.sandbox.scheduler import SandboxScheduler
-from merv.brain.sandbox.sandbox_backend import BackendCapabilities
-from merv.brain.sandbox.sandbox_heartbeat import SandboxActivityPolicy, SandboxIdlePolicy
+from merv.brain.sandbox.heartbeat import SandboxActivityPolicy, SandboxIdlePolicy
 from merv.brain.kernel.utils import format_iso
 
 
@@ -232,7 +230,6 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         metrics: dict,
     ) -> None:
         self.app.sandbox_storage.record_heartbeat(
-            experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             expected_project_id=self.project_id,
             idle_since=format_iso(idle_since),
@@ -544,33 +541,48 @@ class SandboxSweepOrderTest(unittest.TestCase):
 
     def test_receipts_are_reconciled_before_the_idle_decision(self) -> None:
         trace: list[str] = []
-        lifecycle = SimpleNamespace(
-            reap_row=lambda **_kwargs: True,
-            reap_expired=lambda **_kwargs: trace.append("expiry"),
-            retry_cleanup_pending=lambda **_kwargs: trace.append("cleanup_retry"),
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        app = TestBrain(
+            repo_root=root,
+            db_path=root / ".research_plugin" / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
         )
-        daemons = SandboxScheduler(
-            repository=object(),  # type: ignore[arg-type]
-            # MinimalBackend-like: enforce_expiry defaults on, so the expiry
-            # and stale-provision sweeps actually run in this tick.
-            backend=SimpleNamespace(
-                capabilities=BackendCapabilities(name="stub"),
-            ),  # type: ignore[arg-type]
-            provisioner=SimpleNamespace(
-                reap_stale_provisions=lambda **_kwargs: trace.append("stale")
-            ),  # type: ignore[arg-type]
-            lifecycle=lifecycle,  # type: ignore[arg-type]
-            sample_metrics=lambda **_kwargs: {},
-            reconcile_runs=lambda: trace.append("receipts"),
-        )
-        daemons.reap_idle = lambda **_kwargs: trace.append("idle")  # type: ignore[assignment]
-
-        with patch.dict(
-            os.environ,
-            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
-            clear=False,
+        self.addCleanup(app.shutdown)
+        engine = app.sandboxes
+        with (
+            patch.object(
+                engine._lifecycle,
+                "reap_expired",
+                side_effect=lambda **_kwargs: trace.append("expiry"),
+            ),
+            patch.object(
+                engine._observer,
+                "observe_live",
+                side_effect=lambda: trace.append("receipts"),
+            ),
+            patch.object(
+                engine._heartbeat,
+                "reap_idle",
+                side_effect=lambda **_kwargs: trace.append("idle"),
+            ),
+            patch.object(
+                engine._provisioner,
+                "reap_stale_provisions",
+                side_effect=lambda **_kwargs: trace.append("stale"),
+            ),
+            patch.object(
+                engine._lifecycle,
+                "retry_cleanup_pending",
+                side_effect=lambda **_kwargs: trace.append("cleanup_retry"),
+            ),
         ):
-            daemons.sweep_once(stale_deadline_seconds=900.0)
+            engine._maintenance_sweep(
+                stale_deadline_seconds=900.0,
+                expiry_enabled=True,
+                idle_threshold_seconds=3600.0,
+            )
 
         self.assertEqual(
             trace, ["expiry", "receipts", "idle", "stale", "cleanup_retry"]
@@ -581,11 +593,8 @@ class SandboxSweepOrderTest(unittest.TestCase):
 class SandboxHeartbeatEnvTest(unittest.TestCase):
     def _daemons(self) -> SandboxScheduler:
         return SandboxScheduler(
-            repository=object(),  # type: ignore[arg-type]
-            backend=FakeSandboxBackend(),
-            provisioner=object(),  # type: ignore[arg-type]
-            lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
-            sample_metrics=lambda **_kwargs: {},
+            sweep=lambda **_kwargs: None,
+            enforce_expiry=True,
         )
 
     def test_idle_threshold_zero_or_empty_disables_idle_reaping(self) -> None:

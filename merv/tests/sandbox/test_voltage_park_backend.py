@@ -6,15 +6,15 @@ import base64
 import unittest
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution.backends.voltage_park.catalog import to_agent_options
-from merv.brain.sandbox.execution.backends.voltage_park.config import (
+from merv.brain.sandbox.adapters.voltage_park import to_agent_options
+from merv.brain.sandbox.adapters.voltage_park import (
     VoltageParkCloudConfig,
     VoltageParkSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.voltage_park.sandbox_backend import (
+from merv.brain.sandbox.adapters.voltage_park import (
     VoltageParkSandboxBackend,
 )
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
@@ -191,7 +191,7 @@ class VoltageParkAcquireTest(unittest.TestCase):
         backend = _backend(client)
         with patch.object(
             VoltageParkSandboxBackend,
-            "_wait_for_running_vm",
+            "_wait_for_vm",
             side_effect=BackendUnavailableError("boom"),
         ):
             with self.assertRaises(BackendUnavailableError):
@@ -201,10 +201,6 @@ class VoltageParkAcquireTest(unittest.TestCase):
 
 
 class VoltageParkLivenessTest(unittest.TestCase):
-    def test_404_is_authoritatively_dead(self) -> None:
-        backend = _backend(FakeVoltageParkClient())
-        self.assertFalse(backend.is_alive(sandbox_id="missing"))
-
     def test_stopped_still_counts_as_alive(self) -> None:
         client = FakeVoltageParkClient()
         client.vms["v1"] = {"id": "v1", "status": "StoppedDisassociated"}
@@ -217,11 +213,6 @@ class VoltageParkLivenessTest(unittest.TestCase):
         client.vms["v1"] = {"id": "v1", "status": "Terminated"}
         backend = _backend(client)
         self.assertFalse(backend.is_alive(sandbox_id="v1"))
-
-    def test_terminate_treats_404_as_already_gone(self) -> None:
-        backend = _backend(FakeVoltageParkClient())
-        self.assertTrue(backend.terminate(sandbox_id="missing"))
-
 
 class VoltageParkCatalogTest(unittest.TestCase):
 

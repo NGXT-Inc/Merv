@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from ....application.facade import ComputeCostQuery
-from ....sandbox.core import SandboxEngine
+from ....sandbox import SandboxEngine
 from .shared import conditional_json_from_signal
 
 from .context import ApiRouteContext
@@ -46,7 +46,7 @@ def build_router(
 
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
-        return sandboxes.backend_health()
+        return sandboxes.health(details=True)
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")
     def get_sandbox(

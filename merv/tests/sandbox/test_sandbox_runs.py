@@ -12,11 +12,12 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 from tests.support.brain import TestBrain
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 
 
 def _b64(text: str) -> str:
@@ -209,13 +210,7 @@ class SandboxRunsTest(unittest.TestCase):
         self.assertEqual(view["runs"][0]["status"], "finished")
         self.assertEqual(view["runs"][0]["exit_code"], 0)
 
-    def test_failed_terminate_does_not_leave_a_stale_observation_stamp(self) -> None:
-        """`maybe_alive` leaves the row running, so its read is not final.
-
-        Stamping on that attempt would still be there when a later path takes
-        the row terminal without reading anything — turning an unobserved
-        outcome into a confident `lost`.
-        """
+    def test_cleanup_retry_observes_receipts_without_reusing_a_stale_stamp(self) -> None:
         self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
         self._runs()
         row = self.app.sandbox_storage.get_by_uid(sandbox_uid=self.sandbox_uid)
@@ -233,7 +228,20 @@ class SandboxRunsTest(unittest.TestCase):
             conn.close()
         self.assertIsNone(stamp["runs_final_observed_at"])
 
-
+        self.fake.run_listings[self.sandbox_id] = listing(
+            {
+                "label": "seed0",
+                "exit_code": 0,
+                "finished_at": "2026-07-05T11:00:00Z",
+            }
+        )
+        report = self.app.sandbox_lifecycle.retry_cleanup_pending(
+            now=datetime(2999, 1, 1, tzinfo=UTC)
+        )
+        self.assertEqual(report["confirmed"], 1)
+        view = self._runs()
+        self.assertEqual(view["runs"][0]["status"], "finished")
+        self.assertEqual(view["runs"][0]["exit_code"], 0)
 
     def test_lost_requires_a_successful_final_observation(self) -> None:
         """A box released while its run is still going reports `lost`, not `unknown`."""

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tests.support.brain import TestBrain
 from merv.brain.kernel.utils import ValidationError
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 
 SLIM_ARTIFACT_KEYS = {
     "id", "role", "path", "lens_id", "size_bytes", "title", "tldr",

@@ -42,7 +42,8 @@ from ..control.control_app import ControlApp
 from ...kernel.env import env_bool, env_value
 from ...kernel.secret_tokens import load_wait_secret
 from ...kernel.ports.blob_store import BlobStore
-from ...sandbox.execution import build_sandbox_backend
+from ...sandbox.adapters import build_sandbox_backend
+from ...sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
 from ..auth import SupabaseVerifier
@@ -51,8 +52,6 @@ from ..project_key_store import SqlProjectKeyRepository
 from ..oauth import OAuthService
 from ..oauth_store import SqlOAuthRepository
 from ...object_storage.service import StorageLedgerService
-from ...sandbox.managed_mgmt_keys import MountedMgmtKeyStore
-from ...sandbox.mgmt_keys import LocalMgmtKeyStore
 from ...kernel.utils import ValidationError
 
 

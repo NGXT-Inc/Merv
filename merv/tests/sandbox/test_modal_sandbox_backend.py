@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
 )
-from merv.brain.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
-from merv.brain.sandbox.execution.backends.modal.config import ModalConfig
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+from merv.brain.sandbox.models import SandboxRequest, SandboxTarget, TranscriptTail
+from merv.brain.sandbox.adapters.modal import ModalConfig
+from merv.brain.sandbox.adapters.modal import (
     ModalSandboxBackend,
 )
 from tests.fakes import FakeProcess
@@ -266,7 +266,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
         ):
             secrets = self.backend._sandbox_secrets(FakeModal)
         self.assertEqual(secrets, [])
-        from merv.brain.sandbox.execution.vm_ssh import sandbox_tokens
+        from merv.brain.sandbox.remote.vm_ssh import sandbox_tokens
 
         with unittest.mock.patch.dict(
             os.environ,
@@ -282,7 +282,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
         # INV-2 (suspension era): with the kill-switch on, NO MLFLOW_TRACKING_*
         # value may enter any sandbox env or Modal secret set, even when the
         # agent key is configured. The pair is suppressed at the source.
-        from merv.brain.sandbox.execution.vm_ssh import sandbox_tokens
+        from merv.brain.sandbox.remote.vm_ssh import sandbox_tokens
 
         with unittest.mock.patch.dict(
             os.environ,
@@ -307,7 +307,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
     def test_boot_script_has_no_sandbox_mlflow_or_tensorboard_server(self) -> None:
         # The image layering writes the boot script as a heredoc into the
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
-        from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+        from merv.brain.sandbox.adapters.modal import (
             BOOT_SCRIPT,
             REC_SCRIPT,
         )
@@ -322,7 +322,6 @@ class ModalSandboxBackendTest(unittest.TestCase):
 
     def test_modal_images_install_agent_shell_baseline(self) -> None:
         base = self.backend._base_image_default()
-        cuda = self.backend._cuda_image_default()
 
         expected = {
             "ripgrep",
@@ -336,9 +335,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
             "lsof",
         }
         self.assertTrue(expected.issubset(set(base.apt_packages)))
-        self.assertTrue(expected.issubset(set(cuda.apt_packages)))
         self.assertIn("ln -sf /usr/bin/fdfind /usr/local/bin/fd || true", base.commands)
-        self.assertIn("ln -sf /usr/bin/fdfind /usr/local/bin/fd || true", cuda.commands)
 
     def test_huggingface_token_is_passed_as_secret_env(self) -> None:
         # Per-user (no-dataplane Phase C): the provisioning user's token rides on
@@ -418,10 +415,12 @@ class ModalSandboxBackendTest(unittest.TestCase):
             + base64.encodebytes(text.encode("utf-8")).decode("ascii")
         )
         tail = self.backend.read_transcript(
-            sandbox_id=provisioned.sandbox_id,
-            experiment_id="exp1",
-            volume_name=provisioned.volume_name,
-            workdir=provisioned.workdir,
+            target=SandboxTarget(
+                sandbox_id=provisioned.sandbox_id,
+                experiment_id="exp1",
+                volume_name=provisioned.volume_name,
+                workdir=provisioned.workdir,
+            ),
         )
         self.assertIn(b"epoch 1 loss 0.5", tail.data)
         self.assertEqual(tail.total_bytes, len(text.encode("utf-8")))
@@ -433,10 +432,12 @@ class ModalSandboxBackendTest(unittest.TestCase):
         provisioned = self.backend.acquire(request=self._request())
         FakeSandbox.registry[provisioned.sandbox_id].transcript = ""
         tail = self.backend.read_transcript(
-            sandbox_id=provisioned.sandbox_id,
-            experiment_id="exp1",
-            volume_name=provisioned.volume_name,
-            workdir=provisioned.workdir,
+            target=SandboxTarget(
+                sandbox_id=provisioned.sandbox_id,
+                experiment_id="exp1",
+                volume_name=provisioned.volume_name,
+                workdir=provisioned.workdir,
+            ),
         )
         self.assertEqual(tail, TranscriptTail(data=b"", total_bytes=0))
 
@@ -468,7 +469,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
             "MERV gpu idx=0 util=42 used=1024 total=40960 name=NVIDIA A100-SXM4-40GB\n"
             "MERV ok=1\n"
         )
-        metrics = self.backend.sample_metrics(sandbox_id=provisioned.sandbox_id)
+        metrics = self.backend.sample_metrics(
+            target=SandboxTarget(sandbox_id=provisioned.sandbox_id)
+        )
         self.assertIsNotNone(metrics)
         self.assertEqual(metrics["cpu"], {"used_cores": 1.5, "limit_cores": 2.0})
         self.assertEqual(

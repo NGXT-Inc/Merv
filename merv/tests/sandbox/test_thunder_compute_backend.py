@@ -8,24 +8,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from merv.brain.sandbox.execution import build_sandbox_backend
-from merv.brain.sandbox.execution.backends.thunder_compute.catalog import (
+from merv.brain.sandbox.adapters import build_sandbox_backend
+from merv.brain.sandbox.adapters.thunder_compute import (
     summarize_specs,
 )
-from merv.brain.sandbox.execution.backends.thunder_compute.config import (
+from merv.brain.sandbox.adapters.thunder_compute import (
     ThunderCloudConfig,
     ThunderSandboxConfig,
 )
-from merv.brain.sandbox.execution.backends.thunder_compute.sandbox_backend import (
+from merv.brain.sandbox.adapters.thunder_compute import (
     ThunderComputeSandboxBackend,
     build_thunder_bootstrap_script,
 )
-from merv.brain.sandbox.execution.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
-from merv.brain.sandbox.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
-from merv.brain.sandbox.sandbox_backend import (
+from merv.brain.sandbox.remote.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
+from merv.brain.sandbox.remote.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
+from merv.brain.sandbox.models import (
     BackendUnavailableError,
     BackendValidationError,
     SandboxRequest,
+    SandboxTarget,
 )
 
 
@@ -388,14 +389,15 @@ class ThunderBackendTest(unittest.TestCase):
         backend, _, _, ssh = self._backend(ssh_runner=FakeSshRunner(stdout=wire))
 
         tail = backend.read_transcript(
-            sandbox_id="7",
-            experiment_id="exp1",
-            volume_name="",
-            workdir="/workspace/exp1",
-            ssh_host="198.51.100.7",
-            ssh_port=31995,
-            ssh_user="ubuntu",
-            key_path="/keys/mgmt",
+            target=SandboxTarget(
+                sandbox_id="7",
+                experiment_id="exp1",
+                workdir="/workspace/exp1",
+                ssh_host="198.51.100.7",
+                ssh_port=31995,
+                ssh_user="ubuntu",
+                key_path="/keys/mgmt",
+            ),
         )
 
         self.assertEqual(tail.data, data)
@@ -410,10 +412,12 @@ class ThunderBackendTest(unittest.TestCase):
 
         self.assertIsNone(
             backend.sample_metrics(
-                sandbox_id="7",
-                ssh_host="198.51.100.7",
-                ssh_port=31995,
-                key_path="/keys/mgmt",
+                target=SandboxTarget(
+                    sandbox_id="7",
+                    ssh_host="198.51.100.7",
+                    ssh_port=31995,
+                    key_path="/keys/mgmt",
+                ),
             )
         )
 
@@ -422,11 +426,13 @@ class ThunderBackendTest(unittest.TestCase):
 
         self.assertTrue(
             backend.write_secrets(
-                sandbox_id="7",
+                target=SandboxTarget(
+                    sandbox_id="7",
+                    ssh_host="198.51.100.7",
+                    ssh_port=31995,
+                    key_path="/keys/mgmt",
+                ),
                 secrets={"HF_TOKEN": "hf_secret_value"},
-                ssh_host="198.51.100.7",
-                ssh_port=31995,
-                key_path="/keys/mgmt",
             )
         )
         command = ssh.commands[0]

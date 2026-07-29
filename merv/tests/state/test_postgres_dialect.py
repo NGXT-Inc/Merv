@@ -41,7 +41,7 @@ from merv.brain.artifacts import Artifacts
 from merv.brain.feed.persistence import install_feed_schema
 from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.application.queries import TenantCountersQuery
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.sandbox.quotas import QuotaService
 from merv.brain.kernel.state.dialects import PostgresStateStore, translate_schema_to_postgres
 from merv.brain.kernel.state.store import (

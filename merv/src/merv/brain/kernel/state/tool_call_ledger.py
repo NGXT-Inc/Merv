@@ -44,6 +44,8 @@ LEDGER_STATEMENT_TIMEOUT_MS = 1_000
 # 20k-row DELETE rather than the per-row one. It is spent on a connection the
 # sweep opens and closes for itself, so no in-path writer ever inherits it.
 PRUNE_STATEMENT_TIMEOUT_MS = 30_000
+PRUNE_INITIAL_DELAY_SECONDS = 30.0
+PRUNE_INTERVAL_SECONDS = 3600.0
 # Hard cap on cached writer handles, and therefore on server sessions: a thread
 # past the cap has its handle closed and forgotten together, and simply re-dials
 # on its next row. Retiring dead threads' handles is the ordinary bound; this is
@@ -170,6 +172,28 @@ class ToolCallLedger:
         # reach would keep the session open behind our backs. The stored thread
         # is what proves an entry belongs to today's owner of a recycled ident.
         self._handles: dict[int, tuple[threading.Thread, Connection]] = {}
+        self._retention_stop = threading.Event()
+        self._retention_thread: threading.Thread | None = None
+
+    def start_retention(self) -> None:
+        """Start the bounded retention timer owned by this ledger."""
+        if self._retention_thread is not None and self._retention_thread.is_alive():
+            return
+        self._retention_stop.clear()
+        self._retention_thread = threading.Thread(
+            target=self._retention_loop,
+            name="tool-call-retention",
+            daemon=True,
+        )
+        self._retention_thread.start()
+
+    def _retention_loop(self) -> None:
+        if self._retention_stop.wait(PRUNE_INITIAL_DELAY_SECONDS):
+            return
+        while True:
+            self.prune()
+            if self._retention_stop.wait(PRUNE_INTERVAL_SECONDS):
+                return
 
     def record(
         self,
@@ -274,16 +298,23 @@ class ToolCallLedger:
     def close(self) -> None:
         """Release every cached connection. Called on composition shutdown.
 
-        Takes the writer lock first: that is what makes closing another
+        Stops the retention timer, then takes the writer lock: that is what
+        makes closing another
         thread's psycopg handle safe rather than a socket pulled out from under
         an in-flight statement. If the lock does not come free in time a writer
         is still mid-row, so its handle is only forgotten, never closed — the
         composition's shutdown order (background daemons stopped BEFORE this)
         is what keeps that path from being the normal one.
 
-        Retention sweeps need no coordination here: a sweep owns a connection
-        this cache never held, and closes it itself.
+        A retention sweep owns a connection this cache never held and closes it
+        itself.
         """
+        self._retention_stop.set()
+        if (
+            self._retention_thread is not None
+            and self._retention_thread is not threading.current_thread()
+        ):
+            self._retention_thread.join(timeout=2.0)
         acquired = self._lock.acquire(timeout=LEDGER_CLOSE_TIMEOUT_SECONDS)
         try:
             handles = list(self._handles.values())

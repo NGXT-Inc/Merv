@@ -31,12 +31,12 @@ from merv.brain.mlflow.config import (
     MLFLOW_TRACKING_URI_ENV_VAR,
 )
 from merv.brain.mlflow import CentralMlflowService
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
-from merv.brain.sandbox.managed_mgmt_keys import MountedMgmtKeyStore
+from merv.brain.sandbox.keys import MountedMgmtKeyStore
 from merv.brain.kernel.utils import ValidationError
 from merv.brain.kernel.version import CLIENT_VERSION_HEADER
 
@@ -277,7 +277,7 @@ class ControlAppTest(unittest.TestCase):
             tool_names = {tool["name"] for tool in app.tools.list_tools()}
             self.assertNotIn("mlflow.context", tool_names)
             self.assertNotIn("mlflow.finalize_run", tool_names)
-            self.assertNotIn("mlflow", app.sandboxes.backend_health())
+            self.assertNotIn("mlflow", app.sandboxes.health(details=True))
 
     def test_legacy_mlflow_requirement_env_is_inert_without_injection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

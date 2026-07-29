@@ -28,7 +28,7 @@ from typing import Any
 from unittest import mock
 
 from merv.brain.kernel.secret_tokens import WAIT_SECRET_ENV_VAR
-from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.config import Mode
 from merv.brain.surface.transport import http_server
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
