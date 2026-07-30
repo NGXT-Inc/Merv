@@ -22,7 +22,7 @@ from merv.brain.application.experiments.metrics_exhibit import (
     build_metrics_exhibit,
     exhibit_bytes,
 )
-from merv.brain.application.ports.tracking import TrackingCapabilities
+from merv.brain.application.mlflow import TrackingCapabilities
 from merv.brain.mlflow.metrics import MAX_METRIC_KEYS, MAX_RUNS
 from merv.brain.mlflow.tracking import MlflowTrackingContext
 from merv.brain.kernel.utils import ValidationError, WorkflowError
@@ -78,11 +78,17 @@ class ExhibitBuilderTest(unittest.TestCase):
     def test_all_attempt_window_runs_included_uncurated(self) -> None:
         # Five seeds, one good one: five rows, ordered by start time.
         runs = [
-            _run(f"seed-{i}", start_ms=WINDOW_START_MS + i * 1000, accuracy=0.4 + 0.1 * (i == 3))
+            _run(
+                f"seed-{i}",
+                start_ms=WINDOW_START_MS + i * 1000,
+                accuracy=0.4 + 0.1 * (i == 3),
+            )
             for i in range(5)
         ]
         exhibit = _build(snapshot=_snapshot(runs))
-        self.assertEqual([r["run_id"] for r in exhibit["runs"]], [f"seed-{i}" for i in range(5)])
+        self.assertEqual(
+            [r["run_id"] for r in exhibit["runs"]], [f"seed-{i}" for i in range(5)]
+        )
         self.assertEqual(exhibit["verdict"]["runs_found"], 5)
         # Provenance on every entry.
         for entry in exhibit["runs"]:
@@ -105,9 +111,7 @@ class ExhibitBuilderTest(unittest.TestCase):
             _run("outside-skew", start_ms=WINDOW_START_MS - WINDOW_SKEW_MS - 1),
         ]
         exhibit = _build(snapshot=_snapshot(runs))
-        self.assertEqual(
-            [run["run_id"] for run in exhibit["runs"]], ["within-skew"]
-        )
+        self.assertEqual([run["run_id"] for run in exhibit["runs"]], ["within-skew"])
         self.assertEqual(exhibit["mlflow"]["runs_excluded_by_window"], 1)
 
     def test_missing_window_start_includes_all_runs(self) -> None:
@@ -133,9 +137,19 @@ class ExhibitBuilderTest(unittest.TestCase):
     def test_generation_is_deterministic_for_identical_state(self) -> None:
         kwargs = dict(
             snapshot=_snapshot([_run("seed-0", start_ms=WINDOW_START_MS + 1000)]),
-            file_sources=[{"path": "metrics.json", "artifact_id": "art_v", "sha256": "x", "submitted_at": WINDOW_START, "data": {"a": 1}}],
+            file_sources=[
+                {
+                    "path": "metrics.json",
+                    "artifact_id": "art_v",
+                    "sha256": "x",
+                    "submitted_at": WINDOW_START,
+                    "data": {"a": 1},
+                }
+            ],
         )
-        self.assertEqual(exhibit_bytes(_build(**kwargs)), exhibit_bytes(_build(**kwargs)))
+        self.assertEqual(
+            exhibit_bytes(_build(**kwargs)), exhibit_bytes(_build(**kwargs))
+        )
 
     def test_unavailable_snapshot_yields_empty_visible_record(self) -> None:
         exhibit = _build(snapshot={"available": False})
@@ -170,7 +184,9 @@ class FakeMlflowTracking:
         self.suspended = False
         self.runs: list[dict] = []
 
-    def context(self, *, project_id: str, experiment_id: str, **_: object) -> MlflowTrackingContext:
+    def context(
+        self, *, project_id: str, experiment_id: str, **_: object
+    ) -> MlflowTrackingContext:
         return MlflowTrackingContext(
             configured=not self.suspended,
             mode="suspended" if self.suspended else "external",
@@ -182,7 +198,13 @@ class FakeMlflowTracking:
         )
 
     def create_run(self, **_: object) -> dict:
-        return {"created": True, "configured": True, "run_id": "run-plugin", "run_name": "plugin", "status": "RUNNING"}
+        return {
+            "created": True,
+            "configured": True,
+            "run_id": "run-plugin",
+            "run_name": "plugin",
+            "status": "RUNNING",
+        }
 
     def capabilities(self) -> TrackingCapabilities:
         if self.suspended:
@@ -250,7 +272,9 @@ class ExhibitFlowTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             mlflow_tracking=self.mlflow,
         )
-        self.project_id = self.call("project", action="create", name="Exhibit Test")["id"]
+        self.project_id = self.call("project", action="create", name="Exhibit Test")[
+            "id"
+        ]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -293,25 +317,52 @@ class ExhibitFlowTest(unittest.TestCase):
 
     def _drive_to_running(self, *, name: str = "exp-1") -> str:
         exp_id = self.call(
-            "experiment.create", name=name, project_id=self.project_id, intent="Exhibit flow."
+            "experiment.create",
+            name=name,
+            project_id=self.project_id,
+            intent="Exhibit flow.",
         )["id"]
         self._submit(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
-        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_design",
+        )
         self._pass_review(exp_id=exp_id, role="design_reviewer")
-        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="mark_ready_to_run",
+        )
         started = self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="start_running",
         )
         # Expectation-setting at start: the agent is told the exhibit IS the record.
         self.assertIn("metrics_exhibit.json", started["metrics_exhibit"]["notice"])
-        self.assertEqual(started["metrics_exhibit"]["preview_tool"], "experiment.exhibit")
+        self.assertEqual(
+            started["metrics_exhibit"]["preview_tool"], "experiment.exhibit"
+        )
         return exp_id
 
     def _log_run(self, run_id: str, *, offset_ms: int = 0) -> None:
-        self.mlflow.runs.append(_run(run_id, start_ms=int(time.time() * 1000) + offset_ms))
+        self.mlflow.runs.append(
+            _run(run_id, start_ms=int(time.time() * 1000) + offset_ms)
+        )
 
-    def _submit_ready(self, exp_id: str, *, report: str = REPORT_WITH_REFERENCE) -> None:
-        self._submit(exp_id=exp_id, path="results.json", role="result", body='{"accuracy": 0.72}\n')
+    def _submit_ready(
+        self, exp_id: str, *, report: str = REPORT_WITH_REFERENCE
+    ) -> None:
+        self._submit(
+            exp_id=exp_id,
+            path="results.json",
+            role="result",
+            body='{"accuracy": 0.72}\n',
+        )
         self._submit(exp_id=exp_id, path="report.md", role="report", body=report)
         self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
 
@@ -350,7 +401,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("seed-1")
         self._submit_ready(exp_id)
         out = self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         self.assertEqual(out["status"], "experiment_review")
         self.assertTrue(out["metrics_exhibit"]["pinned"])
@@ -370,7 +424,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("in-window")
         self._submit_ready(exp_id)
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         self._log_run("late-write")
         exhibit = self._pinned_exhibit(exp_id)
@@ -384,7 +441,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("current")
         self._submit_ready(exp_id)
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         exhibit = self._pinned_exhibit(exp_id)
         self.assertEqual([r["run_id"] for r in exhibit["runs"]], ["current"])
@@ -395,13 +455,21 @@ class ExhibitFlowTest(unittest.TestCase):
         self._submit_ready(exp_id, report=REPORT_WITHOUT_REFERENCE)
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+                "experiment.transition",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                transition="submit_results",
             )
         self.assertIn("metrics_exhibit.json", str(ctx.exception))
         # Referencing the exhibit (after previewing it) unblocks the gate.
-        self._submit(exp_id=exp_id, path="report.md", role="report", body=REPORT_WITH_REFERENCE)
+        self._submit(
+            exp_id=exp_id, path="report.md", role="report", body=REPORT_WITH_REFERENCE
+        )
         out = self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         self.assertEqual(out["status"], "experiment_review")
 
@@ -409,13 +477,18 @@ class ExhibitFlowTest(unittest.TestCase):
         exp_id = self._drive_to_running()
         self._submit_ready(exp_id, report=REPORT_WITHOUT_REFERENCE)
         out = self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         self.assertEqual(out["status"], "experiment_review")
         self.assertIsNone(self._exhibit_association(exp_id))
         self.assertNotIn("metrics_exhibit", out)
 
-    def test_submit_results_under_suspension_pins_nothing_and_does_not_error(self) -> None:
+    def test_submit_results_under_suspension_pins_nothing_and_does_not_error(
+        self,
+    ) -> None:
         # A running experiment started before suspension carries a plugin-created
         # mlflow_run_id. Turning the kill-switch on must NOT KeyError/Assert in
         # the exhibit finalize path (the design-review trap): capabilities lose
@@ -446,7 +519,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._submit_ready(exp_id)
         self.mlflow.available = False
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         exhibit = self._pinned_exhibit(exp_id)
         self.assertFalse(exhibit["mlflow"]["available"])
@@ -457,7 +533,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("seed-0")
         self._submit_ready(exp_id)
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         conn = self.app._store.connect()
         try:
@@ -478,7 +557,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("seed-0")
         self._submit_ready(exp_id)
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         req = self.call(
             "review.request",
@@ -513,10 +595,15 @@ class ExhibitFlowTest(unittest.TestCase):
         exp_id = self._drive_to_running()
         self._log_run("seed-0")
         self._submit_ready(exp_id)
-        preview = self.call("experiment.exhibit", project_id=self.project_id, experiment_id=exp_id)
+        preview = self.call(
+            "experiment.exhibit", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertIn("metrics_exhibit.json", preview["exhibit_path"])
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         final = self._pinned_exhibit(exp_id)
         # Same generation code, same state: byte-identical record — no
@@ -525,10 +612,15 @@ class ExhibitFlowTest(unittest.TestCase):
 
     def test_preview_requires_a_running_experiment(self) -> None:
         exp_id = self.call(
-            "experiment.create", name="exp-idle", project_id=self.project_id, intent="Preview gate."
+            "experiment.create",
+            name="exp-idle",
+            project_id=self.project_id,
+            intent="Preview gate.",
         )["id"]
         with self.assertRaises(WorkflowError):
-            self.call("experiment.exhibit", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "experiment.exhibit", project_id=self.project_id, experiment_id=exp_id
+            )
 
     # ---- agent immutability ----
 
@@ -537,7 +629,10 @@ class ExhibitFlowTest(unittest.TestCase):
         self._log_run("seed-0")
         self._submit_ready(exp_id)
         self.call(
-            "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_results",
         )
         association = self._exhibit_association(exp_id)
         exhibit_path = str(association["path"])

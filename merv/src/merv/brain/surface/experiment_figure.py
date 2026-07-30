@@ -1,4 +1,4 @@
-"""Application-owned derived experiment-figure projection.
+"""Surface-owned derived experiment-figure projection.
 
 Builds a graph document — typed nodes + edges — for one experiment from state
 the backend already owns: the attempt chain, submitted artifacts (with
@@ -36,12 +36,20 @@ UPSTREAM_ROLES = {"plan", "input", "code", "config", "model"}
 ARTIFACT_FANOUT_CAP = 6
 
 # Which artifacts survive the cap, most-load-bearing first.
-_ROLE_PRIORITY = {"plan": 0, "report": 1, "result": 2, "model": 3, "input": 4, "code": 5, "config": 6, "note": 7}
+_ROLE_PRIORITY = {
+    "plan": 0,
+    "report": 1,
+    "result": 2,
+    "model": 3,
+    "input": 4,
+    "code": 5,
+    "config": 6,
+    "note": 7,
+}
 
-_ACTIVE_ATTEMPT_STATUSES = (
-    EXPERIMENT_WORKFLOW.effect_sources("result_submission")
-    | EXPERIMENT_WORKFLOW.effect_destinations("result_submission")
-)
+_ACTIVE_ATTEMPT_STATUSES = EXPERIMENT_WORKFLOW.effect_sources(
+    "result_submission"
+) | EXPERIMENT_WORKFLOW.effect_destinations("result_submission")
 _ATTEMPT_STATUS = {
     state.name: "active" if state.name in _ACTIVE_ATTEMPT_STATUSES else "pending"
     for state in EXPERIMENT_WORKFLOW.states
@@ -65,10 +73,12 @@ _REVIEW_LABELS = {
     for state in EXPERIMENT_WORKFLOW.states
     if state.review is not None
 }
-_REVIEW_LABELS.update({
-    "human": "Human review",
-    "automated_check": "Automated check",
-})
+_REVIEW_LABELS.update(
+    {
+        "human": "Human review",
+        "automated_check": "Automated check",
+    }
+)
 _RESULT_SUBMISSION_TRANSITIONS = {
     transition.name
     for transition in EXPERIMENT_WORKFLOW.transitions
@@ -109,7 +119,9 @@ def _artifact_label(artifact: dict[str, Any]) -> str:
     title = (artifact.get("title") or "").strip()
     if title:
         return title
-    return PurePosixPath(str(artifact.get("path") or artifact.get("id") or "artifact")).name
+    return PurePosixPath(
+        str(artifact.get("path") or artifact.get("id") or "artifact")
+    ).name
 
 
 def build_experiment_figure(
@@ -161,7 +173,11 @@ def build_experiment_figure(
                 "type": "attempt",
                 "label": f"Attempt {k}",
                 "sublabel": _humanize(status) if is_current else "superseded",
-                "status": _ATTEMPT_STATUS.get(status, "pending") if is_current else "superseded",
+                "status": (
+                    _ATTEMPT_STATUS.get(status, "pending")
+                    if is_current
+                    else "superseded"
+                ),
                 "group": f"attempt:{k}",
                 "ref": {"kind": "experiment", "id": experiment.get("id")},
             }
@@ -182,7 +198,9 @@ def build_experiment_figure(
     submission_nodes: dict[str, str] = {}
     rounds_by_attempt: dict[int, list[dict[str, Any]]] = {}
     for row in submissions:
-        rounds_by_attempt.setdefault(clamp_attempt(row.get("attempt_index")), []).append(row)
+        rounds_by_attempt.setdefault(
+            clamp_attempt(row.get("attempt_index")), []
+        ).append(row)
     for attempt, rounds in sorted(rounds_by_attempt.items()):
         # Chained, not fanned: round 2 follows round 1 so the report loop reads
         # left to right like the design loop, instead of stacking as siblings.
@@ -235,9 +253,7 @@ def build_experiment_figure(
         for res in shown:
             role = str(res.get("role") or "other")
             node_id = f"artifact:{res.get('id')}:a{attempt}"
-            superseded = (
-                bool(current_ids) and str(res.get("id")) not in current_ids
-            )
+            superseded = bool(current_ids) and str(res.get("id")) not in current_ids
             nodes.append(
                 {
                     "id": node_id,
@@ -294,7 +310,10 @@ def build_experiment_figure(
     reviews_by_root: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for review in experiment.get("reviews", []):
         attempt = clamp_attempt(review_attempts.get(str(review.get("id"))))
-        root = submission_nodes.get(str(review.get("submission_id") or "")) or f"attempt:{attempt}"
+        root = (
+            submission_nodes.get(str(review.get("submission_id") or ""))
+            or f"attempt:{attempt}"
+        )
         reviews_by_root.setdefault((root, attempt), []).append(review)
 
     tails: dict[str, tuple[str, str | None]] = {}
@@ -326,9 +345,7 @@ def build_experiment_figure(
             # Only a rejection sent back to planning spawns the next attempt.
             # One sent back to running is another round of this same attempt,
             # already drawn by the submission chain.
-            route = EXPERIMENT_WORKFLOW.return_route(
-                str(review.get("return_to") or "")
-            )
+            route = EXPERIMENT_WORKFLOW.return_route(str(review.get("return_to") or ""))
             if (
                 verdict == "needs_changes"
                 and attempt < current_attempt
@@ -370,7 +387,9 @@ def build_experiment_figure(
                 "id": "sandbox",
                 "type": "sandbox",
                 "label": "Sandbox",
-                "sublabel": str(sandbox.get("gpu") or sandbox.get("instance_type") or sandbox_status),
+                "sublabel": str(
+                    sandbox.get("gpu") or sandbox.get("instance_type") or sandbox_status
+                ),
                 "status": "active" if sandbox_active else "done",
                 "group": f"attempt:{current_attempt}",
                 "ref": {"kind": "sandbox", "id": experiment.get("id")},
@@ -418,7 +437,8 @@ def build_experiment_figure(
         "status": status,
         "attempt_index": current_attempt,
         "groups": [
-            {"id": f"attempt:{k}", "label": f"Attempt {k}"} for k in range(1, current_attempt + 1)
+            {"id": f"attempt:{k}", "label": f"Attempt {k}"}
+            for k in range(1, current_attempt + 1)
         ],
         "nodes": nodes,
         "edges": edges,

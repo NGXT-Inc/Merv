@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Pure construction of a system-authored metrics exhibit.
 
 The exhibit is the observation-not-attestation record of a quantitative
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...kernel.utils import format_iso, parse_iso
-from ..ports.tracking import MAX_TRACKING_SNAPSHOT_RUNS, MetricsSnapshot
+from ..mlflow import MAX_TRACKING_SNAPSHOT_RUNS, MetricsSnapshot
 
 METRICS_EXHIBIT_KIND = "metrics_exhibit"
 METRICS_EXHIBIT_FILENAME = "metrics_exhibit.json"
@@ -64,9 +65,7 @@ def _snapshot_runs(
     for experiment in snapshot.get("experiments") or []:
         if str(experiment.get("name") or "") == experiment_name:
             return [
-                run
-                for run in experiment.get("runs") or []
-                if isinstance(run, dict)
+                run for run in experiment.get("runs") or [] if isinstance(run, dict)
             ], True
     return [], True
 
@@ -86,9 +85,7 @@ def build_metrics_exhibit(
     all_runs, available = _snapshot_runs(snapshot, experiment_name=experiment_name)
     window_started_ms = iso_to_epoch_ms(window_started_at)
     window_floor_ms = (
-        window_started_ms - WINDOW_SKEW_MS
-        if window_started_ms is not None
-        else None
+        window_started_ms - WINDOW_SKEW_MS if window_started_ms is not None else None
     )
     in_window = [
         run

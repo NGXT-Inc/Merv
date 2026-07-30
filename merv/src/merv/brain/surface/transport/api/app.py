@@ -5,18 +5,30 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from .... import __version__
 from ....kernel.secret_tokens import MIN_WAIT_SECRET_BYTES
 from ...auth import require_hosted_auth_decision
-from ..admin_http import register_admin_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
-from . import artifacts, claims, events, experiments, litreview, mcp_preauth, meta, oauth, projects, reflections, reviews, runs_wait, sandboxes, storage, user_settings
-from .context import ApiRouteContext
-from .dependencies import HttpDependencies
+from . import (
+    artifacts,
+    claims,
+    events,
+    experiments,
+    mcp_preauth,
+    meta,
+    oauth,
+    projects,
+    reflections,
+    reviews,
+    runs_wait,
+    sandboxes,
+    storage,
+    user_settings,
+)
 from .gateway import (
     ProjectAuthorizer,
     RequestAuthenticator,
@@ -29,8 +41,11 @@ from .middleware import (
     install_cors,
     install_error_handlers,
 )
+from .shared import conditional_json
+
+
 def create_fastapi_app(
-    app: HttpDependencies | None = None,
+    app: Any | None = None,
     *,
     allowed_origins: list[str] | None = None,
     cleanup: Any | None = None,
@@ -56,23 +71,31 @@ def create_fastapi_app(
     # Validated before any wiring: a bad key must refuse this composition
     # without touching state a sibling app over the same backend relies on.
     if wait_secret and len(wait_secret) < MIN_WAIT_SECRET_BYTES:
-        raise ValueError(
-            f"wait secret must be at least {MIN_WAIT_SECRET_BYTES} bytes"
-        )
+        raise ValueError(f"wait secret must be at least {MIN_WAIT_SECRET_BYTES} bytes")
     authorizer = ProjectAuthorizer(research=api.research)
     # One key, both directions: the gateway signs sandbox.runs wait URLs with
     # exactly what the route below verifies, per composition — never shared.
     gateway = ToolInvocationGateway(
-        tools=api.tools, research=api.research, sandboxes=api.sandboxes,
-        surface=surface, projects=authorizer, ledger=api.tool_ledger,
-        wait_secret=wait_secret)
+        tools=api.tools,
+        research=api.research,
+        sandboxes=api.sandboxes,
+        surface=surface,
+        projects=authorizer,
+        ledger=api.tool_ledger,
+        wait_secret=wait_secret,
+        auth_meta=auth.meta() if auth is not None else None,
+    )
     authenticator = RequestAuthenticator(
-        surface=surface, verifier=auth, oauth_enabled=oauth_service is not None,
-        canonical_mcp_resource=oauth_resource_uri)
+        surface=surface,
+        verifier=auth,
+        oauth_enabled=oauth_service is not None,
+        canonical_mcp_resource=oauth_resource_uri,
+    )
     http = FastAPI(title="Merv API", version=__version__)
 
-    install_request_middleware(http, authenticator=authenticator, authorizer=authorizer,
-                               ledger=api.tool_ledger)
+    install_request_middleware(
+        http, authenticator=authenticator, authorizer=authorizer, ledger=api.tool_ledger
+    )
     install_activity_middleware(http, structured_logger=api.structured_log)
     # Registered last so CORS decorates middleware short-circuits as well.
     install_cors(http, allowed_origins=allowed_origins, surface=surface)
@@ -81,35 +104,45 @@ def create_fastapi_app(
         http,
         verifier=auth,
         owner_key_audience=oauth_resource_uri,
-        tracking_enabled=api.tracking_overview is not None,
+        tracking_enabled=api.application.tracking_enabled,
     )
-    oauth.install_routes(http, service=oauth_service, allowed_origins=allowed_origins or [],
-                         ui_base_url=ui_base_url, canonical_mcp_resource=oauth_resource_uri)
+    oauth.install_routes(
+        http,
+        service=oauth_service,
+        allowed_origins=allowed_origins or [],
+        ui_base_url=ui_base_url,
+        canonical_mcp_resource=oauth_resource_uri,
+    )
 
-    ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
-                          auth_meta=auth.meta() if auth is not None else None)
     routers = (
-        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, research=api.research),
-        projects.build_router(
-            ctx, research=api.research, dashboard=api.dashboard,
-            workflow=api.workflow, timeline=api.timeline, sandboxes=api.sandboxes),
-        claims.build_router(ctx),
-        experiments.build_router(
-            ctx,
-            collection=api.experiment_collection,
-            detail=api.experiment_detail,
-            workflow=api.workflow,
-            figure=api.experiment_figure,
-            graphs=api.logic_graph,
-            tracking=api.tracking_overview,
+        meta.build_router(
+            gateway,
+            activity_log=api.activity,
+            tool_calls=api.tool_calls,
+            research=api.research,
         ),
-        reflections.build_router(graphs=api.logic_graph),
-        litreview.build_router(literature=api.literature),
+        projects.build_router(
+            gateway,
+            application=api.application,
+            research=api.research,
+            sandboxes=api.sandboxes,
+        ),
+        claims.build_router(gateway),
+        experiments.build_router(gateway, application=api.application),
+        reflections.build_router(application=api.application),
         artifacts.build_router(artifacts=api.artifacts),
         storage.build_router(storage=api.storage),
-        reviews.build_router(ctx, research=api.research, queue=api.review_queue),
-        sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),
-        events.build_router(timeline=api.timeline),
+        reviews.build_router(
+            gateway,
+            application=api.application,
+            research=api.research,
+        ),
+        sandboxes.build_router(
+            gateway,
+            application=api.application,
+            sandboxes=api.sandboxes,
+        ),
+        events.build_router(application=api.application),
         runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
         user_settings.build_router(user_settings=api.user_settings),
     )
@@ -122,16 +155,32 @@ def create_fastapi_app(
         activity=api.activity,
     )
     register_mcp_routes(
-        http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
+        http,
+        list_tools=api.tools.list_tools,
+        call_tool=gateway.call_mcp,
         allow_tool=lambda _tool: True,
         authorize_scope=mcp_preauth.build_mcp_preauthorizer(
-            authorizer=authorizer, research=api.research,
-            hosted=surface.use_hosted_tool_policies),
+            authorizer=authorizer,
+            research=api.research,
+            hosted=surface.use_hosted_tool_policies,
+        ),
         ledger=api.tool_ledger,
     )
-    register_admin_routes(
-        http,
-        cleanup=cleanup,
-        tenant_counters=tenant_counters or api.tenant_counters,
-    )
+    @http.get("/api/projects/{project_id}/litreview")
+    def litreview(project_id: str, request: Request) -> Response:
+        return conditional_json(
+            request, api.literature.ui_snapshot(project_id=project_id)
+        )
+
+    if cleanup is not None:
+        counters = tenant_counters or api.application.tenant_counters
+
+        @http.post("/api/admin/cleanup")
+        def admin_cleanup() -> dict[str, Any]:
+            return {"cleaned": cleanup.run_all().as_dict()}
+
+        @http.get("/api/admin/tenants/{tenant_id}/counters")
+        def admin_tenant_counters(tenant_id: str) -> dict[str, Any]:
+            return counters(tenant_id=tenant_id)
+
     return http

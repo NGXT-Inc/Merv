@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Agent-facing wording derived from semantic reflection facts."""
 
 from __future__ import annotations
@@ -46,7 +47,9 @@ def idle_reflection_hint(*, signal: Mapping[str, Any]) -> str:
     if signal["last_published_reflection_id"]:
         drift = f"{finished} since the last published reflection"
         if signal["claims_changed_since_publish"]:
-            drift += f" and {signal['claims_changed_since_publish']} claims have changed"
+            drift += (
+                f" and {signal['claims_changed_since_publish']} claims have changed"
+            )
     else:
         drift = f"{finished} and no project reflection exists yet"
     return (
@@ -113,7 +116,9 @@ def present_reflection_signal(signal: Any) -> Any:
     return result
 
 
-def post_publish_guidance(*, materialized_experiments: list[Mapping[str, Any]]) -> dict[str, Any]:
+def post_publish_guidance(
+    *, materialized_experiments: list[Mapping[str, Any]]
+) -> dict[str, Any]:
     experiments = [
         {
             "experiment_id": row.get("experiment_id"),
@@ -144,5 +149,10 @@ def post_publish_guidance(*, materialized_experiments: list[Mapping[str, Any]]) 
     }
 
 
-__all__ = ["idle_reflection_hint", "post_publish_guidance", "present_reflection_signal",
-           "reflection_create_block_reason", "reflection_staleness_hint"]
+__all__ = [
+    "idle_reflection_hint",
+    "post_publish_guidance",
+    "present_reflection_signal",
+    "reflection_create_block_reason",
+    "reflection_staleness_hint",
+]

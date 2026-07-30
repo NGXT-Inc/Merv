@@ -16,9 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
 
-from ...application.maintenance import CleanupService
-from ..config import (
+from ..application import Application
+from ..application.maintenance import CleanupService
+from ..artifacts import Artifacts
+from ..feed import FeedService
+from ..literature import Literature
+from ..research_core import Research, ResearchTargets
+from .config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
     CONTROL_RESTRICT_CORS_ENV_VAR,
@@ -38,21 +44,128 @@ from ..config import (
     resolve_ui_base_url,
 )
 from .brain_dirs import resolve_brain_state_root, resolve_local_brain_staging
-from ..control.control_app import ControlApp
-from ...kernel.env import env_bool, env_value
-from ...kernel.secret_tokens import load_wait_secret
-from ...kernel.ports.blob_store import BlobStore
-from ...object_storage import ObjectStorage
-from ...sandbox.adapters import build_sandbox_backend
-from ...sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
-from ..transport.http_api import create_fastapi_app
-from ..transport.http_policy import HttpSurfacePolicy
-from ..auth import SupabaseVerifier
-from ..project_keys import ProjectKeys
-from ..project_key_store import SqlProjectKeyRepository
-from ..oauth import OAuthService
-from ..oauth_store import SqlOAuthRepository
-from ...kernel.utils import ValidationError
+from ..kernel.env import env_bool, env_value
+from ..kernel.ports.blob_store import BlobStore, EvidenceBlobStore
+from ..kernel.ports.mgmt_keys import MgmtKeyStore
+from ..kernel.secret_tokens import load_wait_secret
+from ..kernel.state import BaseStateStore
+from ..kernel.state.tool_call_ledger import ToolCallLedger
+from ..kernel.utils import ValidationError
+from ..object_storage import ObjectStorage
+from ..sandbox import SandboxBackend, SandboxEngine
+from ..sandbox.adapters import build_sandbox_backend
+from ..sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
+from .artifacts import ArtifactTools
+from .auth import SupabaseVerifier
+from .oauth import OAuthService
+from .oauth_store import SqlOAuthRepository
+from .project_keys import ProjectKeys
+from .telemetry import ControlActivitySink, ControlToolCallSink, StructuredLogger
+from .tools.contracts import TOOL_MANIFEST, available_tool_names
+from .tools.dispatcher import ToolDispatcher
+from .transport.api import create_fastapi_app
+from .transport.http_policy import HttpSurfacePolicy
+from .user_settings import UserHfTokenSettings
+from .web_preview import AllowlistedPaperPreview, NetworkWebPreview
+
+
+class Surface:
+    """One composed product surface shared by HTTP, MCP, and local delivery."""
+
+    def __init__(
+        self,
+        *,
+        store: BaseStateStore,
+        blobs: EvidenceBlobStore,
+        storage: ObjectStorage,
+        execution_backend: SandboxBackend,
+        mgmt_keys: MgmtKeyStore,
+        mlflow_tracking: Any | None = None,
+        force_expiry_reaper: bool = False,
+        structured_logging: bool = False,
+    ) -> None:
+        self._store = store
+        self._blobs = blobs
+        self._tracking = mlflow_tracking
+        self.storage = storage if storage.enabled else None
+        self.activity = ControlActivitySink()
+        self.tool_calls = ControlToolCallSink()
+        self.tool_ledger = ToolCallLedger(store=store, on_failure=self._ledger_dropped)
+        self.tool_ledger.start_retention()
+        self.structured_log = StructuredLogger(enabled=structured_logging)
+
+        self.artifacts = Artifacts(
+            store=store,
+            blobs=blobs,
+            targets=ResearchTargets(),
+        )
+        self.research = Research(store=store, artifacts=self.artifacts)
+        self.feed = FeedService(
+            store=store,
+            blobs=blobs,
+            web_preview=NetworkWebPreview(),
+        )
+        self.literature = Literature(store=store, unfurl=AllowlistedPaperPreview())
+        self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
+        self.sandboxes = SandboxEngine(
+            store=store,
+            backend=execution_backend,
+            mgmt_keys=mgmt_keys,
+            force_expiry_reaper=force_expiry_reaper,
+            storage_enabled=storage.enabled,
+            storage_hint=STORAGE_RULE_OF_THUMB,
+            attachment_check=self.research.assert_experiment_in_project,
+        )
+        self.sandboxes.start()
+        self.application = Application(
+            research=self.research,
+            sandboxes=self.sandboxes,
+            objects=storage,
+            artifacts=self.artifacts,
+            feed=self.feed,
+            tracking=mlflow_tracking,
+        )
+        self.user_settings = UserHfTokenSettings(store=store)
+
+        tool_names = available_tool_names(
+            storage_enabled=storage.enabled,
+            tracking_enabled=mlflow_tracking is not None,
+        )
+        tool_owners = {
+            "application": self.application,
+            "research": self.research,
+            "artifact_submissions": self.artifact_tools,
+            "sandboxes": self.sandboxes,
+            "feed": self.feed,
+            "litreview": self.literature,
+        }
+        if self.storage is not None:
+            tool_owners["storage"] = self.storage
+        self.tools = ToolDispatcher(
+            handlers={
+                name: getattr(tool_owners[root], method)
+                for name, tool in TOOL_MANIFEST.items()
+                if name in tool_names
+                for root, method in (tool.handler_identity.split(".", 1),)
+            },
+            activity=self.activity,
+            tool_calls=self.tool_calls,
+            ledger=self.tool_ledger,
+            tool_names=tool_names,
+        )
+
+    def _ledger_dropped(self, error: str) -> None:
+        with suppress(Exception):
+            self.activity.emit(
+                event_type="telemetry.dropped",
+                payload={"sink": "tool_calls", "status": "error", "error": error},
+            )
+
+    def shutdown(self) -> None:
+        with suppress(Exception):
+            self.sandboxes.shutdown()
+        with suppress(Exception):
+            self.tool_ledger.close()
 
 
 CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/merv-control")
@@ -72,7 +185,7 @@ class ControlPlaneServer:
     def __init__(
         self,
         *,
-        app: ControlApp,
+        app: Surface,
         cleanup: CleanupService,
         fastapi_app: FastAPI,
     ) -> None:
@@ -100,7 +213,7 @@ def build_control_app(
     mgmt_keys: Any | None = None,
     mlflow_tracking: Any | None = None,
     local_deployment: bool = False,
-) -> ControlApp:
+) -> Surface:
     """Build the unified brain app.
 
     ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
@@ -133,7 +246,7 @@ def build_control_app(
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
     _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
-    app = ControlApp(
+    app = Surface(
         store=store,
         blobs=blobs,
         storage=storage,
@@ -152,7 +265,7 @@ def build_control_app(
         force_expiry_reaper=True,
         structured_logging=not local_deployment,
     )
-    # A brain restart with live VMs must re-acquire reaping. ControlApp has
+    # A brain restart with live VMs must re-acquire reaping. Surface has
     # already started its SandboxEngine; this reconciles rows left running.
     _resume_active_sandboxes(app=app)
     return app
@@ -176,10 +289,14 @@ def build_control_server(
             ALLOWED_ORIGINS_ENV_VAR,
         )
     oauth_repository = SqlOAuthRepository(store=app._store, env=env)
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage,
-                             tool_call_ledger=app.tool_ledger,
-                             oauth_clients=oauth_repository)
-    project_keys = ProjectKeys(repository=SqlProjectKeyRepository(store=app._store))
+    cleanup = CleanupService(
+        sandboxes=app.sandboxes,
+        blobs=app._blobs,
+        storage=app.storage,
+        tool_call_ledger=app.tool_ledger,
+        oauth_clients=oauth_repository,
+    )
+    project_keys = ProjectKeys(store=app._store)
     # The fail-closed/open decision (SEC-02) is NOT taken here: it lives in
     # create_fastapi_app, where a hosted-policy app is actually composed, so no
     # composition path can reach an open hosted surface by skipping this
@@ -199,10 +316,10 @@ def build_control_server(
         else None
     )
     fastapi_app = create_fastapi_app(
-        app=app.http,
+        app=app,
         allowed_origins=origins,
         cleanup=cleanup,
-        tenant_counters=app.tenant_counters_query,
+        tenant_counters=app.application.tenant_counters,
         surface_policy=surface,
         auth=auth,
         oauth_service=oauth_service,
@@ -234,7 +351,7 @@ def build_local_server(
     mgmt_keys: Any | None = None,
     mlflow_tracking: Any | None = None,
 ) -> ControlPlaneServer:
-    """Build the localhost brain using the same ControlApp composition."""
+    """Build the localhost brain using the same Surface composition."""
     root = _local_brain_root(state_dir=state_dir, env=env)
     app = build_control_app(
         repo_root=root,
@@ -247,13 +364,17 @@ def build_local_server(
         mlflow_tracking=mlflow_tracking,
         local_deployment=True,
     )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage,
-                             tool_call_ledger=app.tool_ledger)
+    cleanup = CleanupService(
+        sandboxes=app.sandboxes,
+        blobs=app._blobs,
+        storage=app.storage,
+        tool_call_ledger=app.tool_ledger,
+    )
     fastapi_app = create_fastapi_app(
-        app=app.http,
+        app=app,
         allowed_origins=allowed_origins or [],
         cleanup=cleanup,
-        tenant_counters=app.tenant_counters_query,
+        tenant_counters=app.application.tenant_counters,
         surface_policy=_local_http_surface(),
         # Generated once into the writable state root this deployment already
         # owns, so wait URLs minted before a restart still verify after one.
@@ -305,9 +426,7 @@ def _local_brain_root(
     return resolve_local_brain_staging().expanduser().resolve()
 
 
-def _control_http_surface(
-    *, env: Mapping[str, str] | None = None
-) -> HttpSurfacePolicy:
+def _control_http_surface(*, env: Mapping[str, str] | None = None) -> HttpSurfacePolicy:
     return HttpSurfacePolicy.for_surface(
         restrict_cors=env_bool(CONTROL_RESTRICT_CORS_ENV_VAR, True, env=env),
         hosted_control=True,
@@ -327,7 +446,9 @@ def _build_mgmt_key_store(
     local_root: Path | None = None,
 ):
     if local_root is not None:
-        return LocalMgmtKeyStore(root=resolve_brain_state_root(local_root) / "mgmt_keys")
+        return LocalMgmtKeyStore(
+            root=resolve_brain_state_root(local_root) / "mgmt_keys"
+        )
     key_path = resolve_mgmt_key_path(env)
     public_key = resolve_mgmt_public_key(env)
     if not key_path:
@@ -352,7 +473,10 @@ def _validate_sandbox_backend_requirement(
     if health.get("ok"):
         return
     backend = str(
-        health.get("backend") or health.get("name") or health.get("provider") or "unknown"
+        health.get("backend")
+        or health.get("name")
+        or health.get("provider")
+        or "unknown"
     )
     error = str(health.get("error") or "sandbox backend health check failed")
     raise ValidationError(
@@ -362,10 +486,10 @@ def _validate_sandbox_backend_requirement(
     )
 
 
-def _resume_active_sandboxes(*, app: ControlApp) -> None:
+def _resume_active_sandboxes(*, app: Surface) -> None:
     """Reconcile rows left running/provisioning after a control restart.
 
-    The reaper thread is already running (ControlApp started SandboxEngine);
+    The reaper thread is already running (Surface started SandboxEngine);
     a one-shot reconcile pass on startup makes the resumed reaper truthful
     about rows that may have expired while the control plane was down.
     Best-effort — a reconcile failure must not block startup or the reaper.
@@ -381,10 +505,13 @@ def _resume_active_sandboxes(*, app: ControlApp) -> None:
             import threading
 
             threading.Thread(
-                target=_safe_reap, args=(app,), name="control-recovery-reap", daemon=True
+                target=_safe_reap,
+                args=(app,),
+                name="control-recovery-reap",
+                daemon=True,
             ).start()
 
 
-def _safe_reap(app: ControlApp) -> None:
+def _safe_reap(app: Surface) -> None:
     with suppress(Exception):  # the reaper must never die
         app.sandboxes.reap_expired()

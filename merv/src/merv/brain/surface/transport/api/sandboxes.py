@@ -7,19 +7,19 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ....application.facade import ComputeCostQuery
+from ....application import Application
 from ....sandbox import SandboxEngine
 from .shared import conditional_json_from_signal
 
-from .context import ApiRouteContext
+from .gateway import ToolInvocationGateway
 from .views import present, sandbox_list_view, sandbox_view
 
 
 def build_router(
-    ctx: ApiRouteContext,
+    gateway: ToolInvocationGateway,
     *,
+    application: Application,
     sandboxes: SandboxEngine,
-    cost_query: ComputeCostQuery,
 ) -> APIRouter:
     api_router = APIRouter()
 
@@ -42,7 +42,7 @@ def build_router(
     def compute_cost(project_id: str) -> dict[str, Any]:
         # No ETag: open generations bill to now, so the payload moves with the
         # clock even when no row changes.
-        return present(cost_query(project_id=project_id))
+        return present(application.compute_cost(project_id=project_id))
 
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
@@ -54,14 +54,14 @@ def build_router(
     ) -> dict[str, Any]:
         return sandbox_view(
             sandboxes,
-            project_id=project_id, experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            project_id=project_id,
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
         )
 
     @api_router.get("/api/projects/{project_id}/sandboxes/{sandbox_uid}")
     def get_sandbox_by_uid(project_id: str, sandbox_uid: str) -> dict[str, Any]:
-        return sandbox_view(
-            sandboxes, project_id=project_id, sandbox_uid=sandbox_uid
-        )
+        return sandbox_view(sandboxes, project_id=project_id, sandbox_uid=sandbox_uid)
 
     @api_router.get(
         "/api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics"
@@ -100,7 +100,9 @@ def build_router(
             args["tail"] = tail
         if since is not None:
             args["since"] = since
-        return ctx.call_tool(request, name="sandbox.terminal", arguments=args)
+        return gateway.call_http(
+            request, name="sandbox.terminal", arguments=args
+        )
 
     @api_router.get("/api/projects/{project_id}/sandboxes/{sandbox_uid}/terminal")
     def sandbox_terminal_by_uid(
@@ -115,7 +117,9 @@ def build_router(
             args["tail"] = tail
         if since is not None:
             args["since"] = since
-        return ctx.call_tool(request, name="sandbox.terminal", arguments=args)
+        return gateway.call_http(
+            request, name="sandbox.terminal", arguments=args
+        )
 
     @api_router.post(
         "/api/projects/{project_id}/experiments/{experiment_id}/sandbox/release"
@@ -133,7 +137,7 @@ def build_router(
         }
         if sandbox_uid:
             arguments["sandbox_uid"] = sandbox_uid
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="sandbox.release",
             # The browser already confirms in its own UX; the retention gate is
@@ -147,7 +151,7 @@ def build_router(
         sandbox_uid: str,
         request: Request,
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="sandbox.release",
             arguments={

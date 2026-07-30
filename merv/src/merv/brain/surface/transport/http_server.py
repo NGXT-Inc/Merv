@@ -21,7 +21,7 @@ from ..config import Mode, resolve_mode
 from ...kernel.env import env_bool, env_value
 from ...kernel.secret_tokens import WAIT_SECRET_ENV_VAR, load_wait_secret
 from ...kernel.utils import ValidationError
-from .http_api import create_fastapi_app
+from .api import create_fastapi_app
 from .http_policy import HttpSurfacePolicy
 
 
@@ -69,9 +69,12 @@ def is_loopback_host(host: str) -> bool:
     if candidate == "localhost":
         return True
     try:
-        return ipaddress.ip_address(candidate).is_loopback
+        address = ipaddress.ip_address(candidate)
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return False
+    return address.is_loopback
 
 
 def refuse_non_loopback_local_surface(host: str) -> str:
@@ -136,7 +139,7 @@ class UvicornHttpServer:
         if not hosted:
             bind_host = refuse_non_loopback_local_surface(host)
         fastapi_app = create_fastapi_app(
-            app=app.http,
+            app=app,
             surface_policy=surface_policy,
             auth=auth,
             env=env,
@@ -237,7 +240,7 @@ def _serve_control(*, host: str, port: int) -> int:
     MERV_ALLOW_OPEN_CONTROL=1, which serves an OPEN surface and says so in the
     boot log.
     """
-    from ..composition import build_control_server
+    from ..surface import build_control_server
 
     server = build_control_server()
     return _run_server(server=server, host=host, port=port, label="CONTROL plane")
@@ -252,7 +255,7 @@ def _serve_local(*, host: str, port: int, state_dir: Path | None) -> int:
     job (``MERV_MODE=control``), which makes the auth decision explicitly.
     """
     refuse_non_loopback_local_surface(host)
-    from ..composition import build_local_server
+    from ..surface import build_local_server
 
     server = build_local_server(state_dir=state_dir)
     return _run_server(

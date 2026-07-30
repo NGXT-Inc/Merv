@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import unittest
 from collections import Counter
 from pathlib import Path
-from types import NoneType
-from typing import get_args, get_type_hints
 
 from tests.paths import BACKEND_ROOT
 
@@ -16,13 +13,14 @@ from tests.paths import BACKEND_ROOT
 _BOOTSTRAP_FILES = {
     "sandbox/adapters/__init__.py",
     "surface/config.py",
-    "surface/control/control_app.py",
+    "surface/surface.py",
+    "surface/transport/api/app.py",
     "surface/transport/http_server.py",
 }
 
 
 def _is_bootstrap(rel: str) -> bool:
-    return rel in _BOOTSTRAP_FILES or rel.startswith("surface/composition/")
+    return rel in _BOOTSTRAP_FILES
 
 
 def _debt(lines: str) -> Counter[tuple[str, str, str, str]]:
@@ -30,18 +28,7 @@ def _debt(lines: str) -> Counter[tuple[str, str, str, str]]:
 
 
 DEPENDENCY_TYPE_DEBT = _debt(
-    """application/queries.py | ExperimentFigureQuery | experiment_state | RecordQuery
-application/queries.py | ExperimentFigureQuery | review_snapshot | RecordQuery
-application/queries.py | ExperimentFigureQuery | open_reviews | RecordsQuery
-application/queries.py | ExperimentFigureQuery | sandbox_snapshot | Callable[..., tuple[Record | None, bool]]
-application/queries.py | TenantCountersQuery | event_count | Callable[..., int]
-application/queries.py | TenantCountersQuery | generation_counters | RecordQuery
-application/queries.py | ComputeCostQuery | project_spend | RecordQuery
-application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
-application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery
-application/workflow.py | ProjectDashboardQuery | health | Callable[[], dict[str, object]]
-application/workflow.py | ProjectDashboardQuery | current | RecordQuery
-sandbox/core.py | SandboxEngine.__init__ | attachment_check | Callable[..., None] | None
+    """sandbox/core.py | SandboxEngine.__init__ | attachment_check | Callable[..., None] | None
 kernel/state/dialects.py | PostgresConnection.__init__ | raw | Any
 mlflow/tracking.py | CentralMlflowService.__init__ | health_check | Callable[[], bool] | None
 object_storage/s3_blobs.py | S3BlobStore.__init__ | client | Any | None
@@ -51,10 +38,7 @@ sandbox/adapters/modal.py | ModalSandboxBackend.__init__ | activity | ActivityHo
 sandbox/adapters/modal.py | build_modal_sandbox_backend | activity | ActivityHook | None
 sandbox/adapters/thunder_compute.py | ThunderComputeSandboxBackend.__init__ | bootstrap_runner | BootstrapRunner | None
 sandbox/observation.py | TranscriptCache.__init__ | clock | Callable[[], float] | None
-surface/observability.py | StructuredLogger.__init__ | stream | Any | None
-surface/transport/admin_http.py | register_admin_routes | cleanup | Any | None
-surface/transport/admin_http.py | register_admin_routes | tenant_counters | Any | None
-surface/transport/api/context.py | ApiRouteContext | route_call_tool | Callable[..., dict[str, Any]]
+surface/telemetry.py | StructuredLogger.__init__ | stream | Any | None
 surface/transport/api/gateway.py | RequestAuthenticator | verifier | Any | None
 surface/transport/mcp_http.py | register_mcp_routes | list_tools | ToolCatalog
 surface/transport/mcp_http.py | register_mcp_routes | call_tool | ToolCaller
@@ -181,29 +165,6 @@ def _format(counter: Counter[tuple[str, str, str, str]]) -> str:
 
 
 class DependencyContractTest(unittest.TestCase):
-    def test_control_manifest_methods_exist_on_declared_owner_contracts(self) -> None:
-        from merv.brain.surface.tools.contracts import TOOL_MANIFEST
-        from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
-
-        hints = get_type_hints(build_control_tool_handlers)
-        roots = {
-            contract.handler_identity.split(".", 1)[0]
-            for contract in TOOL_MANIFEST.values()
-        }
-        parameters = set(inspect.signature(build_control_tool_handlers).parameters)
-        self.assertLessEqual(roots, parameters)
-        for contract in TOOL_MANIFEST.values():
-            root, method = contract.handler_identity.split(".", 1)
-            annotation = hints[root]
-            candidates = tuple(
-                arg for arg in get_args(annotation) if arg is not NoneType
-            )
-            candidates = candidates or (annotation,)
-            self.assertTrue(
-                any(hasattr(candidate, method) for candidate in candidates),
-                f"{contract.handler_identity} is absent from {annotation}",
-            )
-
     def test_untyped_cross_component_dependency_inventory_only_shrinks(self) -> None:
         current = _dependency_type_debt()
         new = current - DEPENDENCY_TYPE_DEBT

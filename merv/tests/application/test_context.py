@@ -1,3 +1,5 @@
+"""Project context assembly and batching."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -24,9 +26,7 @@ def artifact(
     return Artifact(
         id=artifact_id,
         project_id="proj_1",
-        target_type=(
-            "reflection" if target_id.startswith("syn_") else "experiment"
-        ),
+        target_type=("reflection" if target_id.startswith("syn_") else "experiment"),
         target_id=target_id,
         role=role,
         attempt_index=attempt_index,
@@ -45,7 +45,7 @@ def artifact(
     )
 
 
-class ProjectContextQueryTest(unittest.TestCase):
+class ProjectContextTest(unittest.TestCase):
     def setUp(self) -> None:
         self.research = Mock()
         self.artifacts = Mock()
@@ -164,20 +164,15 @@ class ProjectContextQueryTest(unittest.TestCase):
         evidence_by_id = {
             item.id: item for item in experiment_evidence + reflection_evidence
         }
-        self.artifacts.scan.side_effect = (
-            lambda **kwargs: (
-                experiment_evidence
-                if kwargs["target_type"] == "experiment"
-                else reflection_evidence
-            )
+        self.artifacts.scan.side_effect = lambda **kwargs: (
+            experiment_evidence
+            if kwargs["target_type"] == "experiment"
+            else reflection_evidence
         )
         self.artifacts.get.side_effect = lambda **kwargs: tuple(
             replace(
                 evidence_by_id[artifact_id],
-                data=(
-                    "# Summary\n"
-                    f"{evidence_by_id[artifact_id].tldr}"
-                ).encode()
+                data=("# Summary\n" f"{evidence_by_id[artifact_id].tldr}").encode(),
             )
             for artifact_id in kwargs["artifact_ids"]
             if artifact_id in evidence_by_id
@@ -191,9 +186,7 @@ class ProjectContextQueryTest(unittest.TestCase):
             ["project", "reflection", "literature", "claims", "experiments"],
         )
         self.assertEqual(result["claims"][0]["status"], "abandoned")
-        summaries = {
-            row["id"]: row["summary"] for row in result["experiments"]
-        }
+        summaries = {row["id"]: row["summary"] for row in result["experiments"]}
         self.assertEqual(
             summaries,
             {
@@ -202,9 +195,7 @@ class ProjectContextQueryTest(unittest.TestCase):
                 "exp_legacy": "The run exhausted memory.",
             },
         )
-        self.assertEqual(
-            result["experiments"][0]["tested_claim_ids"], ["claim_1"]
-        )
+        self.assertEqual(result["experiments"][0]["tested_claim_ids"], ["claim_1"])
         published = result["reflection"]["latest_published"]
         self.assertEqual(
             published["summary"],
@@ -214,9 +205,7 @@ class ProjectContextQueryTest(unittest.TestCase):
             [row["descriptor"] for row in published["artifacts"]],
             ["reflection document", "project graph"],
         )
-        self.assertTrue(
-            all(row["submitted_at"] for row in published["artifacts"])
-        )
+        self.assertTrue(all(row["submitted_at"] for row in published["artifacts"]))
         self.assertEqual(
             result["reflection"]["open_wave"],
             {
@@ -240,17 +229,14 @@ class ProjectContextQueryTest(unittest.TestCase):
         self.query.build(project_id="proj_1")
 
         experiment_call, reflection_call = (
-            call.kwargs
-            for call in self.artifacts.scan.call_args_list
+            call.kwargs for call in self.artifacts.scan.call_args_list
         )
         self.assertEqual(experiment_call["roles"], ("plan", "report"))
         self.assertEqual(
             experiment_call["target_ids"],
             ("exp_live", "exp_done", "exp_legacy"),
         )
-        self.assertEqual(
-            reflection_call["roles"], ("reflection_doc", "project_graph")
-        )
+        self.assertEqual(reflection_call["roles"], ("reflection_doc", "project_graph"))
         self.assertEqual(reflection_call["target_ids"], ("syn_1",))
         hydration = self.artifacts.get.call_args.kwargs
         self.assertEqual(
@@ -355,13 +341,8 @@ class ProjectContextFactsTest(unittest.TestCase):
             [experiment["id"] for experiment in result["experiments"]],
             ["exp_done", "exp_live"],
         )
-        by_id = {
-            experiment["id"]: experiment
-            for experiment in result["experiments"]
-        }
-        self.assertEqual(
-            by_id["exp_live"]["tested_claim_ids"], ["claim_abandoned"]
-        )
+        by_id = {experiment["id"]: experiment for experiment in result["experiments"]}
+        self.assertEqual(by_id["exp_live"]["tested_claim_ids"], ["claim_abandoned"])
         self.assertEqual(by_id["exp_done"]["tested_claim_ids"], [])
 
 
@@ -421,7 +402,7 @@ class ProjectContextBatchingTest(unittest.TestCase):
 
     def _select_count(self, *, project_id: str) -> int:
         self.store.statements.clear()
-        self.app.project_context.build(project_id=project_id)
+        self.app.application.project_context(project_id=project_id)
         return sum(
             statement.lstrip().upper().startswith(("SELECT", "WITH"))
             for statement in self.store.statements
@@ -475,7 +456,7 @@ class ProjectContextBatchingTest(unittest.TestCase):
 
         self.app.artifacts.get = record_get
         try:
-            self.app.project_context.build(project_id="proj_roles")
+            self.app.application.project_context(project_id="proj_roles")
         finally:
             self.app.artifacts.get = original
 

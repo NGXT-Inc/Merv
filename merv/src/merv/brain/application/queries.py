@@ -1,193 +1,26 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Cross-component read models shared by delivery surfaces."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from ..artifacts import Artifact, Artifacts
 from ..research_core import (
     MAX_GRAPH_NODES,
-    ExperimentSummary,
     Research,
     graph_problems,
     historical_latest_artifacts,
     preferred_artifact,
 )
-from .ports.tracking import tracking_experiment_name
-from .experiment_figure import build_experiment_figure
 from .reflection_guidance import present_reflection_signal
 from .reflections import present_reflection_overview, present_reflection_state
 
 Record = dict[str, Any]
-RecordQuery = Callable[..., Record]
-RecordsQuery = Callable[..., list[Record]]
-
-
-class TrackingOverview(Protocol):
-    def health(self) -> dict[str, object]: ...
-
-    def project_results_snapshot(
-        self, *, project_id: str, experiment_ids: tuple[str, ...]
-    ) -> tuple[dict[str, Record], list[Record], str]: ...
-
-    def results_metrics(
-        self, *, project_id: str, experiment_id: str, include_history: bool = True
-    ) -> Record: ...
-
-
-class ExperimentSummaries(Protocol):
-    def __call__(self, *, project_id: str) -> list[ExperimentSummary]: ...
-
-
-@dataclass(slots=True)
-class MlflowOverviewQuery:
-    """Join Research experiments to their external tracking read models."""
-
-    experiments: ExperimentSummaries
-    tracking: TrackingOverview
-
-    def experiment_metrics(self, *, project_id: str, experiment_id: str) -> Record:
-        return self.tracking.results_metrics(
-            project_id=project_id, experiment_id=experiment_id
-        )
-
-    def __call__(self, *, project_id: str) -> Record:
-        health = self.tracking.health()
-        unreachable = health.get("reachable") is False
-        experiments = self.experiments(project_id=project_id)
-        snapshots, namespace, failure_hint = (
-            ({}, [], "MLflow unreachable.")
-            if unreachable
-            else self.tracking.project_results_snapshot(
-                project_id=project_id,
-                experiment_ids=tuple(
-                    str(item["id"]) for item in experiments if item.get("id")
-                ),
-            )
-        )
-        namespace_by_name = {
-            str(entry.get("name") or ""): entry for entry in namespace
-        }
-        items: list[Record] = []
-        for experiment in experiments:
-            experiment_id = str(experiment.get("id") or "")
-            if not experiment_id:
-                continue
-            mlflow_name = tracking_experiment_name(
-                project_id=project_id, experiment_id=experiment_id
-            )
-            snapshot = snapshots.get(mlflow_name)
-            namespace_entry = namespace_by_name.get(mlflow_name, {})
-            dashboard_url = (
-                str(namespace_entry.get("dashboard_experiment_url") or "")
-                if snapshot is not None
-                else ""
-            )
-            metrics: Record = {
-                "experiment_id": experiment_id,
-                "available": snapshot is not None,
-                "source": "mlflow",
-            }
-            if snapshot is None:
-                metrics["hint"] = failure_hint or (
-                    "No MLflow runs found for this experiment yet."
-                )
-            else:
-                metrics["experiments"] = [snapshot]
-                if dashboard_url:
-                    metrics["dashboard_experiment_url"] = dashboard_url
-            items.append(
-                {
-                    "experiment_id": experiment_id,
-                    "name": experiment.get("name") or experiment_id,
-                    "status": experiment.get("status") or "",
-                    "intent": experiment.get("intent") or "",
-                    "mlflow_experiment_name": mlflow_name,
-                    "dashboard_experiment_url": dashboard_url,
-                    "metrics": metrics,
-                }
-            )
-        expected_names = {str(item["mlflow_experiment_name"]) for item in items}
-        return {
-            "mlflow": health,
-            "experiments": items,
-            "unmapped_mlflow_experiments": [
-                experiment
-                for experiment in namespace
-                if str(experiment.get("name") or "") not in expected_names
-            ],
-        }
-
-
-@dataclass(slots=True)
-class ExperimentFigureQuery:
-    """Gather component facts and build one derived experiment figure."""
-
-    experiment_state: RecordQuery
-    review_snapshot: RecordQuery
-    open_reviews: RecordsQuery
-    sandbox_snapshot: Callable[..., tuple[Record | None, bool]]
-
-    def __call__(self, *, project_id: str, experiment_id: str) -> Record:
-        experiment = self.experiment_state(
-            experiment_id=experiment_id, project_id=project_id
-        )
-        review_attempts = {}
-        for review in experiment.get("reviews", []):
-            snapshot = self.review_snapshot(
-                snapshot_id=str(review.get("target_snapshot_id") or "")
-            )
-            review_attempts[str(review.get("id"))] = int(snapshot.get("attempt_index") or 0)
-        sandbox, sandbox_active = self.sandbox_snapshot(
-            experiment_id=experiment_id, project_id=project_id
-        )
-        return build_experiment_figure(
-            experiment=experiment,
-            review_attempts=review_attempts,
-            open_review_requests=self.open_reviews(
-                project_id=project_id, experiment_id=experiment_id
-            ),
-            sandbox=sandbox,
-            sandbox_active=sandbox_active,
-        )
-
-
-@dataclass(slots=True)
-class TenantCountersQuery:
-    """Join Kernel audit counts to Sandbox generation accounting."""
-
-    event_count: Callable[..., int]
-    generation_counters: RecordQuery
-
-    def __call__(self, *, tenant_id: str) -> Record:
-        return {
-            "tenant_id": tenant_id,
-            "tool_calls": self.event_count(tenant_id=tenant_id),
-            **self.generation_counters(tenant_id=tenant_id),
-        }
-
-
-@dataclass(slots=True)
-class ComputeCostQuery:
-    """Hydrate the Sandbox spend ledger with Research experiment names."""
-
-    project_spend: RecordQuery
-    experiments: ExperimentSummaries
-
-    def __call__(self, *, project_id: str) -> Record:
-        spend = self.project_spend(project_id=project_id)
-        names = {
-            str(experiment.get("id") or ""): str(experiment.get("name") or "")
-            for experiment in self.experiments(project_id=project_id)
-        }
-        for entry in spend["by_experiment"]:
-            entry["experiment_name"] = names.get(entry["experiment_id"], "")
-        return spend
 
 
 @dataclass(slots=True)
@@ -229,9 +62,7 @@ class LogicGraphQuery:
                 ],
                 "path": chosen.get("path"),
             }
-        return self._payload(
-            base=base, chosen=chosen, text=text, project_id=project_id
-        )
+        return self._payload(base=base, chosen=chosen, text=text, project_id=project_id)
 
     def reflections(self, *, project_id: str) -> Record:
         return present_reflection_overview(
@@ -306,9 +137,7 @@ class LogicGraphQuery:
                 ],
                 "path": chosen.get("path"),
             }
-        return self._payload(
-            base=base, chosen=chosen, text=text, project_id=project_id
-        )
+        return self._payload(base=base, chosen=chosen, text=text, project_id=project_id)
 
     def _payload(
         self,
@@ -333,14 +162,10 @@ class LogicGraphQuery:
             "attempt_index": chosen.get("attempt_index"),
             "graph": graph,
             "problems": graph_problems(text),
-            "ref_index": self._resolve_graph_refs(
-                project_id=project_id, graph=graph
-            ),
+            "ref_index": self._resolve_graph_refs(project_id=project_id, graph=graph),
         }
 
-    def _associated_text(
-        self, artifact: Record, *, project_id: str
-    ) -> str | None:
+    def _associated_text(self, artifact: Record, *, project_id: str) -> str | None:
         artifact_id = str(artifact.get("id") or "")
         if not artifact_id:
             return None
@@ -352,9 +177,7 @@ class LogicGraphQuery:
         data = payloads[0].data if payloads else None
         return data.decode("utf-8", errors="replace") if data is not None else None
 
-    def _resolve_graph_refs(
-        self, *, project_id: str, graph: Record | None
-    ) -> Record:
+    def _resolve_graph_refs(self, *, project_id: str, graph: Record | None) -> Record:
         refs = _refs_from_graph(graph)
         if not refs:
             return {}
@@ -362,9 +185,7 @@ class LogicGraphQuery:
             project_id=project_id, refs=tuple(refs)
         )
         artifact_ids = tuple(
-            ref
-            for ref in refs
-            if ref.startswith("art_") and ref not in research
+            ref for ref in refs if ref.startswith("art_") and ref not in research
         )
         artifacts = {
             artifact.id: artifact

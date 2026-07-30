@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from merv.brain.application.ports.tracking import TrackingCapabilities
+from merv.brain.application.mlflow import TrackingCapabilities
 from merv.brain.mlflow.tracking import MlflowTrackingContext
 from tests.support.brain import TestBrain
 
@@ -277,10 +277,12 @@ def _normalized(value: Any, *, project_id: str, experiment_id: str) -> Any:
                 if key in {"accepted_at", "created_at", "updated_at"}
                 # The delivery key is a real event id, so it differs per
                 # transport; only its presence is comparable across them.
-                else "<delivery>"
-                if key in {"delivery_id", "event_id"}
-                else _normalized(
-                    item, project_id=project_id, experiment_id=experiment_id
+                else (
+                    "<delivery>"
+                    if key in {"delivery_id", "event_id"}
+                    else _normalized(
+                        item, project_id=project_id, experiment_id=experiment_id
+                    )
                 )
             )
             for key, item in value.items()
@@ -456,9 +458,7 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
         )
         self.assertEqual(mcp_http.status_code, 200, mcp_http.text)
         mcp_response = mcp_http.json()["result"]
-        mcp_rows = _ledger_delta(
-            self, app, project_id=mcp_project, after_id=mcp_cursor
-        )
+        mcp_rows = _ledger_delta(self, app, project_id=mcp_project, after_id=mcp_cursor)
 
         rest_project, rest_experiment = targets[1]
         rest_cursor = _cursor(app)
@@ -503,9 +503,7 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
         self.assertEqual(mcp_rows, expected(mcp_experiment, mcp_cursor))
         self.assertEqual(rest_rows, expected(rest_experiment, rest_cursor))
         self.assertEqual(
-            _normalized(
-                mcp_rows, project_id=mcp_project, experiment_id=mcp_experiment
-            ),
+            _normalized(mcp_rows, project_id=mcp_project, experiment_id=mcp_experiment),
             _normalized(
                 rest_rows, project_id=rest_project, experiment_id=rest_experiment
             ),
@@ -572,13 +570,6 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
             )
 
         cursor = _cursor(app)
-        dispatch_patcher = patch.object(
-            app.transition_experiment.dispatcher,
-            "dispatch",
-            wraps=app.transition_experiment.dispatcher.dispatch,
-        )
-        dispatch = dispatch_patcher.start()
-        self.addCleanup(dispatch_patcher.stop)
         started = app.call_tool(
             "experiment.transition",
             {
@@ -730,20 +721,7 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
             [row[0] for row in rows].count("experiment.mlflow_run_refreshed"),
             1,
         )
-        self.assertFalse(
-            any("dispatch" in row[0] or "ack" in row[0] for row in rows)
-        )
-        self.assertEqual(
-            [
-                (call.kwargs["event"].type, call.kwargs["phase"])
-                for call in dispatch.call_args_list
-            ],
-            [
-                ("experiment.transitioned", "post_commit"),
-                ("experiment.transitioned", "post_response"),
-            ]
-            * 3,
-        )
+        self.assertFalse(any("dispatch" in row[0] or "ack" in row[0] for row in rows))
         self.assertEqual(len(tracking.create_calls), 1)
         self.assertEqual(len(tracking.finalize_calls), 1)
         self.assertEqual(tracking.finalize_calls[0]["status"], "FINISHED")
@@ -882,9 +860,7 @@ class TrackingOutageDegradationTest(unittest.TestCase):
             self.assertEqual(
                 response["experiment"]["mlflow_run"]["run_id"], "agent-authored-run"
             )
-            self.assertEqual(
-                response["experiment"]["mlflow_run"]["status"], "FINISHED"
-            )
+            self.assertEqual(response["experiment"]["mlflow_run"]["status"], "FINISHED")
         row = self._experiment_row()
         self.assertEqual(row["mlflow_run_id"], "agent-authored-run")
         self.assertEqual(row["mlflow_run_error"], "")

@@ -2,27 +2,17 @@ from __future__ import annotations
 
 import unittest
 from copy import deepcopy
-from typing import Any, get_type_hints
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import Mock, patch
 
-from merv.brain.application.experiments.tracking import (
-    AgentExperimentQuery,
-    ExperimentDetailResponse,
-    ExperimentDetailQuery,
-    FinalizeTrackingResponse,
-    FinalizeTrackingRun,
-    GetTrackingContext,
-    TrackingContextResponse,
-)
-from merv.brain.application.events import EventDispatcher
-from merv.brain.application.experiments.reactions import ExperimentReactions
+from merv.brain.application.mlflow import MlflowIntegration
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.models import (
     CommittedExperimentUpdate as CommittedTrackingRunRefresh,
 )
 
 
-PRESENTATION_LOGGER = "merv.brain.application.experiments.tracking_presentation"
+PRESENTATION_LOGGER = "merv.brain.application.mlflow"
 PROJECT_ID = "proj_1"
 EXPERIMENT_ID = "exp_1"
 
@@ -93,9 +83,7 @@ class RecordingResearch:
         self.order.append("research.state")
         return deepcopy(self.state)
 
-    def project_experiment_summaries(
-        self, *, project_id: str
-    ) -> list[dict[str, Any]]:
+    def project_experiment_summaries(self, *, project_id: str) -> list[dict[str, Any]]:
         self.order.append("research.project_experiment_summaries")
         self.project_calls.append(project_id)
         return [deepcopy(self.state)]
@@ -170,6 +158,52 @@ class RecordingTracking:
         return deepcopy(self.finalize_result)
 
 
+class OverviewTracking:
+    def __init__(
+        self,
+        *,
+        reachable: bool = True,
+        has_runs: bool = True,
+        failure_hint: str = "",
+    ) -> None:
+        self.reachable = reachable
+        self.has_runs = has_runs
+        self.failure_hint = failure_hint
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def health(self) -> dict[str, bool]:
+        self.calls.append(("health", {}))
+        return {"configured": True, "reachable": self.reachable}
+
+    def project_results_snapshot(self, **kwargs: Any):
+        self.calls.append(("project_results_snapshot", kwargs))
+        project_id = kwargs["project_id"]
+        experiment_ids = kwargs["experiment_ids"]
+        if not self.has_runs or not experiment_ids:
+            mapped = {}
+        else:
+            mapped = {
+                f"merv/{project_id}/{experiment_id}": {
+                    "experiment_id": str(index),
+                    "name": f"merv/{project_id}/{experiment_id}",
+                    "runs": [{"run_id": f"run_{index}"}],
+                }
+                for index, experiment_id in enumerate(experiment_ids, start=7)
+            }
+        rows = [
+            {
+                "name": f"merv/{project_id}/{experiment_id}",
+                "experiment_id": str(index),
+                "dashboard_experiment_url": (
+                    f"https://tracking.test/#/experiments/{index}"
+                ),
+            }
+            for index, experiment_id in enumerate(experiment_ids, start=7)
+        ]
+        rows.append({"name": f"merv/{project_id}/stray", "experiment_id": "8"})
+        return mapped, rows, self.failure_hint
+
+
 class RecordingFeed:
     def __init__(
         self, order: list[str], *, note: str | None = "Share it.", raises: bool = False
@@ -211,31 +245,30 @@ class RecordingObjects:
         }
 
 
-class TrackingContextQueryTest(unittest.TestCase):
-    def test_use_cases_expose_typed_public_results(self) -> None:
-        self.assertIs(
-            get_type_hints(GetTrackingContext.execute)["return"],
-            TrackingContextResponse,
-        )
-        self.assertIs(
-            get_type_hints(FinalizeTrackingRun.execute)["return"],
-            FinalizeTrackingResponse,
-        )
-        self.assertIs(
-            get_type_hints(ExperimentDetailQuery.__call__)["return"],
-            ExperimentDetailResponse,
-        )
-        self.assertEqual(
-            get_type_hints(AgentExperimentQuery.experiment)["return"].__name__,
-            "SlimExperimentState",
-        )
+def _mlflow(*, research, tracking, feed=None, objects=None) -> MlflowIntegration:
+    return MlflowIntegration(
+        research=research,
+        feed=feed or RecordingFeed([]),
+        objects=objects or RecordingObjects([]),
+        adapter=tracking,
+    )
 
+
+def _overview(*, summaries, tracking):
+    research = Mock()
+    research.project_experiment_summaries.return_value = summaries
+    return _mlflow(research=research, tracking=tracking).overview(
+        project_id=PROJECT_ID
+    )
+
+
+class MlflowContextTest(unittest.TestCase):
     def test_project_context_uses_port_and_research_namespace_map(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)
 
-        result = GetTrackingContext(research=research, tracking=tracking).execute(
+        result = _mlflow(research=research, tracking=tracking).context(
             project_id=PROJECT_ID
         )
 
@@ -263,13 +296,16 @@ class TrackingContextQueryTest(unittest.TestCase):
             ["tracking.project_context", "research.project_experiment_summaries"],
         )
 
-    def test_experiment_context_resolves_identity_and_preserves_credentials(self) -> None:
+    def test_experiment_context_resolves_identity_and_preserves_credentials(
+        self,
+    ) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)
-        query = GetTrackingContext(research=research, tracking=tracking)
-
-        result = query.execute(project_id="caller_project", experiment_id=EXPERIMENT_ID)
+        mlflow = _mlflow(research=research, tracking=tracking)
+        result = mlflow.context(
+            project_id="caller_project", experiment_id=EXPERIMENT_ID
+        )
 
         self.assertEqual(result["project_id"], PROJECT_ID)
         self.assertEqual(result["experiment_id"], EXPERIMENT_ID)
@@ -290,70 +326,27 @@ class TrackingContextQueryTest(unittest.TestCase):
 
     def test_unconfigured_project_context_is_exact_and_does_not_list(self) -> None:
         order: list[str] = []
-        result = GetTrackingContext(
+        result = _mlflow(
             research=RecordingResearch(order), tracking=None
-        ).execute(project_id=PROJECT_ID)
+        ).context(project_id=PROJECT_ID)
 
         self.assertEqual(result["mlflow"], {"configured": False})
         self.assertEqual(order, [])
 
-    def test_http_detail_uses_tracking_presentation_without_credentials(self) -> None:
-        order: list[str] = []
-        research = RecordingResearch(order)
-        tracking = RecordingTracking(order)
 
-        result = ExperimentDetailQuery(
-            research=research,
-            objects=RecordingObjects(order),
-            tracking=tracking,
-        )(experiment_id=EXPERIMENT_ID, project_id=PROJECT_ID)
-
-        self.assertEqual(result["mlflow"]["run"]["run_id"], "run_mine")
-        self.assertEqual(result["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_mine")
-        self.assertEqual(
-            tracking.context_calls,
-            [
-                {
-                    "project_id": PROJECT_ID,
-                    "experiment_id": EXPERIMENT_ID,
-                    "include_credentials": False,
-                }
-            ],
-        )
-
-    def test_http_detail_hides_tracking_for_planned_experiment(self) -> None:
-        order: list[str] = []
-        research = RecordingResearch(order, state={**_state(), "status": "planned"})
-        tracking = RecordingTracking(order)
-
-        result = ExperimentDetailQuery(
-            research=research,
-            objects=RecordingObjects(order),
-            tracking=tracking,
-        )(experiment_id=EXPERIMENT_ID, project_id=PROJECT_ID)
-
-        self.assertNotIn("mlflow", result)
-        self.assertEqual(tracking.context_calls, [])
-
-
-class FinalizeTrackingRunTest(unittest.TestCase):
-    def _command(
+class MlflowFinalizeTest(unittest.TestCase):
+    def _integration(
         self,
         *,
         research: RecordingResearch,
         tracking: RecordingTracking | None,
         feed: RecordingFeed,
         objects: RecordingObjects | None = None,
-    ) -> FinalizeTrackingRun:
-        dispatcher = EventDispatcher()
-        ExperimentReactions(
-            research=research, tracking=tracking, feed=feed
-        ).bind(dispatcher)
-        return FinalizeTrackingRun(
+    ) -> MlflowIntegration:
+        return _mlflow(
             research=research,
             tracking=tracking,
             feed=feed,
-            dispatcher=dispatcher,
             objects=objects or RecordingObjects(research.order),
         )
 
@@ -362,9 +355,9 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         research = RecordingResearch(order)
         feed = RecordingFeed(order)
 
-        result = self._command(research=research, tracking=None, feed=feed).execute(
-            project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID
-        )
+        result = self._integration(
+            research=research, tracking=None, feed=feed
+        ).finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertEqual(
             result,
@@ -378,22 +371,19 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         )
         self.assertEqual(order, ["research.state"])
 
-    def test_canonical_refresh_dispatches_the_exact_committed_event_after_response(self) -> None:
+    def test_canonical_refresh_feeds_after_the_response_is_built(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)
         feed = RecordingFeed(order)
-        command = self._command(research=research, tracking=tracking, feed=feed)
+        mlflow = self._integration(research=research, tracking=tracking, feed=feed)
 
-        with patch.object(
-            command.dispatcher, "dispatch", wraps=command.dispatcher.dispatch
-        ) as dispatch:
-            result = command.execute(
-                project_id=PROJECT_ID,
-                experiment_id=EXPERIMENT_ID,
-                status="FINISHED",
-                wait_seconds=3.5,
-            )
+        result = mlflow.finalize(
+            project_id=PROJECT_ID,
+            experiment_id=EXPERIMENT_ID,
+            status="FINISHED",
+            wait_seconds=3.5,
+        )
 
         self.assertEqual(
             tracking.finalize_calls,
@@ -407,9 +397,6 @@ class FinalizeTrackingRunTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertIs(dispatch.call_args.kwargs["event"], research.event)
-        self.assertEqual(dispatch.call_args.kwargs["state"], research.refreshed)
-        self.assertEqual(dispatch.call_args.kwargs["phase"], "post_response")
         self.assertEqual(research.refresh_calls[0]["run"]["status"], "FINISHED")
         self.assertEqual(result["run"]["status"], "FINISHED")
         self.assertEqual(result["experiment"]["mlflow_run"]["status"], "FINISHED")
@@ -442,7 +429,7 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)
         feed = RecordingFeed(order)
-        command = self._command(
+        mlflow = self._integration(
             research=research,
             tracking=tracking,
             feed=feed,
@@ -450,7 +437,7 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "catalog down"):
-            command.execute(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
+            mlflow.finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertEqual(order, ["research.state", "objects.by_experiment"])
         self.assertEqual(tracking.finalize_calls, [])
@@ -462,7 +449,7 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)
         feed = RecordingFeed(order)
-        command = self._command(
+        mlflow = self._integration(
             research=research,
             tracking=tracking,
             feed=feed,
@@ -479,13 +466,13 @@ class FinalizeTrackingRunTest(unittest.TestCase):
             ),
         )
 
-        result = command.execute(
-            project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID
-        )
+        result = mlflow.finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertEqual(result["experiment"]["storage_objects"][0]["id"], "so_1")
 
-    def test_foreign_readback_keeps_canonical_identity_and_current_feed_response(self) -> None:
+    def test_foreign_readback_keeps_canonical_identity_and_current_feed_response(
+        self,
+    ) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
         tracking = RecordingTracking(
@@ -497,16 +484,14 @@ class FinalizeTrackingRunTest(unittest.TestCase):
             },
         )
         feed = RecordingFeed(order)
-        command = self._command(research=research, tracking=tracking, feed=feed)
+        mlflow = self._integration(research=research, tracking=tracking, feed=feed)
 
-        with patch.object(command.dispatcher, "dispatch") as dispatch:
-            result = command.execute(
-                project_id=PROJECT_ID,
-                experiment_id=EXPERIMENT_ID,
-                run_id="run_foreign",
-            )
+        result = mlflow.finalize(
+            project_id=PROJECT_ID,
+            experiment_id=EXPERIMENT_ID,
+            run_id="run_foreign",
+        )
 
-        dispatch.assert_not_called()
         self.assertEqual(research.refresh_calls, [])
         self.assertEqual(result["run"]["run_id"], "run_foreign")
         self.assertEqual(result["experiment"]["mlflow_run"]["run_id"], "run_mine")
@@ -518,9 +503,11 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         tracking = RecordingTracking(order, finalize_result={"error": "not found"})
         feed = RecordingFeed(order)
 
-        result = self._command(
+        result = self._integration(
             research=research, tracking=tracking, feed=feed
-        ).execute(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
+        ).finalize(
+            project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID
+        )
 
         self.assertEqual(result["error"], "not found")
         self.assertEqual(research.refresh_calls, [])
@@ -529,11 +516,11 @@ class FinalizeTrackingRunTest(unittest.TestCase):
     def test_feed_failure_is_advisory(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
-        result = self._command(
+        result = self._integration(
             research=research,
             tracking=RecordingTracking(order),
             feed=RecordingFeed(order, raises=True),
-        ).execute(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
+        ).finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertNotIn("feed_note", result)
         self.assertEqual(result["experiment"]["mlflow_run"]["status"], "FINISHED")
@@ -541,14 +528,14 @@ class FinalizeTrackingRunTest(unittest.TestCase):
     def test_refresh_failure_propagates_before_presentation_or_feed(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order, refresh_error=RuntimeError("db down"))
-        command = self._command(
+        mlflow = self._integration(
             research=research,
             tracking=RecordingTracking(order),
             feed=RecordingFeed(order),
         )
 
         with self.assertRaisesRegex(RuntimeError, "db down"):
-            command.execute(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
+            mlflow.finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertEqual(
             order,
@@ -563,7 +550,7 @@ class FinalizeTrackingRunTest(unittest.TestCase):
     def test_context_failure_after_the_refresh_degrades_to_a_warning(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
-        command = self._command(
+        mlflow = self._integration(
             research=research,
             tracking=RecordingTracking(
                 order, context_error=RuntimeError("context serialization failed")
@@ -572,7 +559,7 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         )
 
         with self.assertLogs(PRESENTATION_LOGGER, level="ERROR"):
-            result = command.execute(
+            result = mlflow.finalize(
                 project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID
             )
 
@@ -588,18 +575,149 @@ class FinalizeTrackingRunTest(unittest.TestCase):
     def test_tracking_failure_propagates_without_persistence_or_feed(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
-        command = self._command(
+        mlflow = self._integration(
             research=research,
-            tracking=RecordingTracking(order, finalize_error=RuntimeError("tracking down")),
+            tracking=RecordingTracking(
+                order, finalize_error=RuntimeError("tracking down")
+            ),
             feed=RecordingFeed(order),
         )
 
         with self.assertRaisesRegex(RuntimeError, "tracking down"):
-            command.execute(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
+            mlflow.finalize(project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID)
 
         self.assertEqual(
             order,
             ["research.state", "objects.by_experiment", "tracking.finalize"],
+        )
+
+
+class MlflowOverviewTest(unittest.TestCase):
+    def test_maps_research_experiments_and_reports_unmapped_names(self) -> None:
+        tracking = OverviewTracking()
+        result = _overview(
+            summaries=[
+                {
+                    "id": EXPERIMENT_ID,
+                    "name": "Experiment One",
+                    "status": "running",
+                    "intent": "Measure it",
+                }
+            ],
+            tracking=tracking,
+        )
+
+        experiment = result["experiments"][0]
+        self.assertEqual(
+            experiment["mlflow_experiment_name"],
+            f"merv/{PROJECT_ID}/{EXPERIMENT_ID}",
+        )
+        self.assertEqual(
+            experiment["dashboard_experiment_url"],
+            "https://tracking.test/#/experiments/7",
+        )
+        self.assertEqual(
+            result["unmapped_mlflow_experiments"],
+            [{"name": f"merv/{PROJECT_ID}/stray", "experiment_id": "8"}],
+        )
+
+    def test_batches_one_and_twenty_five_experiments(self) -> None:
+        for count in (1, 25):
+            with self.subTest(count=count):
+                tracking = OverviewTracking()
+                summaries = [
+                    {
+                        "id": f"exp_{index:02d}",
+                        "name": f"Experiment {index}",
+                        "status": "running",
+                        "intent": f"Measure {index}",
+                    }
+                    for index in range(count)
+                ]
+
+                result = _overview(summaries=summaries, tracking=tracking)
+
+                expected_ids = tuple(item["id"] for item in summaries)
+                self.assertEqual(
+                    tracking.calls,
+                    [
+                        ("health", {}),
+                        (
+                            "project_results_snapshot",
+                            {
+                                "project_id": PROJECT_ID,
+                                "experiment_ids": expected_ids,
+                            },
+                        ),
+                    ],
+                )
+                self.assertEqual(
+                    [item["experiment_id"] for item in result["experiments"]],
+                    list(expected_ids),
+                )
+
+    def test_unreachable_adapter_short_circuits(self) -> None:
+        tracking = OverviewTracking(reachable=False)
+
+        result = _overview(summaries=[{"id": EXPERIMENT_ID}], tracking=tracking)
+
+        self.assertEqual(
+            result["experiments"][0]["metrics"],
+            {
+                "experiment_id": EXPERIMENT_ID,
+                "available": False,
+                "source": "mlflow",
+                "hint": "MLflow unreachable.",
+            },
+        )
+        self.assertEqual(result["unmapped_mlflow_experiments"], [])
+        self.assertEqual(tracking.calls, [("health", {})])
+
+    def test_no_runs_and_batch_failure_have_distinct_hints(self) -> None:
+        for failure_hint, expected_hint in (
+            ("", "No MLflow runs found for this experiment yet."),
+            ("MLflow unreachable.", "MLflow unreachable."),
+        ):
+            with self.subTest(failure_hint=failure_hint):
+                result = _overview(
+                    summaries=[{"id": EXPERIMENT_ID}],
+                    tracking=OverviewTracking(
+                        has_runs=False,
+                        failure_hint=failure_hint,
+                    ),
+                )
+
+                experiment = result["experiments"][0]
+                self.assertEqual(experiment["metrics"]["hint"], expected_hint)
+                self.assertEqual(experiment["dashboard_experiment_url"], "")
+                self.assertNotIn(
+                    "dashboard_experiment_url",
+                    experiment["metrics"],
+                )
+                self.assertEqual(
+                    result["unmapped_mlflow_experiments"],
+                    [{"name": f"merv/{PROJECT_ID}/stray", "experiment_id": "8"}],
+                )
+
+    def test_empty_project_still_discovers_the_mlflow_namespace(self) -> None:
+        tracking = OverviewTracking()
+
+        result = _overview(summaries=[], tracking=tracking)
+
+        self.assertEqual(
+            tracking.calls,
+            [
+                ("health", {}),
+                (
+                    "project_results_snapshot",
+                    {"project_id": PROJECT_ID, "experiment_ids": ()},
+                ),
+            ],
+        )
+        self.assertEqual(result["experiments"], [])
+        self.assertEqual(
+            result["unmapped_mlflow_experiments"],
+            [{"name": f"merv/{PROJECT_ID}/stray", "experiment_id": "8"}],
         )
 
 

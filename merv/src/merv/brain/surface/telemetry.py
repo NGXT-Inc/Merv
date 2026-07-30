@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ...kernel.state.tool_call_stats import by_tool, tool_call_totals
-from ...kernel.state.activity import (
+from ..kernel.state.tool_call_stats import by_tool, tool_call_totals
+from ..kernel.state.activity import (
     ToolActivityEmitter,
     effective_source,
     is_event_ok,
@@ -15,7 +17,7 @@ from ...kernel.state.activity import (
     redact_sensitive,
     target_of,
 )
-from ...kernel.utils import now_iso, parse_iso
+from ..kernel.utils import now_iso, parse_iso
 
 
 class ControlActivitySink(ToolActivityEmitter):
@@ -270,3 +272,45 @@ def _tool_call_summary(row: dict[str, Any]) -> dict[str, Any]:
             "target_id",
         )
     }
+
+
+class StructuredLogger:
+    """Emit redacted request JSON when hosted composition enables logging."""
+
+    def __init__(self, *, enabled: bool | None = None, stream: Any | None = None) -> None:
+        self.enabled = bool(enabled)
+        self._stream = stream if stream is not None else sys.stdout
+
+    def log(
+        self,
+        *,
+        kind: str,
+        request_id: str = "",
+        tenant_id: str = "",
+        tool: str = "",
+        path: str = "",
+        status: Any = "",
+        duration_ms: int = 0,
+        **extra: Any,
+    ) -> None:
+        if not self.enabled:
+            return
+        record = redact_sensitive(
+            value={
+                "log": "rp.request",
+                "kind": kind,
+                "request_id": request_id,
+                "tenant_id": tenant_id,
+                "tool": tool,
+                "path": path,
+                "status": status,
+                "duration_ms": duration_ms,
+                **extra,
+            }
+        )
+        record = {key: value for key, value in record.items() if value != "" or key == "status"}
+        print(
+            json.dumps(record, sort_keys=True, separators=(",", ":")),
+            file=self._stream,
+            flush=True,
+        )

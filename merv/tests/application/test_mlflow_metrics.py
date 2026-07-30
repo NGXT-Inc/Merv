@@ -1,4 +1,4 @@
-"""External tracking snapshot tests; this is not Sandbox behavior."""
+"""MLflow snapshot parsing, batching, and failure isolation."""
 
 from __future__ import annotations
 

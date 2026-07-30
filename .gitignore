@@ -2,8 +2,13 @@
 *.sqlite
 **/__pycache__/
 merv/.venv/
+merv/.merv/
 merv/.research_plugin/
 merv/.versioning_real_user_project/
+merv/deprecated/
+merv/dist/
+merv/graphify-out/
+merv/serving.txt
 
 # Secrets — never commit env files (Modal tokens etc.)
 .env

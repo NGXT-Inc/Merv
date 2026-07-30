@@ -8,39 +8,39 @@ from typing import Any
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response
 
-from ....application.facade import EventTimelineQuery, ProjectDashboardQuery, StatusAndNextQuery
+from ....application import Application
 from ....research_core import Research
 from ....sandbox import SandboxEngine
 from .shared import (
-    JsonBody, conditional_json_from_signal, path_scoped_body,
+    JsonBody,
+    conditional_json_from_signal,
+    path_scoped_body,
     require_membership_author,
 )
 
-from .context import ApiRouteContext
+from .gateway import ToolInvocationGateway
 from .views import present
 
 
 def build_router(
-    ctx: ApiRouteContext,
+    gateway: ToolInvocationGateway,
     *,
+    application: Application,
     research: Research,
-    dashboard: ProjectDashboardQuery,
-    workflow: StatusAndNextQuery,
-    timeline: EventTimelineQuery,
     sandboxes: SandboxEngine,
 ) -> APIRouter:
     api_router = APIRouter()
 
     @api_router.get("/api/projects")
     def list_projects(request: Request) -> dict[str, Any]:
-        return ctx.call_tool(request, name="project.list", arguments={})
+        return gateway.call_http(request, name="project.list", arguments={})
 
     @api_router.post("/api/projects", status_code=201)
     def create_project(
         request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
         payload = body or {}
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="project",
             arguments={
@@ -74,13 +74,11 @@ def build_router(
         project_id: str, user_id: str, request: Request
     ) -> dict[str, Any]:
         require_membership_author(request)
-        return research.remove_project_member(
-            project_id=project_id, user_id=user_id
-        )
+        return research.remove_project_member(project_id=project_id, user_id=user_id)
 
     @api_router.get("/api/projects/{project_id}")
     def get_project(project_id: str, request: Request) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request, name="project.get", arguments={"project_id": project_id}
         )
 
@@ -89,7 +87,7 @@ def build_router(
     def update_project(
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="project.update",
             arguments=path_scoped_body(body, project_id=project_id),
@@ -107,16 +105,16 @@ def build_router(
             signal_parts=(
                 "home",
                 project_id,
-                timeline.signal(project_id=project_id),
+                application.timeline_signal(project_id=project_id),
                 sandboxes.project_signal(project_id=project_id),
                 json.dumps(
-                    dashboard.health(),
+                    application.tracking_health(),
                     sort_keys=True,
                     separators=(",", ":"),
                     default=str,
                 ),
             ),
-            payload=lambda: present(dashboard(project_id=project_id)),
+            payload=lambda: present(application.dashboard(project_id=project_id)),
         )
 
     @api_router.get("/api/projects/{project_id}/status")
@@ -125,9 +123,7 @@ def build_router(
     ) -> dict[str, Any]:
         # Full shape for the UI (see home()); the tool stays slim for the agent.
         return present(
-            workflow.status_and_next(
-                project_id=project_id, experiment_id=experiment_id
-            )
+            application.status(project_id=project_id, experiment_id=experiment_id)
         )
 
     return api_router

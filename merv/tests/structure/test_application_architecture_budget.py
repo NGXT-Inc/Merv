@@ -1,4 +1,4 @@
-"""Fail-closed compatibility-wrapper and ownership ratchets for this migration."""
+"""Ratchets for the consolidated Application boundary."""
 
 from __future__ import annotations
 
@@ -7,76 +7,52 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BRAIN = ROOT / "src" / "merv" / "brain"
+APPLICATION = ROOT / "src/merv/brain/application"
+SURFACE = ROOT / "src/merv/brain/surface"
 
 
 class ApplicationArchitectureBudgetTest(unittest.TestCase):
-    def test_removed_compatibility_wrappers_stay_gone(self) -> None:
-        self.assertFalse((BRAIN / "surface/tools/exhibits.py").exists())
-        self.assertFalse((BRAIN / "mlflow/exhibit.py").exists())
-
-    def test_review_and_reaction_orchestration_stays_out_of_surface(self) -> None:
-        handlers = (BRAIN / "surface/tools/tool_handlers.py").read_text(encoding="utf-8")
-        transition = (BRAIN / "application/experiments/transition.py").read_text(
-            encoding="utf-8"
-        )
-        tracking = (BRAIN / "application/experiments/tracking.py").read_text(
-            encoding="utf-8"
-        )
-        reactions = (BRAIN / "application/experiments/reactions.py").read_text(
-            encoding="utf-8"
-        )
-        views = (BRAIN / "surface/transport/api/views.py").read_text(
-            encoding="utf-8"
-        )
-        composition = (BRAIN / "surface/control/control_app.py").read_text(
-            encoding="utf-8"
-        )
+    def test_one_public_root_replaces_the_service_bag(self) -> None:
+        composition = (SURFACE / "surface.py").read_text()
+        handlers = (SURFACE / "tools/dispatcher.py").read_text()
+        self.assertEqual(composition.count("Application("), 1)
+        self.assertIn('"application": self.application', composition)
+        self.assertNotIn("from ...application", handlers)
         for removed in (
-            "def review_status_agent",
-            "experiment_review_verdict",
-            "build_local_tool_handlers",
+            "facade.py",
+            "events.py",
+            "tool_commands.py",
+            "experiments/reactions.py",
+            "experiments/tracking.py",
+            "experiments/tracking_presentation.py",
+            "ports",
         ):
-            self.assertNotIn(removed, handlers)
-        manifest = (BRAIN / "surface/tools/contracts.py").read_text(encoding="utf-8")
-        self.assertIn('handler_identity="review_status.execute"', manifest)
-        self.assertIn("for name, tool in TOOL_MANIFEST.items()", handlers)
-        for application_decision in (
-            "slim_experiment_state",
-            "ValidationError",
-            "def project_control",
-            "def resource_find",
-            "def storage_find",
-            "def storage_object",
-        ):
-            self.assertNotIn(application_decision, handlers)
-        for use_case in (transition, tracking):
-            self.assertNotIn("EventDispatcher()", use_case)
-            self.assertNotIn(".register(", use_case)
-        self.assertIn("EXPERIMENT_REACTION_CATALOG", reactions)
-        self.assertIn("registry.bind_catalog(", reactions)
-        self.assertNotIn("registry.register(", reactions)
-        self.assertIn("self.reaction_registry = EventDispatcher()", composition)
-        self.assertEqual(composition.count("dispatcher=self.reaction_registry"), 3)
-        self.assertNotIn("self.app.mlflow_tracking", views)
-        self.assertNotIn("tracking_visible_for_status", views)
-        experiment_routes = (BRAIN / "surface/transport/api/experiments.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("present(detail(", experiment_routes)
-        self.assertNotIn("experiment_detail", views)
+            self.assertFalse((APPLICATION / removed).exists(), removed)
 
-    def test_tool_operations_receive_public_component_contracts(self) -> None:
-        commands = (BRAIN / "application/tool_commands.py").read_text(encoding="utf-8")
-        composition = (BRAIN / "surface/control/control_app.py").read_text(
-            encoding="utf-8"
+    def test_mlflow_is_one_explicit_optional_integration(self) -> None:
+        integration = (APPLICATION / "mlflow.py").read_text()
+        root = (APPLICATION / "application.py").read_text()
+        transition = (APPLICATION / "experiments/transition.py").read_text()
+        self.assertIn("class MlflowIntegration:", integration)
+        self.assertIn("self._mlflow = MlflowIntegration(", root)
+        self.assertIn("self.mlflow.after_transition(", transition)
+        for path in APPLICATION.rglob("*.py"):
+            if path.name == "mlflow.py":
+                continue
+            source = path.read_text()
+            self.assertNotIn("adapter.create_run(", source, path)
+            self.assertNotIn("adapter.finalize_run(", source, path)
+            self.assertNotIn("adapter.project_results_snapshot(", source, path)
+
+    def test_surface_owns_ui_projection_but_not_cross_module_workflow(self) -> None:
+        figure = (SURFACE / "experiment_figure.py").read_text()
+        routes = (SURFACE / "transport/api/experiments.py").read_text()
+        self.assertIn("def build_experiment_figure(", figure)
+        self.assertIn("application.figure_facts(", routes)
+        self.assertNotIn(
+            "EventDispatcher",
+            "\n".join(path.read_text() for path in APPLICATION.rglob("*.py")),
         )
-        for raw_service in ("projects: Any", "claims: Any", "resources: Any", "storage: Any"):
-            self.assertNotIn(raw_service, commands)
-        for binding in (
-            "research=self.research",
-        ):
-            self.assertIn(binding, composition)
 
 
 if __name__ == "__main__":

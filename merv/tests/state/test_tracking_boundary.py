@@ -6,11 +6,12 @@ from typing import get_type_hints
 import merv.brain.mlflow as mlflow_adapter
 import merv.brain.mlflow.tracking as mlflow_tracking
 from merv.brain.application.experiments.exhibits import ExperimentExhibits
-from merv.brain.application.ports.tracking import (
+from merv.brain.application.mlflow import (
     CreateRunResult,
     ExperimentTracking,
     FinalizeRunResult,
     MetricsSnapshot,
+    MlflowIntegration,
     TRACKING_NAMESPACE_PREFIX,
     TRACKING_TERMINAL_RUN_STATUSES,
     TRACKING_CAPABILITY_TRUTH_TABLE,
@@ -91,9 +92,7 @@ class TrackingBoundaryTest(unittest.TestCase):
                 self.reads = 0
 
             def capabilities(self) -> TrackingCapabilities:
-                return TrackingCapabilities(
-                    logging=False, control=True, readback=True
-                )
+                return TrackingCapabilities(logging=False, control=True, readback=True)
 
             def results_metrics(
                 self, *, project_id: str, experiment_id: str
@@ -127,10 +126,16 @@ class TrackingBoundaryTest(unittest.TestCase):
                 return ()
 
         tracking = TrackingWithoutPublicUris()
+        experiments = Experiments()
         exhibit = ExperimentExhibits(
-            research=Experiments(),  # type: ignore[arg-type]
+            research=experiments,  # type: ignore[arg-type]
             artifacts=Resources(),  # type: ignore[arg-type]
-            tracking=tracking,  # type: ignore[arg-type]
+            mlflow=MlflowIntegration(
+                research=experiments,  # type: ignore[arg-type]
+                feed=None,  # type: ignore[arg-type]
+                objects=None,
+                adapter=tracking,  # type: ignore[arg-type]
+            ),
         ).generate(
             state={
                 "project_id": "proj",
@@ -143,7 +148,9 @@ class TrackingBoundaryTest(unittest.TestCase):
         self.assertTrue(exhibit["mlflow"]["configured"])
         self.assertTrue(exhibit["mlflow"]["available"])
 
-    def test_tracking_contract_owns_shared_namespace_and_status_vocabulary(self) -> None:
+    def test_tracking_contract_owns_shared_namespace_and_status_vocabulary(
+        self,
+    ) -> None:
         self.assertEqual(TRACKING_NAMESPACE_PREFIX, "merv")
         self.assertEqual(
             tracking_experiment_name(project_id="proj", experiment_id="exp"),

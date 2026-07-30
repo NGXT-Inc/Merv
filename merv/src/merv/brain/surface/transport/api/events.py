@@ -9,21 +9,25 @@ from fastapi import APIRouter, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response, StreamingResponse
 
-from ....application.facade import EventTimelineQuery
+from ....application import Application
 from .shared import conditional_json_from_signal
 
-def build_router(*, timeline: EventTimelineQuery) -> APIRouter:
+
+def build_router(*, application: Application) -> APIRouter:
     api_router = APIRouter()
+
     @api_router.get("/api/projects/{project_id}/events")
-    def events(project_id: str, request: Request, limit: int = Query(100, ge=1)) -> Response:
-        signal = timeline.signal(project_id=project_id)
+    def events(
+        project_id: str, request: Request, limit: int = Query(100, ge=1)
+    ) -> Response:
+        signal = application.timeline_signal(project_id=project_id)
         # Mirror the store's limit clamp so limit=501 and limit=502 share one
         # ETag (identical bodies must not cache-miss on token identity).
         effective_limit = max(1, min(int(limit), 500))
         return conditional_json_from_signal(
             request,
             signal_parts=("events", project_id, effective_limit, signal),
-            payload=lambda: timeline.recent(
+            payload=lambda: application.recent_events(
                 project_id=project_id, limit=limit
             ),
         )
@@ -47,7 +51,7 @@ def build_router(*, timeline: EventTimelineQuery) -> APIRouter:
         """
         # Resolve the starting cursor eagerly so an unknown project 404s as
         # normal JSON instead of dying after SSE headers were sent.
-        head = timeline.recent(project_id=project_id, limit=1)["events"]
+        head = application.recent_events(project_id=project_id, limit=1)["events"]
         cursor = since
         if cursor is None:
             last_event_id = request.headers.get("last-event-id") or ""
@@ -56,7 +60,9 @@ def build_router(*, timeline: EventTimelineQuery) -> APIRouter:
             cursor = int(head[0]["id"]) if head else 0
 
         def sse(event: str, data: Any) -> str:
-            payload = json.dumps(jsonable_encoder(data), ensure_ascii=False, separators=(",", ":"))
+            payload = json.dumps(
+                jsonable_encoder(data), ensure_ascii=False, separators=(",", ":")
+            )
             return f"event: {event}\ndata: {payload}\n\n"
 
         async def tail(start: int):
@@ -67,7 +73,10 @@ def build_router(*, timeline: EventTimelineQuery) -> APIRouter:
             idle_ms = 0
             elapsed_ms = 0
             while True:
-                batch = timeline.since(project_id=project_id, after_id=cursor)["events"]
+                batch = application.events_since(
+                    project_id=project_id,
+                    after_id=cursor,
+                )["events"]
                 for row in batch:
                     cursor = int(row["id"])
                     yield f"id: {cursor}\n{sse('append', row)}"
@@ -93,6 +102,5 @@ def build_router(*, timeline: EventTimelineQuery) -> APIRouter:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-
 
     return api_router

@@ -10,8 +10,8 @@ from .... import __version__
 from ....kernel.version import meta
 from ....research_core import Research
 
-from .context import ApiRouteContext
-from .dependencies import ActivityTelemetry, ToolCallTelemetry
+from .gateway import ToolInvocationGateway
+from .views import ActivityTelemetry, ToolCallTelemetry
 from .views import activity_view, tool_call_detail as select_tool_call_detail
 
 
@@ -28,14 +28,14 @@ def _caller_project_ids(
 
 
 def build_router(
-    ctx: ApiRouteContext,
+    gateway: ToolInvocationGateway,
     *,
     activity_log: ActivityTelemetry,
     tool_calls: ToolCallTelemetry,
     research: Research,
 ) -> APIRouter:
     api_router = APIRouter()
-    surface = ctx.surface
+    surface = gateway.surface
     @api_router.get("/health")
     def health() -> dict[str, Any]:
         # Surface hygiene: /health is liveness only and never exposes host
@@ -56,7 +56,7 @@ def build_router(
         }
         # Auth handshake: tells the UI whether to show a login and which
         # Supabase project to sign in against (public values only).
-        payload["auth"] = ctx.auth_meta or {"required": False}
+        payload["auth"] = gateway.auth_meta or {"required": False}
         return payload
 
     @api_router.api_route(

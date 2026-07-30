@@ -6,35 +6,24 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Request
 
-from ....application.facade import (
-    ExperimentCollectionQuery,
-    ExperimentDetailQuery,
-    ExperimentFigureQuery,
-    LogicGraphQuery,
-    MlflowOverviewQuery,
-    StatusAndNextQuery,
-)
+from ....application import Application
+from ...experiment_figure import build_experiment_figure
 from .shared import JsonBody, path_scoped_body
 
-from .context import ApiRouteContext
+from .gateway import ToolInvocationGateway
 from .views import experiments_view as render_experiments_view, present
 
 
 def build_router(
-    ctx: ApiRouteContext,
+    gateway: ToolInvocationGateway,
     *,
-    collection: ExperimentCollectionQuery,
-    detail: ExperimentDetailQuery,
-    workflow: StatusAndNextQuery,
-    figure: ExperimentFigureQuery,
-    graphs: LogicGraphQuery,
-    tracking: MlflowOverviewQuery | None,
+    application: Application,
 ) -> APIRouter:
     api_router = APIRouter()
 
     @api_router.get("/api/projects/{project_id}/experiments")
     def list_experiments(project_id: str, status: str | None = None) -> dict[str, Any]:
-        items = collection.rich(project_id=project_id)
+        items = application.experiments(project_id=project_id, rich=True)
         if status:
             items = [item for item in items if item.get("status") == status]
         return {"experiments": items}
@@ -44,7 +33,7 @@ def build_router(
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
         payload = path_scoped_body(body, project_id=project_id)
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="experiment.create",
             arguments={
@@ -62,38 +51,44 @@ def build_router(
 
     @api_router.get("/api/projects/{project_id}/experiments/view")
     def experiments_view(project_id: str) -> dict[str, Any]:
-        return render_experiments_view(collection.rich(project_id=project_id))
+        return render_experiments_view(
+            application.experiments(project_id=project_id, rich=True)
+        )
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}")
     def get_experiment(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
-        return present(detail(
-            experiment_id=experiment_id,
-            project_id=project_id,
-        ))
+        return present(
+            application.experiment(
+                experiment_id=experiment_id,
+                project_id=project_id,
+                rich=True,
+            )
+        )
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/status")
     def experiment_status(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Full shape for the UI (see home()); the tool stays slim for the agent.
         return present(
-            workflow.status_and_next(
-                project_id=project_id, experiment_id=experiment_id
-            )
+            application.status(project_id=project_id, experiment_id=experiment_id)
         )
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/figure")
     def experiment_figure(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Derived graph for the figure canvas; UI-only read, no agent tool.
         return present(
-            figure(
-                project_id=project_id, experiment_id=experiment_id
+            build_experiment_figure(
+                **application.figure_facts(
+                    project_id=project_id,
+                    experiment_id=experiment_id,
+                )
             )
         )
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/graph")
     def experiment_logic_graph(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Agent-authored logic graph (role 'graph'); UI-only read, no agent tool.
-        return graphs.experiment(
+        return application.experiment_graph(
             project_id=project_id, experiment_id=experiment_id
         )
 
@@ -106,7 +101,7 @@ def build_router(
         request: Request,
         body: JsonBody = Body(default=None),
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="experiment.transition",
             arguments=path_scoped_body(
@@ -116,7 +111,7 @@ def build_router(
             ),
         )
 
-    if tracking is not None:
+    if application.tracking_enabled:
         # Compatibility-only routes for explicitly injected legacy adapters.
         # They are absent from the normal product surface.
         @api_router.get(
@@ -125,12 +120,12 @@ def build_router(
         def experiment_results_metrics(
             project_id: str, experiment_id: str
         ) -> dict[str, Any]:
-            return tracking.experiment_metrics(
+            return application.tracking_metrics(
                 project_id=project_id, experiment_id=experiment_id
             )
 
         @api_router.get("/api/projects/{project_id}/mlflow")
         def project_mlflow(project_id: str) -> dict[str, Any]:
-            return present(tracking(project_id=project_id))
+            return present(application.tracking_overview(project_id=project_id))
 
     return api_router

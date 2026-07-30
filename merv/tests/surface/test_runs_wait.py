@@ -35,14 +35,14 @@ from merv.brain.kernel.secret_tokens import (
 from merv.brain.kernel.state.activity import redact_sensitive, scrub_secret_text
 from merv.brain.kernel.utils import ValidationError, now_iso
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.surface.control.control_runtime import ControlToolCallSink
+from merv.brain.surface.telemetry import ControlToolCallSink
 from merv.brain.surface.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
 )
 from merv.brain.surface.transport.api import runs_wait
 from merv.brain.surface.transport.api.shared import redact_upload_tokens
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.surface.transport.http_server import make_http_server
 from tests.support.brain import TestBrain
@@ -176,7 +176,7 @@ class WaitEndpointTest(unittest.TestCase):
             execution_backend=self.fake,
         )
         self.client = TestClient(
-            create_fastapi_app(self.app.http, wait_secret=SECRET)
+            create_fastapi_app(self.app, wait_secret=SECRET)
         )
         self.project_id = self.app.call_tool(
             "project", {"action": "create", "name": "Waits"}
@@ -564,7 +564,7 @@ class WaitEndpointTest(unittest.TestCase):
     def test_a_composition_that_named_no_key_mounts_no_wait_route(self) -> None:
         """An unsigned URL is not a capability and a process-lifetime key is a
         URL that dies at the next restart, so absence is not a fallback."""
-        client = TestClient(create_fastapi_app(self.app.http))
+        client = TestClient(create_fastapi_app(self.app))
         with patch.object(
             runs_wait._ADMISSION, "acquire", side_effect=AssertionError("admitted")
         ):
@@ -577,7 +577,7 @@ class WaitEndpointTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             runs_wait.build_router(sandboxes=self.app.sandboxes, secret=b"x")
         with self.assertRaises(ValueError):
-            create_fastapi_app(self.app.http, wait_secret=b"x")
+            create_fastapi_app(self.app, wait_secret=b"x")
 
     def test_a_cancelled_opening_read_gives_its_slot_back(self) -> None:
         """Cancellation is a BaseException with no response object yet, so no
@@ -653,7 +653,7 @@ class WaitEndpointTest(unittest.TestCase):
         async def request() -> dict:
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        app = create_fastapi_app(self.app.http, wait_secret=SECRET)
+        app = create_fastapi_app(self.app, wait_secret=SECRET)
         held = -1
 
         async def drive() -> None:
@@ -709,7 +709,7 @@ class RunsWaitUrlTest(unittest.TestCase):
             execution_backend=self.fake,
         )
         self.client = TestClient(
-            create_fastapi_app(self.app.http, wait_secret=SECRET)
+            create_fastapi_app(self.app, wait_secret=SECRET)
         )
         self.project_id = self.app.call_tool(
             "project", {"action": "create", "name": "Waits"}
@@ -848,7 +848,7 @@ class RunsWaitUrlTest(unittest.TestCase):
 
     def test_a_composition_with_no_key_renders_no_field_at_all(self) -> None:
         """Absent, not null: a consumer tests for the key, never for a value."""
-        keyless = TestClient(create_fastapi_app(self.app.http))
+        keyless = TestClient(create_fastapi_app(self.app))
         for run in self._runs_via(keyless).values():
             self.assertNotIn("wait_url", run)
         # The key rides the composition, not the shared backend: a keyless
@@ -859,7 +859,7 @@ class RunsWaitUrlTest(unittest.TestCase):
     def test_two_keyed_compositions_over_one_backend_stay_isolated(self) -> None:
         """Each app signs with its own key and honors only its own signatures."""
         second_key = b"second-wait-secret-9876543210zyxwvu"
-        other = TestClient(create_fastapi_app(self.app.http, wait_secret=second_key))
+        other = TestClient(create_fastapi_app(self.app, wait_secret=second_key))
         mine = self._runs_via(self.client)["seed0"]["wait_url"]
         theirs = self._runs_via(other)["seed0"]["wait_url"]
         self.assertNotEqual(mine, theirs)
@@ -872,7 +872,7 @@ class RunsWaitUrlTest(unittest.TestCase):
         """A short key refuses its own composition before touching anything a
         sibling app relies on."""
         with self.assertRaises(ValueError):
-            create_fastapi_app(self.app.http, wait_secret=b"x")
+            create_fastapi_app(self.app, wait_secret=b"x")
         survivor = self._runs_via(self.client)["seed0"]
         self.assertEqual(self.client.get(survivor["wait_url"]).status_code, 200)
 
@@ -947,7 +947,7 @@ class WaitRedactionTest(unittest.TestCase):
 
 class WaitCompositionTest(unittest.TestCase):
     def test_hosted_composition_without_the_env_secret_fails_the_boot(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

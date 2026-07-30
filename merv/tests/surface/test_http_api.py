@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from tests.support.brain import TestBrain, upload_token
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.research_core.experiment_workflow import RETURN_TO_PLANNED
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.utils import now_iso
 
@@ -30,7 +30,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             # adapter. Product/default composition intentionally does not.
             mlflow_tracking=CentralMlflowService(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -71,7 +71,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.app.mlflow_tracking._health_check = service._health_check
 
     def test_home_claim_experiment_artifact_review_endpoints(self) -> None:
-        project = self.request("POST", "/api/projects", {"name": "UI Project", "summary": "Frontend target"})
+        project = self.request(
+            "POST",
+            "/api/projects",
+            {"name": "UI Project", "summary": "Frontend target"},
+        )
         project_id = project["id"]
         claim = self.request(
             "POST",
@@ -81,7 +85,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         exp = self.request(
             "POST",
             f"/api/projects/{project_id}/experiments",
-            {"name": "threshold-vs-baseline", "intent": "Compare threshold with baseline.", "claim_ids": [claim["id"]]},
+            {
+                "name": "threshold-vs-baseline",
+                "intent": "Compare threshold with baseline.",
+                "claim_ids": [claim["id"]],
+            },
         )
         exp_id = exp["id"]
         first = self.submit(
@@ -103,7 +111,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(home["workflow"]["next_action"], "submit_design_for_review")
 
         content = self.request(
-            "GET", f"/api/projects/{project_id}/artifacts/{first['artifact_id']}/content"
+            "GET",
+            f"/api/projects/{project_id}/artifacts/{first['artifact_id']}/content",
         )
         self.assertIn("accuracy", content["content"])
         # Resubmitting the same slot supersedes: a new artifact id, old row gone.
@@ -122,23 +131,41 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         artifact_id = second["artifact_id"]
         self.assertNotEqual(artifact_id, first["artifact_id"])
         listing = self.request("GET", f"/api/projects/{project_id}/artifacts")
-        self.assertEqual(
-            [row["id"] for row in listing["artifacts"]], [artifact_id]
-        )
+        self.assertEqual([row["id"] for row in listing["artifacts"]], [artifact_id])
 
-        self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/transition", {"transition": "submit_design"})
+        self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments/{exp_id}/transition",
+            {"transition": "submit_design"},
+        )
         review_request = self.request(
             "POST",
             f"/api/projects/{project_id}/reviews/request",
-            {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"},
+            {
+                "target_type": "experiment",
+                "target_id": exp_id,
+                "role": "design_reviewer",
+            },
         )
         self.assertEqual(review_request["role"], "design_reviewer")
-        self.assertEqual(review_request["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
-        reviews = self.request("GET", f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}")
+        self.assertEqual(
+            review_request["target_snapshot"]["artifacts"][0]["artifact_id"],
+            artifact_id,
+        )
+        reviews = self.request(
+            "GET",
+            f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}",
+        )
         self.assertEqual(len(reviews["requests"]), 1)
-        self.assertEqual(reviews["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
+        self.assertEqual(
+            reviews["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"],
+            artifact_id,
+        )
         queue = self.request("GET", f"/api/projects/{project_id}/reviews")
-        self.assertEqual(queue["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
+        self.assertEqual(
+            queue["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"],
+            artifact_id,
+        )
 
         # The synopsis is the researcher's TLDR: it persists and surfaces on
         # both the target-scoped review.status view and the project-wide queue.
@@ -155,38 +182,33 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.request(
             "POST",
             f"/api/projects/{project_id}/reviews/submit",
-            {"review_session_id": session["review_session_id"], "verdict": "pass", "synopsis": synopsis},
+            {
+                "review_session_id": session["review_session_id"],
+                "verdict": "pass",
+                "synopsis": synopsis,
+            },
         )
         conn = self.app._store.connect()
         try:
-            cursor = int(conn.execute("SELECT MAX(id) AS id FROM events").fetchone()["id"])
+            cursor = int(
+                conn.execute("SELECT MAX(id) AS id FROM events").fetchone()["id"]
+            )
         finally:
             conn.close()
-        with patch.object(
-            self.app.reaction_registry,
-            "dispatch",
-            wraps=self.app.reaction_registry.dispatch,
-        ) as dispatch:
-            tool_status = self.app.call_tool(
-                "review.status",
-                {"project_id": project_id, "target_type": "experiment", "target_id": exp_id},
-            )
-            status = self.request("GET", f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}")
+        tool_status = self.app.call_tool(
+            "review.status",
+            {
+                "project_id": project_id,
+                "target_type": "experiment",
+                "target_id": exp_id,
+            },
+        )
+        status = self.request(
+            "GET",
+            f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}",
+        )
         self.assertEqual(status, tool_status)
         self.assertIn("feed_note", status)
-        review_dispatches = [
-            call.kwargs for call in dispatch.call_args_list
-            if call.kwargs["event"].type == "review.submitted"
-        ]
-        self.assertEqual(len(review_dispatches), 2)
-        self.assertEqual(
-            [(call["event"].id, call["phase"]) for call in review_dispatches],
-            [(cursor, "producer_read"), (cursor, "producer_read")],
-        )
-        self.assertEqual(
-            review_dispatches[0]["event"].payload["review_id"],
-            status["reviews"][0]["id"],
-        )
         conn = self.app._store.connect()
         try:
             self.assertEqual(
@@ -202,7 +224,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_review_start_and_submit_are_scoped_to_route_project(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Scoped A"})
         pid = project["id"]
-        exp = self.request("POST", f"/api/projects/{pid}/experiments", {"name": "exp-1", "intent": "Scoped review"})
+        exp = self.request(
+            "POST",
+            f"/api/projects/{pid}/experiments",
+            {"name": "exp-1", "intent": "Scoped review"},
+        )
         exp_id = exp["id"]
         self.submit(
             pid=pid,
@@ -216,8 +242,20 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "## Evaluation\nMetric: pass/fail of the scoping check.\n"
             ),
         )
-        self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
-        req = self.request("POST", f"/api/projects/{pid}/reviews/request", {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"})
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/experiments/{exp_id}/transition",
+            {"transition": "submit_design"},
+        )
+        req = self.request(
+            "POST",
+            f"/api/projects/{pid}/reviews/request",
+            {
+                "target_type": "experiment",
+                "target_id": exp_id,
+                "role": "design_reviewer",
+            },
+        )
 
         other = self.request("POST", "/api/projects", {"name": "Scoped B"})
         other_id = other["id"]
@@ -226,7 +264,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         wrong_start = self.client.request(
             "POST",
             f"/api/projects/{other_id}/reviews/start",
-            json={"review_request_id": req["review_request_id"], "reviewer_capability": req["reviewer_capability"], "caller_session_id": "rev"},
+            json={
+                "review_request_id": req["review_request_id"],
+                "reviewer_capability": req["reviewer_capability"],
+                "caller_session_id": "rev",
+            },
         )
         self.assertEqual(wrong_start.status_code, 404, wrong_start.text)
 
@@ -234,7 +276,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         session = self.request(
             "POST",
             f"/api/projects/{pid}/reviews/start",
-            {"review_request_id": req["review_request_id"], "reviewer_capability": req["reviewer_capability"], "caller_session_id": "rev"},
+            {
+                "review_request_id": req["review_request_id"],
+                "reviewer_capability": req["reviewer_capability"],
+                "caller_session_id": "rev",
+            },
         )
         recorded = self.app.tool_calls.stats(tool="review.start")
         self.assertEqual(recorded["totals"]["calls"], 1)
@@ -266,22 +312,35 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_claim_update_http_endpoint(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Claim Update"})
         pid = project["id"]
-        claim = self.request("POST", f"/api/projects/{pid}/claims", {"statement": "X improves Y."})
-        updated = self.request("PATCH", f"/api/projects/{pid}/claims/{claim['id']}", {"status": "supported", "confidence": "high"})
+        claim = self.request(
+            "POST", f"/api/projects/{pid}/claims", {"statement": "X improves Y."}
+        )
+        updated = self.request(
+            "PATCH",
+            f"/api/projects/{pid}/claims/{claim['id']}",
+            {"status": "supported", "confidence": "high"},
+        )
         self.assertEqual(updated["status"], "supported")
         self.assertEqual(updated["confidence"], "high")
 
     def test_sandbox_http_endpoints(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Sandbox UI Project"})
         project_id = project["id"]
-        exp = self.request("POST", f"/api/projects/{project_id}/experiments", {"name": "exp-2", "intent": "Run an experiment"})
+        exp = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-2", "intent": "Run an experiment"},
+        )
         exp_id = exp["id"]
         # Keep the rest of the endpoint fixture in the usual runnable state.
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
         # Procuring is an agent action (MCP tool); the UI observes the result.
         requested = self.app.call_tool(
-            "sandbox.request", {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"}
+            "sandbox.request",
+            {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"},
         )
         self.assertEqual(requested["status"], "running")
         sandbox_uid = requested["sandbox_uid"]
@@ -289,7 +348,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertNotIn("command", requested["ssh"])
         self.assertNotIn("raw_command", requested["ssh"])
 
-        sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
+        sandbox = self.request(
+            "GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox"
+        )
         self.assertEqual(sandbox["status"], "running")
         self.assertTrue(sandbox["sandbox_id"])
         self.assertNotIn("dashboards", sandbox)
@@ -299,16 +360,28 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(sandbox_by_uid["sandbox_uid"], sandbox_uid)
         self.assertEqual(sandbox_by_uid["status"], "running")
 
-        listed = self.request("GET", f"/api/projects/{project_id}/sandboxes")["sandboxes"]
+        listed = self.request("GET", f"/api/projects/{project_id}/sandboxes")[
+            "sandboxes"
+        ]
         self.assertEqual(len(listed), 1)
 
         # Live usage metrics endpoint surfaces the in-container sample.
         self.backend.metrics[requested["sandbox_id"]] = {
             "cpu": {"used_cores": 1.0, "limit_cores": 2.0},
             "memory": {"used_bytes": 1073741824, "limit_bytes": 8589934592},
-            "gpus": [{"index": 0, "name": "A100", "util_pct": 10, "mem_used_mib": 512, "mem_total_mib": 40960}],
+            "gpus": [
+                {
+                    "index": 0,
+                    "name": "A100",
+                    "util_pct": 10,
+                    "mem_used_mib": 512,
+                    "mem_total_mib": 40960,
+                }
+            ],
         }
-        metrics = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/metrics")
+        metrics = self.request(
+            "GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/metrics"
+        )
         self.assertTrue(metrics["available"])
         self.assertEqual(metrics["metrics"]["gpus"][0]["util_pct"], 10)
         metrics_by_uid = self.request(
@@ -318,7 +391,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(metrics_by_uid["metrics"]["gpus"][0]["util_pct"], 10)
 
         self.backend.append_transcript(experiment_id=exp_id, text="$ ls\nplan.md\n")
-        terminal = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal")
+        terminal = self.request(
+            "GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal"
+        )
         self.assertIn("plan.md", terminal["transcript"])
         # Incremental polling: `since=cursor` returns only new bytes.
         cursor = terminal["cursor"]
@@ -337,13 +412,17 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertGreater(delta["cursor"], cursor)
 
         self.app.sandbox_transcripts.invalidate(sandbox_id=requested["sandbox_id"])
-        self.backend.append_transcript(experiment_id=sandbox_uid, text="uid transcript\n")
+        self.backend.append_transcript(
+            experiment_id=sandbox_uid, text="uid transcript\n"
+        )
         terminal_by_uid = self.request(
             "GET", f"/api/projects/{project_id}/sandboxes/{sandbox_uid}/terminal"
         )
         self.assertIn("uid transcript", terminal_by_uid["transcript"])
 
-        released = self.request("POST", f"/api/projects/{project_id}/sandboxes/{sandbox_uid}/release")
+        released = self.request(
+            "POST", f"/api/projects/{project_id}/sandboxes/{sandbox_uid}/release"
+        )
         self.assertEqual(released["status"], "terminated")
 
         self.assertTrue(self.request("GET", "/api/sandboxes/health")["ok"])
@@ -354,13 +433,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         project = self.request("POST", "/api/projects", {"name": "Results Project"})
         project_id = project["id"]
         exp = self.request(
-            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-3", "intent": "Train"}
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-3", "intent": "Train"},
         )
         exp_id = exp["id"]
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
         self.app.call_tool(
-            "sandbox.request", {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"}
+            "sandbox.request",
+            {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"},
         )
         mlflow = CentralMlflowService(
             mode="external",
@@ -400,7 +484,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertTrue(live["available"])
         self.assertNotIn("base_url", live)
 
-        self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
+        self.request(
+            "POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release"
+        )
         with patch("merv.brain.mlflow.tracking.snapshot_mlflow", return_value=snapshot):
             durable = self.request("GET", url)
         self.assertTrue(durable["available"])
@@ -412,7 +498,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         project = self.request("POST", "/api/projects", {"name": "MLflow Project"})
         project_id = project["id"]
         exp = self.request(
-            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-ml", "intent": "Train"}
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-ml", "intent": "Train"},
         )
         exp_id = exp["id"]
         mlflow = CentralMlflowService(
@@ -471,7 +559,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(item["experiment_id"], exp_id)
         self.assertEqual(item["name"], "exp-ml")
         # Deep link resolves the MLflow numeric id from the matching snapshot.
-        self.assertEqual(item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/7")
+        self.assertEqual(
+            item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/7"
+        )
         self.assertEqual(
             list(item["metrics"]),
             [
@@ -496,9 +586,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                         "runs": [run_record],
                     }
                 ],
-                "dashboard_experiment_url": (
-                    "https://mlflow.test/#/experiments/7"
-                ),
+                "dashboard_experiment_url": ("https://mlflow.test/#/experiments/7"),
             },
         )
         run = item["metrics"]["experiments"][0]["runs"][0]
@@ -508,9 +596,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             name_like=f"merv/{project_id}/%",
             experiment_names=frozenset({f"merv/{project_id}/{exp_id}"}),
         )
-        self.assertEqual(
-            overview["unmapped_mlflow_experiments"], [namespace[1]]
-        )
+        self.assertEqual(overview["unmapped_mlflow_experiments"], [namespace[1]])
 
     def test_project_mlflow_overview_short_circuits_when_unreachable(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "MLflow Down"})
@@ -520,10 +606,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             f"/api/projects/{project_id}/experiments",
             {"name": "exp-ml", "intent": "Train"},
         )
-        self.configure_mlflow(CentralMlflowService(
-            tracking_uri="https://mlflow.test",
-            health_check=lambda: False,
-        ))
+        self.configure_mlflow(
+            CentralMlflowService(
+                tracking_uri="https://mlflow.test",
+                health_check=lambda: False,
+            )
+        )
 
         with (
             patch.object(
@@ -535,16 +623,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         project_snapshot.assert_not_called()
         self.assertFalse(overview["mlflow"]["reachable"])
         self.assertFalse(overview["experiments"][0]["metrics"]["available"])
-        self.assertEqual(
-            overview["experiments"][0]["experiment_id"], exp["id"]
-        )
+        self.assertEqual(overview["experiments"][0]["experiment_id"], exp["id"])
         self.assertEqual(overview["unmapped_mlflow_experiments"], [])
 
     def test_running_transition_and_tool_hand_mlflow_block(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Run Project"})
         project_id = project["id"]
         exp = self.request(
-            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-run", "intent": "Train"}
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-run", "intent": "Train"},
         )
         exp_id = exp["id"]
         mlflow = CentralMlflowService(
@@ -556,7 +644,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.configure_mlflow(mlflow)
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
 
         before_start = self.app.call_tool(
             "experiment.get_state",
@@ -576,10 +666,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "created_at": "2026-07-02T12:00:00Z",
             "dashboard_run_url": "https://mlflow.test/#/experiments/7/runs/run_123",
         }
-        with patch.object(CentralMlflowService, "create_run", return_value=run_created) as create_run:
+        with patch.object(
+            CentralMlflowService, "create_run", return_value=run_created
+        ) as create_run:
             transitioned = self.app.call_tool(
                 "experiment.transition",
-                {"project_id": project_id, "experiment_id": exp_id, "transition": "start_running"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "transition": "start_running",
+                },
             )
         create_run.assert_called_once_with(
             project_id=project_id,
@@ -589,8 +685,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(transitioned["status"], "running")
         self.assertTrue(transitioned["mlflow"]["configured"])
-        self.assertEqual(transitioned["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
-        self.assertEqual(transitioned["mlflow"]["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.test")
+        self.assertEqual(
+            transitioned["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}"
+        )
+        self.assertEqual(
+            transitioned["mlflow"]["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.test"
+        )
         self.assertEqual(transitioned["mlflow"]["run"]["run_id"], "run_123")
         self.assertEqual(transitioned["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_123")
         self.assertIn("MLflow", transitioned["mlflow_guidance"])
@@ -600,14 +700,20 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"project_id": project_id, "experiment_id": exp_id},
         )
         self.assertTrue(state["mlflow"]["configured"])
-        self.assertEqual(state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
+        self.assertEqual(
+            state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}"
+        )
         self.assertEqual(state["mlflow_run"]["run_id"], "run_123")
         self.assertEqual(state["mlflow"]["run"]["run_id"], "run_123")
         self.assertIn("MLflow", state["mlflow_guidance"])
 
-        http_state = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}")
+        http_state = self.request(
+            "GET", f"/api/projects/{project_id}/experiments/{exp_id}"
+        )
         self.assertTrue(http_state["mlflow"]["configured"])
-        self.assertEqual(http_state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
+        self.assertEqual(
+            http_state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}"
+        )
         self.assertEqual(http_state["mlflow"]["run"]["run_id"], "run_123")
 
         # The standalone MLflow context tool returns the same block on demand.
@@ -617,7 +723,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(ctx["scope"], "experiment")
         self.assertTrue(ctx["mlflow"]["configured"])
-        self.assertEqual(ctx["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
+        self.assertEqual(
+            ctx["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}"
+        )
         self.assertIn("MLFLOW_EXPERIMENT_NAME", ctx["mlflow"]["env"])
         self.assertEqual(ctx["mlflow"]["run"]["run_id"], "run_123")
         self.assertEqual(ctx["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_123")
@@ -641,7 +749,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "ended_at": "2026-07-02T12:05:00Z",
             },
         }
-        with patch.object(CentralMlflowService, "finalize_run", return_value=finalized) as finalize_run:
+        with patch.object(
+            CentralMlflowService, "finalize_run", return_value=finalized
+        ) as finalize_run:
             final = self.app.call_tool(
                 "mlflow.finalize_run",
                 {"project_id": project_id, "experiment_id": exp_id},
@@ -703,10 +813,6 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             )
 
         with patch.object(
-            self.app.transition_experiment,
-            "_execute",
-            wraps=self.app.transition_experiment._execute,
-        ) as execute, patch.object(
             CentralMlflowService,
             "create_run",
             return_value={"created": False, "configured": True},
@@ -730,12 +836,6 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 {"transition": "start_running"},
             )
 
-        self.assertEqual(execute.call_count, 2)
-        self.assertEqual(
-            [call.kwargs["include_tracking_credentials"] for call in execute.call_args_list],
-            [True, True],
-        )
-
         for result in (mcp_result, rest_result):
             self.assertEqual(
                 result["mlflow"]["env"]["MLFLOW_TRACKING_PASSWORD"],
@@ -750,8 +850,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         activity_text = json.dumps(self.app.activity.recent(limit=100), sort_keys=True)
         tool_calls = self.app.tool_calls.stats(tool="experiment.transition")
         tool_call_details = [
-            self.app.tool_calls.get(call_id=call["id"])
-            for call in tool_calls["calls"]
+            self.app.tool_calls.get(call_id=call["id"]) for call in tool_calls["calls"]
         ]
         self.assertNotIn("rr_sk_agent", activity_text)
         self.assertNotIn("rr_sk_agent", json.dumps(tool_call_details, sort_keys=True))
@@ -764,24 +863,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertFalse(hasattr(self.app._app, "_record_core"))
         self.assertIs(self.app.artifact_tools.artifacts, self.app.artifacts)
         self.assertTrue(callable(self.app.feed.transition_advisory))
-        self.assertIs(self.app.transition_experiment.research, self.app.research_core)
-        self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)
-        self.assertIs(self.app.tracking_context.research, self.app.research_core)
-        self.assertIs(self.app.finalize_tracking_run.research, self.app.research_core)
-        self.assertIs(
-            self.app.tools._tools["mlflow.context"].handler.__self__,
-            self.app.tracking_context,
-        )
-        self.assertIs(
-            self.app.tools._tools["mlflow.finalize_run"].handler.__self__,
-            self.app.finalize_tracking_run,
-        )
+        self.assertIs(self.app.application.research, self.app.research_core)
+        self.assertIs(self.app.application.artifacts, self.app.artifacts)
+        self.assertIs(self.app.application.feed, self.app.feed)
+        self.assertIs(self.app.application.sandboxes, self.app.sandboxes)
 
     def test_attempt_revision_and_retry_rotate_the_mlflow_run(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Rotate Project"})
         project_id = project["id"]
         exp_id = self.request(
-            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-rotate", "intent": "Train"}
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-rotate", "intent": "Train"},
         )["id"]
         mlflow = CentralMlflowService(
             mode="external",
@@ -792,7 +885,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.configure_mlflow(mlflow)
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
 
         def run_payload(run_id: str, attempt: int) -> dict:
             return {
@@ -805,17 +900,27 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "created_at": "2026-07-02T12:00:00Z",
             }
 
-        with patch.object(CentralMlflowService, "create_run", return_value=run_payload("run_a1", 1)):
+        with patch.object(
+            CentralMlflowService, "create_run", return_value=run_payload("run_a1", 1)
+        ):
             self.app.call_tool(
                 "experiment.transition",
-                {"project_id": project_id, "experiment_id": exp_id, "transition": "start_running"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "transition": "start_running",
+                },
             )
 
         # An infra retry while the run is still open resumes the same run.
         with patch.object(CentralMlflowService, "create_run") as create_run:
             retried = self.app.call_tool(
                 "experiment.transition",
-                {"project_id": project_id, "experiment_id": exp_id, "transition": "retry_running"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "transition": "retry_running",
+                },
             )
         create_run.assert_not_called()
         self.assertEqual(retried["mlflow"]["run"]["run_id"], "run_a1")
@@ -823,20 +928,32 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # Once that run was finalized, resuming would log into a closed run —
         # the retry mints a fresh run for the same attempt.
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET mlflow_run_status = 'FAILED' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET mlflow_run_status = 'FAILED' WHERE id = ?",
+                (exp_id,),
+            )
         with patch.object(
-            CentralMlflowService, "create_run", return_value=run_payload("run_a1_retry", 1)
+            CentralMlflowService,
+            "create_run",
+            return_value=run_payload("run_a1_retry", 1),
         ) as create_run:
             retried = self.app.call_tool(
                 "experiment.transition",
-                {"project_id": project_id, "experiment_id": exp_id, "transition": "retry_running"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "transition": "retry_running",
+                },
             )
         create_run.assert_called_once()
         self.assertEqual(retried["mlflow"]["run"]["run_id"], "run_a1_retry")
 
         # A review rejection bumps the attempt and clears the run identity...
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'experiment_review' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'experiment_review' WHERE id = ?",
+                (exp_id,),
+            )
             self.app.experiments.return_from_review(
                 conn=conn,
                 experiment_id=exp_id,
@@ -850,13 +967,19 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # ...so the revised attempt's start mints an attempt-2 run instead of
         # handing back attempt 1's finalized one.
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
         with patch.object(
             CentralMlflowService, "create_run", return_value=run_payload("run_a2", 2)
         ) as create_run:
             transitioned = self.app.call_tool(
                 "experiment.transition",
-                {"project_id": project_id, "experiment_id": exp_id, "transition": "start_running"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "transition": "start_running",
+                },
             )
         create_run.assert_called_once_with(
             project_id=project_id,
@@ -867,10 +990,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(transitioned["mlflow"]["run"]["run_id"], "run_a2")
 
     def test_finalizing_a_foreign_run_id_keeps_the_canonical_run(self) -> None:
-        project = self.request("POST", "/api/projects", {"name": "ML Foreign Run Project"})
+        project = self.request(
+            "POST", "/api/projects", {"name": "ML Foreign Run Project"}
+        )
         project_id = project["id"]
         exp_id = self.request(
-            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-foreign", "intent": "Train"}
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-foreign", "intent": "Train"},
         )["id"]
         mlflow = CentralMlflowService(
             mode="external",
@@ -901,7 +1028,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         with patch.object(CentralMlflowService, "finalize_run", return_value=finalized):
             self.app.call_tool(
                 "mlflow.finalize_run",
-                {"project_id": project_id, "experiment_id": exp_id, "run_id": "run_other"},
+                {
+                    "project_id": project_id,
+                    "experiment_id": exp_id,
+                    "run_id": "run_other",
+                },
             )
         state = self.app.call_tool(
             "experiment.get_state", {"project_id": project_id, "experiment_id": exp_id}
@@ -954,8 +1085,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         def cursor() -> int:
             with self.app.store.connect() as conn:
                 return int(
-                    conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM events")
-                    .fetchone()["id"]
+                    conn.execute(
+                        "SELECT COALESCE(MAX(id), 0) AS id FROM events"
+                    ).fetchone()["id"]
                 )
 
         with patch.object(CentralMlflowService, "finalize_run", side_effect=finalized):
@@ -991,7 +1123,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             value["experiment"]["mlflow"]["run"]["run_id"] = "run"
             value["experiment"]["mlflow"]["run"]["created_at"] = "time"
             value["experiment"]["mlflow"]["experiment_name"] = "tracking-name"
-            value["experiment"]["mlflow"]["env"]["MLFLOW_EXPERIMENT_NAME"] = "tracking-name"
+            value["experiment"]["mlflow"]["env"][
+                "MLFLOW_EXPERIMENT_NAME"
+            ] = "tracking-name"
             value["experiment"]["mlflow"]["env"]["RP_EXPERIMENT_ID"] = "exp"
             value["experiment"]["mlflow"]["env"]["MLFLOW_RUN_ID"] = "run"
             value["experiment"]["mlflow"]["env"]["RP_MLFLOW_RUN_ID"] = "run"
@@ -1046,13 +1180,31 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_home_exposes_active_experiments_and_processes(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Active Work Project"})
         project_id = project["id"]
-        planned = self.request("POST", f"/api/projects/{project_id}/experiments", {"name": "exp-4", "intent": "Planned active work"})
-        running = self.request("POST", f"/api/projects/{project_id}/experiments", {"name": "exp-5", "intent": "Running active work"})
-        complete = self.request("POST", f"/api/projects/{project_id}/experiments", {"name": "exp-6", "intent": "Finished work"})
+        planned = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-4", "intent": "Planned active work"},
+        )
+        running = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-5", "intent": "Running active work"},
+        )
+        complete = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-6", "intent": "Finished work"},
+        )
         now = now_iso()
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'running', updated_at = ? WHERE id = ?", (now, running["id"]))
-            conn.execute("UPDATE experiments SET status = 'complete', updated_at = ? WHERE id = ?", (now, complete["id"]))
+            conn.execute(
+                "UPDATE experiments SET status = 'running', updated_at = ? WHERE id = ?",
+                (now, running["id"]),
+            )
+            conn.execute(
+                "UPDATE experiments SET status = 'complete', updated_at = ? WHERE id = ?",
+                (now, complete["id"]),
+            )
             conn.execute(
                 """
                 INSERT INTO sandboxes (
@@ -1085,15 +1237,22 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         home = self.request("GET", f"/api/projects/{project_id}/home")
 
-        self.assertEqual([item["id"] for item in home["active_experiments"]], [running["id"], planned["id"]])
+        self.assertEqual(
+            [item["id"] for item in home["active_experiments"]],
+            [running["id"], planned["id"]],
+        )
         self.assertEqual(home["active_experiment"]["id"], running["id"])
-        self.assertEqual(home["workflow"]["next_action"], "run_experiment_and_retain_results")
+        self.assertEqual(
+            home["workflow"]["next_action"], "run_experiment_and_retain_results"
+        )
         self.assertEqual(home["stats"]["active_experiments"], 2)
         self.assertEqual(home["stats"]["active_processes"], 1)
         self.assertEqual(home["active_processes"][0]["experiment_id"], running["id"])
         self.assertEqual(home["active_processes"][0]["process_type"], "sandbox")
         self.assertEqual(home["active_processes"][0]["experiment"]["id"], running["id"])
-        self.assertNotIn(complete["id"], [item["id"] for item in home["active_experiments"]])
+        self.assertNotIn(
+            complete["id"], [item["id"] for item in home["active_experiments"]]
+        )
 
     def test_activity_endpoint_reports_recent_tool_calls(self) -> None:
         self.request("GET", "/api/projects")
@@ -1112,11 +1271,19 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_experiment_figure_endpoint(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Figure Project"})
         pid = project["id"]
-        claim = self.request("POST", f"/api/projects/{pid}/claims", {"statement": "Rank-8 LoRA matches full FT."})
+        claim = self.request(
+            "POST",
+            f"/api/projects/{pid}/claims",
+            {"statement": "Rank-8 LoRA matches full FT."},
+        )
         exp = self.request(
             "POST",
             f"/api/projects/{pid}/experiments",
-            {"name": "lora-ranks", "intent": "Compare LoRA ranks.", "claim_ids": [claim["id"]]},
+            {
+                "name": "lora-ranks",
+                "intent": "Compare LoRA ranks.",
+                "claim_ids": [claim["id"]],
+            },
         )
         exp_id = exp["id"]
         plan = self.submit(
@@ -1145,15 +1312,25 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIn(f"attempt:1->claim:{claim['id']}:tests", edge_ids)
 
         # Design-review round: the open gate appears, then needs_changes draws the revision loop.
-        self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/experiments/{exp_id}/transition",
+            {"transition": "submit_design"},
+        )
         req = self.request(
             "POST",
             f"/api/projects/{pid}/reviews/request",
-            {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"},
+            {
+                "target_type": "experiment",
+                "target_id": exp_id,
+                "role": "design_reviewer",
+            },
         )
         figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
         nodes = {node["id"]: node for node in figure["nodes"]}
-        self.assertEqual(nodes[f"review_request:{req['review_request_id']}"]["status"], "open")
+        self.assertEqual(
+            nodes[f"review_request:{req['review_request_id']}"]["status"], "open"
+        )
 
         session = self.request(
             "POST",
@@ -1182,15 +1359,24 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(nodes["attempt:2"]["status"], "pending")
         self.assertIn("attempt:1->attempt:2:revised_to", edge_ids)
         self.assertNotIn(f"review_request:{req['review_request_id']}", nodes)
-        review_nodes = [n for n in figure["nodes"] if n["type"] == "review" and n["status"] == "needs_changes"]
+        review_nodes = [
+            n
+            for n in figure["nodes"]
+            if n["type"] == "review" and n["status"] == "needs_changes"
+        ]
         self.assertEqual(len(review_nodes), 1)
         self.assertEqual(review_nodes[0]["group"], "attempt:1")
         self.assertIn(f"{review_nodes[0]['id']}->attempt:2:revised_to", edge_ids)
 
         # Sandbox liveness and the conclusion both surface as derived nodes.
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
-        self.app.call_tool("sandbox.request", {"project_id": pid, "experiment_id": exp_id, "gpu": "A100"})
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
+        self.app.call_tool(
+            "sandbox.request",
+            {"project_id": pid, "experiment_id": exp_id, "gpu": "A100"},
+        )
         with self.app.store.transaction() as conn:
             conn.execute(
                 "UPDATE experiments SET status = 'complete', conclusion = 'Rank 8 is enough.' WHERE id = ?",
@@ -1207,17 +1393,25 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIn("attempt:2->conclusion:concludes", edge_ids)
         self.assertIn(f"conclusion->claim:{claim['id']}:tests", edge_ids)
 
-        missing = self.client.request("GET", f"/api/projects/{pid}/experiments/exp_nope/figure")
+        missing = self.client.request(
+            "GET", f"/api/projects/{pid}/experiments/exp_nope/figure"
+        )
         self.assertEqual(missing.status_code, 404, missing.text)
 
     def test_experiment_logic_graph_endpoint_resolves_refs(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Graph Project"})
         pid = project["id"]
-        claim = self.request("POST", f"/api/projects/{pid}/claims", {"statement": "Warmup matters."})
+        claim = self.request(
+            "POST", f"/api/projects/{pid}/claims", {"statement": "Warmup matters."}
+        )
         exp = self.request(
             "POST",
             f"/api/projects/{pid}/experiments",
-            {"name": "warmup-sensitivity", "intent": "Test warmup sensitivity.", "claim_ids": [claim["id"]]},
+            {
+                "name": "warmup-sensitivity",
+                "intent": "Test warmup sensitivity.",
+                "claim_ids": [claim["id"]],
+            },
         )
         exp_id = exp["id"]
 
@@ -1239,11 +1433,19 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "## Evaluation\nMetric: accuracy delta; success if > 1pt.\n"
             ),
         )
-        self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/experiments/{exp_id}/transition",
+            {"transition": "submit_design"},
+        )
         req = self.request(
             "POST",
             f"/api/projects/{pid}/reviews/request",
-            {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"},
+            {
+                "target_type": "experiment",
+                "target_id": exp_id,
+                "role": "design_reviewer",
+            },
         )
         session = self.request(
             "POST",
@@ -1278,17 +1480,29 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             # local control-plane redaction name.
             "repo_root": "keep-in-authored-graph",
             "nodes": [
-                {"id": "obj", "kind": "objective", "label": "Warmup sweep",
-                 "refs": [claim["id"], exp_id]},
-                {"id": "rev", "kind": "pivot", "label": "Design review passed",
-                 "refs": [review["id"]]},
-                {"id": "out", "kind": "outcome", "label": "Accuracy 93%",
-                 "refs": [
-                     result["artifact_id"],
-                     plan["artifact_id"],
-                     "art_missing",
-                     "notes.md",
-                 ]},
+                {
+                    "id": "obj",
+                    "kind": "objective",
+                    "label": "Warmup sweep",
+                    "refs": [claim["id"], exp_id],
+                },
+                {
+                    "id": "rev",
+                    "kind": "pivot",
+                    "label": "Design review passed",
+                    "refs": [review["id"]],
+                },
+                {
+                    "id": "out",
+                    "kind": "outcome",
+                    "label": "Accuracy 93%",
+                    "refs": [
+                        result["artifact_id"],
+                        plan["artifact_id"],
+                        "art_missing",
+                        "notes.md",
+                    ],
+                },
             ],
             "edges": [{"from": "obj", "to": "rev"}, {"from": "rev", "to": "out"}],
         }
@@ -1327,7 +1541,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             self.assertFalse(refs[unresolved]["resolved"])
             self.assertIn("not a submitted artifact id", refs[unresolved]["hint"])
 
-    def test_experiment_logic_graph_picks_latest_association_and_reports_broken_json(self) -> None:
+    def test_experiment_logic_graph_picks_latest_association_and_reports_broken_json(
+        self,
+    ) -> None:
         import json as _json
 
         project = self.request("POST", "/api/projects", {"name": "Graph Pick Project"})
@@ -1440,13 +1656,19 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 avoid_lens_artifact_id = submitted["artifact_id"]
         self.app.call_tool(
             "reflection.transition",
-            {"project_id": pid, "reflection_id": syn_id, "transition": "submit_reflections"},
+            {
+                "project_id": pid,
+                "reflection_id": syn_id,
+                "transition": "submit_reflections",
+            },
         )
 
         # The project graph refs the wave itself (syn_) and a lens artifact.
         graph_text = (
             '{"version": 1, "title": "Project logic", "nodes": ['
-            '{"id": "a", "kind": "lesson", "label": "Lesson", "refs": ["' + syn_id + '"]},'
+            '{"id": "a", "kind": "lesson", "label": "Lesson", "refs": ["'
+            + syn_id
+            + '"]},'
             '{"id": "b", "kind": "open", "label": "Open question", '
             '"refs": ["' + avoid_lens_artifact_id + '"]}],'
             ' "edges": [{"from": "a", "to": "b"}]}'
@@ -1458,40 +1680,38 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "## Critical reading\nThe test wave adds one claim and two planned experiments.\n\n"
             "## Decision / future directions\nCreate both HTTP experiments in parallel.\n"
         )
-        change_spec_text = (
-            json.dumps(
-                {
-                    "version": 1,
-                    "claim_changes": [
+        change_spec_text = json.dumps(
+            {
+                "version": 1,
+                "claim_changes": [
+                    {
+                        "op": "create",
+                        "key": "claim_http_wave",
+                        "statement": "HTTP reflection wave claim.",
+                        "confidence": "medium",
+                        "rationale": "The HTTP reflection test needs a materializable claim.",
+                    }
+                ],
+                "decision": {
+                    "type": "create_experiments",
+                    "experiments": [
                         {
-                            "op": "create",
-                            "key": "claim_http_wave",
-                            "statement": "HTTP reflection wave claim.",
-                            "confidence": "medium",
-                            "rationale": "The HTTP reflection test needs a materializable claim.",
-                        }
+                            "key": "http_a",
+                            "name": "http-wave-a",
+                            "intent": "HTTP-created experiment A.",
+                            "tested_claim_refs": ["claim_http_wave"],
+                            "parallelism": "Independent HTTP test axis A.",
+                        },
+                        {
+                            "key": "http_b",
+                            "name": "http-wave-b",
+                            "intent": "HTTP-created experiment B.",
+                            "tested_claim_refs": ["claim_http_wave"],
+                            "parallelism": "Independent HTTP test axis B.",
+                        },
                     ],
-                    "decision": {
-                        "type": "create_experiments",
-                        "experiments": [
-                            {
-                                "key": "http_a",
-                                "name": "http-wave-a",
-                                "intent": "HTTP-created experiment A.",
-                                "tested_claim_refs": ["claim_http_wave"],
-                                "parallelism": "Independent HTTP test axis A.",
-                            },
-                            {
-                                "key": "http_b",
-                                "name": "http-wave-b",
-                                "intent": "HTTP-created experiment B.",
-                                "tested_claim_refs": ["claim_http_wave"],
-                                "parallelism": "Independent HTTP test axis B.",
-                            },
-                        ],
-                    },
-                }
-            )
+                },
+            }
         )
         self.submit(
             pid=pid,
@@ -1537,7 +1757,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertTrue(figure.content.startswith(b"\x89PNG"))
         self.app.call_tool(
             "reflection.transition",
-            {"project_id": pid, "reflection_id": syn_id, "transition": "submit_reflection_artifacts"},
+            {
+                "project_id": pid,
+                "reflection_id": syn_id,
+                "transition": "submit_reflection_artifacts",
+            },
         )
 
         # The open wave's graph renders while still under review.
@@ -1557,7 +1781,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         req = self.request(
             "POST",
             f"/api/projects/{pid}/reviews/request",
-            {"target_type": "reflection", "target_id": syn_id, "role": "reflection_reviewer"},
+            {
+                "target_type": "reflection",
+                "target_id": syn_id,
+                "role": "reflection_reviewer",
+            },
         )
         session = self.request(
             "POST",
@@ -1604,13 +1832,22 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"id": "amplify"},
             {"id": "avoid"},
             {"id": "entropy"},
-            {"id": "rigor", "charter": "Method soundness.", "why_distinct": "How, not what."},
-            {"id": "cost", "charter": "Compute spent.", "why_distinct": "Prices exploration."},
+            {
+                "id": "rigor",
+                "charter": "Method soundness.",
+                "why_distinct": "How, not what.",
+            },
+            {
+                "id": "cost",
+                "charter": "Compute spent.",
+                "why_distinct": "Prices exploration.",
+            },
         ]
         project = self.request("POST", "/api/projects", {"name": "Pin"})
         pid = project["id"]
         wave1_id = self.app.call_tool(
-            "reflection.create", {"project_id": pid, "title": "Wave 1", "lenses": roster}
+            "reflection.create",
+            {"project_id": pid, "title": "Wave 1", "lenses": roster},
         )["id"]
 
         # Before any graph is submitted, the per-wave endpoint degrades cleanly.
@@ -1631,7 +1868,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
 
         # The per-wave graph renders the wave's pinned bytes.
-        payload = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}/graph")
+        payload = self.request(
+            "GET", f"/api/projects/{pid}/reflections/{wave1_id}/graph"
+        )
         self.assertTrue(payload["available"])
         self.assertEqual(payload["reflection"]["id"], wave1_id)
         self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
@@ -1639,9 +1878,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         # The wave detail exposes the pinned artifact id.
         detail = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}")
-        graph_row = next(
-            r for r in detail["artifacts"] if r["role"] == "project_graph"
-        )
+        graph_row = next(r for r in detail["artifacts"] if r["role"] == "project_graph")
         self.assertEqual(graph_row["id"], wave1_graph["artifact_id"])
 
         # The artifact content endpoint serves the exact submitted bytes.
@@ -1670,7 +1907,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "UPDATE reflections SET status = 'published' WHERE id = ?", (wave1_id,)
             )
         wave2_id = self.app.call_tool(
-            "reflection.create", {"project_id": pid, "title": "Wave 2", "lenses": roster}
+            "reflection.create",
+            {"project_id": pid, "title": "Wave 2", "lenses": roster},
         )["id"]
         new_text = graph_text.replace("Wave 1 logic", "Wave 2 logic")
         wave2_graph = self.submit(
@@ -1684,13 +1922,15 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertNotEqual(wave2_graph["artifact_id"], wave1_graph["artifact_id"])
         self.assertEqual(
             self.request(
-                "GET", f"/api/projects/{pid}/artifacts/{wave2_graph['artifact_id']}/content"
+                "GET",
+                f"/api/projects/{pid}/artifacts/{wave2_graph['artifact_id']}/content",
             )["content"],
             new_text,
         )
         self.assertEqual(
             self.request(
-                "GET", f"/api/projects/{pid}/artifacts/{wave1_graph['artifact_id']}/content"
+                "GET",
+                f"/api/projects/{pid}/artifacts/{wave1_graph['artifact_id']}/content",
             )["content"],
             graph_text,
         )
@@ -1707,7 +1947,7 @@ class ArtifactFigureRouteTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
         project = self.client.post("/api/projects", json={"name": "Rel"}).json()
         self.project_id = project["id"]
         exp = self.client.post(
@@ -1840,7 +2080,7 @@ class UploadTokenRedactionTest(unittest.TestCase):
 
 class FigureViewTest(unittest.TestCase):
     def test_artifact_fanout_rolls_up_past_cap(self) -> None:
-        from merv.brain.application.experiment_figure import (
+        from merv.brain.surface.experiment_figure import (
             ARTIFACT_FANOUT_CAP,
             build_experiment_figure,
         )
@@ -1875,7 +2115,10 @@ class FigureViewTest(unittest.TestCase):
         self.assertEqual(len(artifact_nodes), ARTIFACT_FANOUT_CAP)
         self.assertEqual(len(group_nodes), 1)
         self.assertEqual(group_nodes[0]["meta"]["count"], 20 - ARTIFACT_FANOUT_CAP)
-        self.assertIn("attempt:1->artifact_group:a1:down:produced", {e["id"] for e in figure["edges"]})
+        self.assertIn(
+            "attempt:1->artifact_group:a1:down:produced",
+            {e["id"] for e in figure["edges"]},
+        )
         # Live attempt status flows through to the spine node.
         attempt = next(n for n in figure["nodes"] if n["id"] == "attempt:1")
         self.assertEqual(attempt["status"], "active")
@@ -1892,7 +2135,9 @@ class DegradedStatesTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http), raise_server_exceptions=False)
+        self.client = TestClient(
+            create_fastapi_app(self.app), raise_server_exceptions=False
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

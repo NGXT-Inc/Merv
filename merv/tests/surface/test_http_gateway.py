@@ -8,7 +8,7 @@ from fastapi import Request
 
 from merv.brain.kernel.utils import NotFoundError
 from merv.brain.surface.identity import Principal, ProjectKeyScopeError
-from merv.brain.surface.tools.tool_facade import ToolDispatcher
+from merv.brain.surface.tools.dispatcher import ToolDispatcher
 from merv.brain.surface.transport.api.gateway import (
     ProjectAuthorizer,
     ToolInvocationGateway,
@@ -187,11 +187,6 @@ class _Sandboxes:
         return {"rsync": "rsync ..."}
 
 
-class _NoopPermissions:
-    def reject_reviewer_mutation(self, **_kwargs) -> None:
-        return None
-
-
 class _NoopActivity:
     def tool_ok(self, **_kwargs) -> None:
         return None
@@ -213,7 +208,6 @@ def _sandbox_dispatch(sandboxes: _Sandboxes) -> ToolDispatcher:
             "sandbox.attach": sandboxes.attach,
             "sandbox.pull_outputs": sandboxes.pull_outputs_command,
         },
-        permissions=_NoopPermissions(),
         activity=_NoopActivity(),
         tool_calls=_NoopToolCalls(),
         tool_names=names,

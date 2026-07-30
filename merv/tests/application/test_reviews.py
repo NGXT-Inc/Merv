@@ -1,13 +1,11 @@
+"""Review status reads and post-commit feed reactions."""
+
 from __future__ import annotations
 
 import unittest
 from copy import deepcopy
 from typing import Any
-from unittest.mock import patch
-
-from merv.brain.application.events import EventDispatcher
-from merv.brain.application.experiments.reactions import ExperimentReactions
-from merv.brain.application.reviews import ReadReviewStatus
+from merv.brain.application.reviews import read_review_status
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 
 
@@ -55,9 +53,7 @@ class RecordingReviews:
 
 
 class RecordingResearch:
-    def __init__(
-        self, order: list[str], *, error: Exception | None = None
-    ) -> None:
+    def __init__(self, order: list[str], *, error: Exception | None = None) -> None:
         self.order = order
         self.error = error
         self.state = {"id": "exp_1", "project_id": "proj_1", "status": "planned"}
@@ -70,9 +66,7 @@ class RecordingResearch:
 
 
 class RecordingFeed:
-    def __init__(
-        self, order: list[str], *, error: Exception | None = None
-    ) -> None:
+    def __init__(self, order: list[str], *, error: Exception | None = None) -> None:
         self.order = order
         self.error = error
         self.calls: list[dict[str, Any]] = []
@@ -85,17 +79,16 @@ class RecordingFeed:
         return "A review verdict is worth sharing."
 
 
-def _use_case(
-    *, research: RecordingResearch, reviews: RecordingReviews, feed: RecordingFeed
-) -> tuple[ReadReviewStatus, EventDispatcher]:
-    registry = EventDispatcher()
-    ExperimentReactions(research=research, feed=feed, tracking=None).bind(registry)
+def _read_status(
+    *,
+    research: RecordingResearch,
+    reviews: RecordingReviews,
+    feed: RecordingFeed,
+    **kwargs: Any,
+) -> dict[str, Any]:
     research.review_status = reviews.status
     research.latest_submitted_review_event = reviews.latest_submitted_event
-    return (
-        ReadReviewStatus(research=research, dispatcher=registry),
-        registry,
-    )
+    return read_review_status(research=research, feed=feed, **kwargs)
 
 
 class ReadReviewStatusTest(unittest.TestCase):
@@ -109,24 +102,20 @@ class ReadReviewStatusTest(unittest.TestCase):
         )
         research = RecordingResearch(order)
         feed = RecordingFeed(order)
-        use_case, registry = _use_case(
-            research=research, reviews=reviews, feed=feed
+        result = _read_status(
+            research=research,
+            reviews=reviews,
+            feed=feed,
+            target_type="experiment",
+            target_id="exp_1",
+            project_id="proj_1",
         )
-
-        with patch.object(registry, "dispatch", wraps=registry.dispatch) as dispatch:
-            result = use_case.execute(
-                target_type="experiment", target_id="exp_1", project_id="proj_1"
-            )
 
         self.assertEqual(result["feed_note"], "A review verdict is worth sharing.")
         self.assertEqual(
             order,
             ["reviews.status", "research.state", "reviews.event", "feed.advisory"],
         )
-        call = dispatch.call_args.kwargs
-        self.assertIs(call["event"], event)
-        self.assertIs(call["state"], research.state)
-        self.assertEqual(call["phase"], "producer_read")
         self.assertEqual(reviews.event_calls[0]["project_id"], "proj_1")
         self.assertEqual(
             feed.calls,
@@ -153,12 +142,13 @@ class ReadReviewStatusTest(unittest.TestCase):
                 )
                 research = RecordingResearch(order)
                 feed = RecordingFeed(order)
-                use_case, _registry = _use_case(
-                    research=research, reviews=reviews, feed=feed
-                )
-
-                result = use_case.execute(
-                    target_type=target_type, target_id="exp_1", project_id="proj_1"
+                result = _read_status(
+                    research=research,
+                    reviews=reviews,
+                    feed=feed,
+                    target_type=target_type,
+                    target_id="exp_1",
+                    project_id="proj_1",
                 )
 
                 self.assertNotIn("feed_note", result)
@@ -171,17 +161,24 @@ class ReadReviewStatusTest(unittest.TestCase):
             result={},
             status_error=RuntimeError("status unavailable"),
         )
-        use_case, _registry = _use_case(
-            research=RecordingResearch(order), reviews=reviews, feed=RecordingFeed(order)
-        )
-
         with self.assertRaisesRegex(RuntimeError, "status unavailable"):
-            use_case.execute(target_type="experiment", target_id="exp_1")
+            _read_status(
+                research=RecordingResearch(order),
+                reviews=reviews,
+                feed=RecordingFeed(order),
+                target_type="experiment",
+                target_id="exp_1",
+            )
         self.assertEqual(order, ["reviews.status"])
 
     def test_enrichment_and_feed_failures_never_break_status(self) -> None:
         cases = (
-            (RuntimeError("state unavailable"), None, None, ["reviews.status", "research.state"]),
+            (
+                RuntimeError("state unavailable"),
+                None,
+                None,
+                ["reviews.status", "research.state"],
+            ),
             (
                 None,
                 RuntimeError("event unavailable"),
@@ -204,21 +201,22 @@ class ReadReviewStatusTest(unittest.TestCase):
                     event=_event(),
                     event_error=event_error,
                 )
-                use_case, _registry = _use_case(
+                result = _read_status(
                     research=RecordingResearch(order, error=state_error),
                     reviews=reviews,
                     feed=RecordingFeed(order, error=feed_error),
-                )
-
-                result = use_case.execute(
-                    target_type="experiment", target_id="exp_1", project_id="proj_1"
+                    target_type="experiment",
+                    target_id="exp_1",
+                    project_id="proj_1",
                 )
 
                 self.assertEqual(result["reviews"], [{"id": "rev_1"}])
                 self.assertNotIn("feed_note", result)
                 self.assertEqual(order, expected_order)
 
-    def test_same_event_can_be_safely_reacted_to_on_repeated_producer_reads(self) -> None:
+    def test_same_event_can_be_safely_reacted_to_on_repeated_producer_reads(
+        self,
+    ) -> None:
         order: list[str] = []
         reviews = RecordingReviews(
             order,
@@ -226,12 +224,21 @@ class ReadReviewStatusTest(unittest.TestCase):
             event=_event(),
         )
         feed = RecordingFeed(order)
-        use_case, _registry = _use_case(
-            research=RecordingResearch(order), reviews=reviews, feed=feed
+        research = RecordingResearch(order)
+        first = _read_status(
+            research=research,
+            reviews=reviews,
+            feed=feed,
+            target_type="experiment",
+            target_id="exp_1",
         )
-
-        first = use_case.execute(target_type="experiment", target_id="exp_1")
-        second = use_case.execute(target_type="experiment", target_id="exp_1")
+        second = _read_status(
+            research=research,
+            reviews=reviews,
+            feed=feed,
+            target_type="experiment",
+            target_id="exp_1",
+        )
 
         self.assertEqual(first["feed_note"], second["feed_note"])
         self.assertEqual(len(feed.calls), 2)

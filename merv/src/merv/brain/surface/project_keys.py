@@ -11,11 +11,13 @@ database fresh on every call so a revoke is effective immediately (INV-4).
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
+from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso, parse_iso
 
 PROJECT_KEY_PREFIX = "mk_"
@@ -45,23 +47,6 @@ class ProjectKeyRecord:
     blob_bytes_ceiling: int | None
 
 
-class ProjectKeyRepository(Protocol):
-    def project_tenant(self, *, project_id: str) -> str: ...
-    def insert(self, *, record: ProjectKeyRecord) -> None: ...
-    def rotate(self, *, record: ProjectKeyRecord, revoked_at: str) -> bool: ...
-    def revoke_lineage(
-        self, *, key_id: str, project_id: str, owner_user_id: str, revoked_at: str
-    ) -> bool: ...
-    def by_digest(self, *, digest: str) -> ProjectKeyRecord | None: ...
-    def by_id(self, *, key_id: str) -> ProjectKeyRecord | None: ...
-    def list_for_owner(
-        self, *, project_id: str, owner_user_id: str
-    ) -> list[ProjectKeyRecord]: ...
-    def revoke(
-        self, *, key_id: str, project_id: str, owner_user_id: str, revoked_at: str
-    ) -> ProjectKeyRecord | None: ...
-
-
 class ProjectKeyLookup(Protocol):
     def verify_secret(self, *, secret: str) -> ProjectKeyRecord | None: ...
 
@@ -75,10 +60,10 @@ class ProjectKeyControl(ProjectKeyLookup, Protocol):
 
 
 class ProjectKeys:
-    """Public facade for mint/list/revoke plus uncached secret lookup."""
+    """Mint, verify, rotate, list, and revoke project credentials."""
 
-    def __init__(self, *, repository: ProjectKeyRepository) -> None:
-        self._repository = repository
+    def __init__(self, *, store: BaseStateStore) -> None:
+        self._store = store
 
     def create(
         self,
@@ -104,7 +89,7 @@ class ProjectKeys:
             oauth_family_id=oauth_family_id,
             grant_scope=grant_scope,
         )
-        self._repository.insert(record=record)
+        self._insert(record)
         return {"key": _public_record(record), "secret": secret}
 
     def rotate(
@@ -132,7 +117,7 @@ class ProjectKeys:
             oauth_family_id=oauth_family_id,
             grant_scope=grant_scope,
         )
-        if not self._repository.rotate(record=record, revoked_at=now_iso()):
+        if not self._rotate_record(record, revoked_at=now_iso()):
             raise NotFoundError(f"project key not found: {parent_key_id}")
         return {"key": _public_record(record), "secret": secret}
 
@@ -159,7 +144,7 @@ class ProjectKeys:
         blob_bytes_ceiling = _ceiling(blob_bytes_ceiling, field="blob_bytes_ceiling")
         parent_key_id = str(parent_key_id or "").strip() or None
         if parent_key_id:
-            parent = self._repository.by_id(key_id=parent_key_id)
+            parent = self._record_by_id(parent_key_id)
             if (
                 parent is None
                 or parent.project_id != project_id
@@ -173,7 +158,7 @@ class ProjectKeys:
             id=new_id(prefix="mkey"),
             secret_digest=hash_secret(secret),
             owner_user_id=owner_user_id,
-            tenant_id=self._repository.project_tenant(project_id=project_id),
+            tenant_id=self._project_tenant(project_id),
             project_id=project_id,
             grant_scope=grant_scope,
             audience=str(audience or "").strip() or None,
@@ -191,9 +176,9 @@ class ProjectKeys:
         return {
             "keys": [
                 _public_record(record)
-                for record in self._repository.list_for_owner(
-                    project_id=_required(project_id, field="project_id"),
-                    owner_user_id=_required(owner_user_id, field="owner_user_id"),
+                for record in self._records_for_owner(
+                    _required(project_id, field="project_id"),
+                    _required(owner_user_id, field="owner_user_id"),
                 )
             ]
         }
@@ -211,18 +196,18 @@ class ProjectKeys:
         project_id = _required(project_id, field="project_id")
         key_id = _required(key_id, field="key_id")
         owner_user_id = _required(owner_user_id, field="owner_user_id")
-        record = self._repository.revoke(
-            project_id=project_id,
-            key_id=key_id,
-            owner_user_id=owner_user_id,
+        record = self._revoke_record(
+            project_id,
+            key_id,
+            owner_user_id,
             revoked_at=now_iso(),
         )
         if record is None:
             raise NotFoundError(f"project key not found: {key_id}")
-        self._repository.revoke_lineage(
-            project_id=project_id,
-            key_id=key_id,
-            owner_user_id=owner_user_id,
+        self._revoke_lineage_rows(
+            project_id,
+            key_id,
+            owner_user_id,
             revoked_at=now_iso(),
         )
         return {"key": _public_record(record)}
@@ -234,10 +219,10 @@ class ProjectKeys:
         project_id = _required(project_id, field="project_id")
         key_id = _required(key_id, field="key_id")
         owner_user_id = _required(owner_user_id, field="owner_user_id")
-        if not self._repository.revoke_lineage(
-            project_id=project_id,
-            key_id=key_id,
-            owner_user_id=owner_user_id,
+        if not self._revoke_lineage_rows(
+            project_id,
+            key_id,
+            owner_user_id,
             revoked_at=now_iso(),
         ):
             raise NotFoundError(f"project key not found: {key_id}")
@@ -246,7 +231,7 @@ class ProjectKeys:
     def verify_secret(self, *, secret: str) -> ProjectKeyRecord | None:
         """Resolve one bearer with a fresh database read on every call."""
         digest = hash_secret(secret)
-        record = self._repository.by_digest(digest=digest)
+        record = self._record_by_digest(digest)
         if not secret_digest_matches(
             stored_digest=record.secret_digest if record is not None else None,
             presented_digest=digest,
@@ -260,6 +245,192 @@ class ProjectKeys:
         if expiry is not None and expiry <= datetime.now(UTC):
             return None
         return record
+
+    def _project_tenant(self, project_id: str) -> str:
+        with closing(self._store.connect()) as conn:
+            row = conn.execute(
+                "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"project not found: {project_id}")
+        return str(row["tenant_id"])
+
+    def _insert(self, record: ProjectKeyRecord) -> None:
+        with self._store.transaction() as conn:
+            conn.execute(_INSERT_SQL, _insert_params(record))
+
+    def _rotate_record(self, record: ProjectKeyRecord, *, revoked_at: str) -> bool:
+        with self._store.transaction() as conn:
+            parent = conn.execute(
+                """
+                SELECT id FROM project_api_keys
+                WHERE id = ? AND project_id = ? AND owner_user_id = ?
+                  AND revoked_at IS NULL
+                """,
+                (record.parent_key_id, record.project_id, record.owner_user_id),
+            ).fetchone()
+            if parent is None:
+                return False
+            conn.execute(_INSERT_SQL, _insert_params(record))
+            conn.execute(
+                "UPDATE project_api_keys SET revoked_at = ? WHERE id = ?",
+                (revoked_at, record.parent_key_id),
+            )
+        return True
+
+    def _record_by_digest(self, digest: str) -> ProjectKeyRecord | None:
+        with closing(self._store.connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM project_api_keys WHERE secret_digest = ?", (digest,)
+            ).fetchone()
+        return _record(row)
+
+    def _record_by_id(self, key_id: str) -> ProjectKeyRecord | None:
+        with closing(self._store.connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM project_api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
+        return _record(row)
+
+    def _records_for_owner(
+        self, project_id: str, owner_user_id: str
+    ) -> list[ProjectKeyRecord]:
+        with closing(self._store.connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM project_api_keys
+                WHERE project_id = ? AND owner_user_id = ?
+                ORDER BY created_at, id
+                """,
+                (project_id, owner_user_id),
+            ).fetchall()
+        return [record for row in rows if (record := _record(row)) is not None]
+
+    def _revoke_record(
+        self,
+        project_id: str,
+        key_id: str,
+        owner_user_id: str,
+        *,
+        revoked_at: str,
+    ) -> ProjectKeyRecord | None:
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM project_api_keys
+                WHERE id = ? AND project_id = ? AND owner_user_id = ?
+                """,
+                (key_id, project_id, owner_user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """
+                UPDATE project_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE id = ?
+                """,
+                (revoked_at, key_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM project_api_keys WHERE id = ?", (key_id,)
+            ).fetchone()
+        return _record(updated)
+
+    def _revoke_lineage_rows(
+        self,
+        project_id: str,
+        key_id: str,
+        owner_user_id: str,
+        *,
+        revoked_at: str,
+    ) -> bool:
+        with self._store.transaction() as conn:
+            root = conn.execute(
+                """
+                SELECT id FROM project_api_keys
+                WHERE id = ? AND project_id = ? AND owner_user_id = ?
+                """,
+                (key_id, project_id, owner_user_id),
+            ).fetchone()
+            if root is None:
+                return False
+            conn.execute(
+                """
+                WITH RECURSIVE lineage(id) AS (
+                  SELECT id FROM project_api_keys WHERE id = ?
+                  UNION ALL
+                  SELECT child.id FROM project_api_keys child
+                  JOIN lineage parent ON child.parent_key_id = parent.id
+                )
+                UPDATE project_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE id IN (SELECT id FROM lineage)
+                  AND project_id = ? AND owner_user_id = ?
+                """,
+                (key_id, revoked_at, project_id, owner_user_id),
+            )
+        return True
+
+
+_INSERT_SQL = """
+INSERT INTO project_api_keys (
+  id, secret_digest, owner_user_id, tenant_id, project_id, grant_scope,
+  audience, oauth_family_id, created_at, expires_at, revoked_at, parent_key_id,
+  sandbox_seconds_ceiling, blob_bytes_ceiling
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _insert_params(record: ProjectKeyRecord) -> tuple[Any, ...]:
+    return (
+        record.id,
+        record.secret_digest,
+        record.owner_user_id,
+        record.tenant_id,
+        record.project_id,
+        record.grant_scope,
+        record.audience,
+        record.oauth_family_id,
+        record.created_at,
+        record.expires_at,
+        record.revoked_at,
+        record.parent_key_id,
+        record.sandbox_seconds_ceiling,
+        record.blob_bytes_ceiling,
+    )
+
+
+def _record(row: Any) -> ProjectKeyRecord | None:
+    data = row_to_dict(row=row)
+    if data is None:
+        return None
+    return ProjectKeyRecord(
+        id=str(data["id"]),
+        secret_digest=str(data["secret_digest"]),
+        owner_user_id=str(data["owner_user_id"]),
+        tenant_id=str(data["tenant_id"]),
+        project_id=str(data["project_id"]),
+        grant_scope=str(data.get("grant_scope") or PROJECT_GRANT),
+        audience=str(data["audience"]) if data.get("audience") else None,
+        oauth_family_id=(
+            str(data["oauth_family_id"]) if data.get("oauth_family_id") else None
+        ),
+        created_at=str(data["created_at"]),
+        expires_at=str(data["expires_at"]) if data.get("expires_at") else None,
+        revoked_at=str(data["revoked_at"]) if data.get("revoked_at") else None,
+        parent_key_id=(
+            str(data["parent_key_id"]) if data.get("parent_key_id") else None
+        ),
+        sandbox_seconds_ceiling=(
+            int(data["sandbox_seconds_ceiling"])
+            if data.get("sandbox_seconds_ceiling") is not None
+            else None
+        ),
+        blob_bytes_ceiling=(
+            int(data["blob_bytes_ceiling"])
+            if data.get("blob_bytes_ceiling") is not None
+            else None
+        ),
+    )
 
 
 def _public_record(record: ProjectKeyRecord) -> dict[str, object]:

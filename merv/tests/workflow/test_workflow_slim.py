@@ -21,7 +21,9 @@ class WorkflowSlimTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
         )
-        self.project_id = self.call("project", action="create", name="Slim Project")["id"]
+        self.project_id = self.call("project", action="create", name="Slim Project")[
+            "id"
+        ]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -31,28 +33,46 @@ class WorkflowSlimTest(unittest.TestCase):
 
     def _set_status(self, exp_id: str, status: str) -> None:
         with self.app.store.transaction() as conn:
-            conn.execute("UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id))
+            conn.execute(
+                "UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id)
+            )
 
-    def _seed_review(self, *, exp_id: str, review_id: str, seq: int, **overrides) -> None:
+    def _seed_review(
+        self, *, exp_id: str, review_id: str, seq: int, **overrides
+    ) -> None:
         """Write a review row directly (FK off) with bookkeeping + findings."""
         import json
         import sqlite3
+
         raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
         raw.execute("PRAGMA foreign_keys=OFF")
         cols = [r[1] for r in raw.execute("PRAGMA table_info(reviews)").fetchall()]
         vals = {
-            "id": review_id, "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
-            "role": "experiment_reviewer", "verdict": "pass", "status": "submitted",
+            "id": review_id,
+            "project_id": self.project_id,
+            "target_type": "experiment",
+            "target_id": exp_id,
+            "role": "experiment_reviewer",
+            "verdict": "pass",
+            "status": "submitted",
             "findings_json": json.dumps([{"issue": "narrow", "severity": "low"}]),
-            "evidence_json": json.dumps({"exit_code": 0}), "notes": "looks good",
+            "evidence_json": json.dumps({"exit_code": 0}),
+            "notes": "looks good",
             "synopsis": f"synopsis for {review_id}",
-            "target_snapshot_id": "experiment|" + "x" * 500, "created_at": "2026-06-03T04:41:27Z",
-            "request_id": "rr_x", "session_id": "rvs_x", "created_seq": seq,
+            "target_snapshot_id": "experiment|" + "x" * 500,
+            "created_at": "2026-06-03T04:41:27Z",
+            "request_id": "rr_x",
+            "session_id": "rvs_x",
+            "created_seq": seq,
             **overrides,
         }
         present = {k: v for k, v in vals.items() if k in cols}
-        raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
-        raw.commit(); raw.close()
+        raw.execute(
+            f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})",
+            list(present.values()),
+        )
+        raw.commit()
+        raw.close()
 
     def _experiment_with_plan(self) -> str:
         exp_id = self.call(
@@ -62,7 +82,8 @@ class WorkflowSlimTest(unittest.TestCase):
             intent="Do the thing on the staged subset.\n\nTitle: The Thing",
         )["id"]
         self.app.submit_artifact(
-            project_id=self.project_id, target_type="experiment",
+            project_id=self.project_id,
+            target_type="experiment",
             target_id=exp_id,
             role="plan",
             path="plan.md",
@@ -72,15 +93,15 @@ class WorkflowSlimTest(unittest.TestCase):
 
     def test_experiment_scope_is_slim(self) -> None:
         exp_id = self._experiment_with_plan()
-        slim = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        slim = self.call(
+            "workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id
+        )
 
         self.assertEqual(slim["scope"], "experiment")
         self.assertIn("current_gate", slim["workflow"])
 
         context = slim["context"]
-        self.assertEqual(
-            set(context), {"experiment", "plan", "report", "artifacts"}
-        )
+        self.assertEqual(set(context), {"experiment", "plan", "report", "artifacts"})
         exp = context["experiment"]
         self.assertEqual(exp["name"], "the-thing")
         self.assertNotIn("attempt_index", exp)
@@ -105,10 +126,16 @@ class WorkflowSlimTest(unittest.TestCase):
 
     def test_review_history_is_not_dumped_into_experiment_context(self) -> None:
         exp_id = self._experiment_with_plan()
-        self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z")
-        self._seed_review(exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z")
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z"
+        )
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z"
+        )
 
-        slim = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        slim = self.call(
+            "workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id
+        )
         context = slim["context"]
 
         self.assertNotIn("reviews", context)
@@ -179,9 +206,16 @@ class WorkflowSlimTest(unittest.TestCase):
     def test_active_sandbox_is_summarized(self) -> None:
         exp_id = self._experiment_with_plan()
         self._set_status(exp_id, "ready_to_run")
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id, gpu="A100")
+        self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            gpu="A100",
+        )
 
-        slim = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        slim = self.call(
+            "workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id
+        )
         sandbox = slim["sandbox"]
         self.assertTrue(sandbox["active"])
         self.assertTrue(sandbox["sandbox_id"])
@@ -193,7 +227,9 @@ class WorkflowSlimTest(unittest.TestCase):
     def test_project_scope_is_compact(self) -> None:
         # With no experiment yet, the tool orients at the project level
         # (`_resolve_scope` only auto-picks an experiment once one exists).
-        self.call("claim.create", project_id=self.project_id, statement="Bigger batches help.")
+        self.call(
+            "claim.create", project_id=self.project_id, statement="Bigger batches help."
+        )
         slim = self.call("workflow.status_and_next", project_id=self.project_id)
 
         self.assertEqual(slim["scope"], "project")
@@ -210,11 +246,15 @@ class WorkflowSlimTest(unittest.TestCase):
 
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
         exp_id = self._experiment_with_plan()
-        full = self.app.workflow.status_and_next(project_id=self.project_id, experiment_id=exp_id)
+        full = self.app.application.status(
+            project_id=self.project_id, experiment_id=exp_id
+        )
         # The UI path still gets the rich shape: the all-attempts artifact
         # list with full metadata, and the project-wide experiment list.
         self.assertIn("artifacts", full["experiment"])
-        self.assertIn("content_type", full["experiment"]["current_attempt_artifacts"][0])
+        self.assertIn(
+            "content_type", full["experiment"]["current_attempt_artifacts"][0]
+        )
         self.assertIn("active_experiments", full["project"])
 
 

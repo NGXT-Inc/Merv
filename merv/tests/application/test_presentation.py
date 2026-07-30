@@ -1,3 +1,5 @@
+"""Rich, slim, and compatibility experiment projections."""
+
 from __future__ import annotations
 
 import unittest
@@ -211,118 +213,54 @@ class ExperimentPresentationTest(unittest.TestCase):
 
 
 class ReviewDietTest(unittest.TestCase):
-    def test_every_review_travels_as_a_tldr_by_default(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review("rev_3", created_at="2026-07-03T00:00:00Z"),
-                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+    def test_projection_is_tldr_only_and_preserves_input_order(self) -> None:
+        cases = (
+            (),
+            (_review("rev_1", created_at="2026-07-01T00:00:00Z"),),
+            (
+                _review("rev_2", created_at="2026-07-01T00:00:00Z"),
                 _review("rev_1", created_at="2026-07-01T00:00:00Z"),
-            ]
-        )
-
-        self.assertEqual([row["id"] for row in rows], ["rev_3", "rev_2", "rev_1"])
-        self.assertEqual(set(rows[0]), TLDR_KEYS)
-        self.assertEqual(set(rows[1]), TLDR_KEYS)
-        self.assertEqual(set(rows[2]), TLDR_KEYS)
-        self.assertEqual(rows[0]["synopsis"], "synopsis for rev_3")
-        self.assertEqual(rows[1]["synopsis"], "synopsis for rev_2")
-
-    def test_projection_preserves_authoritative_insertion_order(self) -> None:
-        rows = slim_review_rows(
-            [
+            ),
+            (
                 _review("rev_new", created_at="2026-07-01T00:00:00Z"),
                 _review("rev_skewed", created_at="2026-07-09T00:00:00Z"),
                 _review("rev_old", created_at="2026-06-20T00:00:00Z"),
-            ]
+            ),
         )
+        for reviews in cases:
+            with self.subTest(ids=[review["id"] for review in reviews]):
+                rows = slim_review_rows(reviews)
+                self.assertEqual(
+                    [row["id"] for row in rows],
+                    [review["id"] for review in reviews],
+                )
+                self.assertTrue(all(set(row) == TLDR_KEYS for row in rows))
 
-        self.assertEqual(
-            [row["id"] for row in rows], ["rev_new", "rev_skewed", "rev_old"]
+    def test_legacy_reviews_get_a_bounded_nonempty_synopsis(self) -> None:
+        cases = (
+            (
+                {"notes": "\n\n  The sweep never separated the arms.  \nmore detail"},
+                "The sweep never separated the arms.",
+            ),
+            ({"notes": "w" * 900}, "w" * 419 + "…"),
+            ({"notes": "   \n \n"}, "Review finding: rev_1"),
+            (
+                {"notes": "", "findings": []},
+                "The experiment reviewer returned pass; this legacy review stored "
+                "no narrative synopsis.",
+            ),
         )
-        self.assertEqual(set(rows[0]), TLDR_KEYS)
-        self.assertEqual(set(rows[1]), TLDR_KEYS)
-        self.assertEqual(set(rows[2]), TLDR_KEYS)
-
-    def test_same_timestamp_does_not_change_input_order(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review("rev_2", created_at="2026-07-01T00:00:00Z"),
-                _review("rev_1", created_at="2026-07-01T00:00:00Z"),
-            ]
-        )
-
-        self.assertEqual(set(rows[0]), TLDR_KEYS)
-        self.assertEqual(set(rows[1]), TLDR_KEYS)
-
-    def test_a_lone_review_is_still_tldr_only(self) -> None:
-        rows = slim_review_rows([_review("rev_1", created_at="2026-07-01T00:00:00Z")])
-
-        self.assertEqual(set(rows[0]), TLDR_KEYS)
-
-    def test_no_reviews_projects_to_an_empty_list(self) -> None:
-        self.assertEqual(slim_review_rows([]), [])
-
-    def test_pre_synopsis_rows_borrow_their_first_notes_line(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
-                _review(
+        for overrides, expected in cases:
+            with self.subTest(overrides=overrides):
+                review = _review(
                     "rev_1",
                     created_at="2026-07-01T00:00:00Z",
                     synopsis="",
-                    notes="\n\n  The sweep never separated the arms.  \nmore detail",
-                ),
-            ]
-        )
-
-        self.assertEqual(rows[1]["synopsis"], "The sweep never separated the arms.")
-
-    def test_borrowed_notes_line_is_truncated_to_the_synopsis_ceiling(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
-                _review(
-                    "rev_1",
-                    created_at="2026-07-01T00:00:00Z",
-                    synopsis="",
-                    notes="w" * 900,
-                ),
-            ]
-        )
-
-        self.assertEqual(len(rows[1]["synopsis"]), 420)
-        self.assertTrue(rows[1]["synopsis"].endswith("…"))
-
-    def test_missing_synopsis_and_notes_falls_back_to_a_finding(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
-                _review(
-                    "rev_1",
-                    created_at="2026-07-01T00:00:00Z",
-                    synopsis="",
-                    notes="   \n \n",
-                ),
-            ]
-        )
-
-        self.assertEqual(rows[1]["synopsis"], "Review finding: rev_1")
-
-    def test_fully_empty_legacy_review_gets_a_nonempty_status_tldr(self) -> None:
-        rows = slim_review_rows(
-            [
-                _review(
-                    "rev_1",
-                    created_at="2026-07-01T00:00:00Z",
-                    synopsis="",
-                    notes="",
-                    findings=[],
-                ),
-            ]
-        )
-
-        self.assertIn("returned pass", rows[0]["synopsis"])
-        self.assertLessEqual(len(rows[0]["synopsis"]), 420)
+                    **overrides,
+                )
+                synopsis = slim_review_rows([review])[0]["synopsis"]
+                self.assertEqual(synopsis, expected)
+                self.assertLessEqual(len(synopsis), 420)
 
     def test_review_body_reads_an_older_round_back_with_its_routing(self) -> None:
         reviews = [

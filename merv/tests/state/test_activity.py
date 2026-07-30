@@ -12,7 +12,7 @@ from merv.brain.kernel.state.activity import (
     redact_sensitive,
     scrub_secret_text,
 )
-from merv.brain.surface.control.control_runtime import ControlActivitySink
+from merv.brain.surface.telemetry import ControlActivitySink
 
 # A realistic storage.submit result: bytes go direct to S3 via a presigned PUT,
 # and the ledger is finalized through the one-time completion token — both live

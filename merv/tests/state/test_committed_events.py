@@ -8,11 +8,6 @@ from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-from merv.brain.application.events import (
-    EventCatalogEntry,
-    EventDispatcher,
-    EventReaction,
-)
 from merv.brain.artifacts import Artifacts
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
@@ -22,9 +17,6 @@ from merv.brain.research_core.experiments import (
 )
 from merv.brain.research_core import Research
 from tests.fakes import FakeBlobStore
-
-
-_TRANSITION_PRODUCER = "merv.brain.research_core.Research.transition_experiment"
 
 
 class CommittedEventTest(unittest.TestCase):
@@ -62,7 +54,9 @@ class CommittedEventTest(unittest.TestCase):
                 "SELECT * FROM events WHERE id = ?", (event.id,)
             ).fetchone()
         assert row is not None
-        self.assertEqual(str(row["payload_json"]), '{"a": 1, "z": [{"nested": "original"}]}')
+        self.assertEqual(
+            str(row["payload_json"]), '{"a": 1, "z": [{"nested": "original"}]}'
+        )
         self.assertEqual(event.project_id, str(row["project_id"]))
         self.assertEqual(event.type, str(row["type"]))
         self.assertEqual(event.target_type, str(row["target_type"]))
@@ -124,40 +118,21 @@ class CommittedEventTest(unittest.TestCase):
             },
         )
 
-        dispatcher = EventDispatcher()
-
-        def committed_probe(context):
-            with closing(self.store.connect()) as conn:
-                row = conn.execute(
-                    "SELECT payload_json FROM events WHERE id = ?", (context.event.id,)
-                ).fetchone()
-            assert row is not None
-            self.assertEqual(json.loads(str(row["payload_json"])), {
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM events WHERE id = ?",
+                (event.id,),
+            ).fetchone()
+        assert row is not None
+        self.assertEqual(
+            json.loads(str(row["payload_json"])),
+            {
                 "evidence": {"codes": [1, 2], "reason": "expected failure"},
                 "from": "planned",
                 "to": "failed",
                 "transition": "mark_failed",
-            })
-            return EventReaction(state=context.state, value="readable")
-
-        dispatcher.bind_catalog(
-            (
-                EventCatalogEntry(
-                    producer=_TRANSITION_PRODUCER,
-                    event_type=event.type,
-                    payload_version=1,
-                    transaction_boundary=_TRANSITION_PRODUCER,
-                    reaction_phase="post_commit",
-                    handler_identity="probe",
-                    failure="fatal",
-                    idempotency="repeat_safe",
-                ),
-            ),
-            handlers={"probe": committed_probe},
+            },
         )
-        dispatched = dispatcher.dispatch(event=event, phase="post_commit", state=state)
-        self.assertIs(dispatched.state, state)
-        self.assertEqual(dict(dispatched.outcomes), {"probe": "readable"})
 
     def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
         experiments = ExperimentService(
@@ -306,7 +281,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         self._record(run_id="run_a", delivery_id=41)
 
         found = self.experiments.tracking_delivery_state(
-            project_id=self.project_id, experiment_id=self.experiment_id,
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
             delivery_id=41,
         )
         assert found is not None
@@ -315,7 +291,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         # payload key, not on "this experiment has some tracking event".
         self.assertIsNone(
             self.experiments.tracking_delivery_state(
-                project_id=self.project_id, experiment_id=self.experiment_id,
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
                 delivery_id=42,
             )
         )
@@ -341,8 +318,12 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             [
                 {
                     "type": "experiment.mlflow_run_created",
-                    "run_id": "run_a", "run_name": "", "status": "RUNNING",
-                    "error": "", "previous_run_id": "", "delivery_id": 41,
+                    "run_id": "run_a",
+                    "run_name": "",
+                    "status": "RUNNING",
+                    "error": "",
+                    "previous_run_id": "",
+                    "delivery_id": 41,
                 }
             ],
         )
@@ -358,7 +339,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         # delivery B commits on top, and only then does A retry.
         self.assertIsNone(
             self.experiments.tracking_delivery_state(
-                project_id=self.project_id, experiment_id=self.experiment_id,
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
                 delivery_id=41,
             )
         )
@@ -369,7 +351,10 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
 
         # One append per delivery, and A's older outcome does not come back.
         self.assertEqual(
-            [(event["delivery_id"], event["run_id"]) for event in self._tracking_events()],
+            [
+                (event["delivery_id"], event["run_id"])
+                for event in self._tracking_events()
+            ],
             [(41, "run_a"), (99, "run_rival")],
         )
         self.assertEqual(retried["mlflow_run"]["run_id"], "run_rival")
@@ -402,16 +387,15 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             )
 
         found = self.experiments.tracking_delivery_state(
-            project_id=self.project_id, experiment_id=self.experiment_id,
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
             delivery_id=41,
         )
         assert found is not None
         replayed = self._record(run_id="run_redelivered", delivery_id=41)
 
         self.assertEqual(replayed["mlflow_run"]["run_id"], "run_a")
-        keyed = [
-            event for event in self._tracking_events() if "delivery_id" in event
-        ]
+        keyed = [event for event in self._tracking_events() if "delivery_id" in event]
         self.assertEqual(
             [(event["type"], event["run_id"]) for event in keyed],
             [("experiment.mlflow_run_created", "run_a")],
@@ -432,7 +416,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
 
         self.assertIsNotNone(
             self.experiments.tracking_delivery_state(
-                project_id=self.project_id, experiment_id=self.experiment_id,
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
                 delivery_id=41,
             )
         )
@@ -452,8 +437,12 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             [
                 {
                     "type": "experiment.mlflow_run_created",
-                    "run_id": "run_a", "run_name": "", "status": "RUNNING",
-                    "error": "", "previous_run_id": "", "delivery_id": 41,
+                    "run_id": "run_a",
+                    "run_name": "",
+                    "status": "RUNNING",
+                    "error": "",
+                    "previous_run_id": "",
+                    "delivery_id": 41,
                 }
             ],
         )
@@ -476,7 +465,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         self.assertEqual(self._tracking_events(), [])
         self.assertIsNone(
             self.experiments.tracking_delivery_state(
-                project_id=self.project_id, experiment_id=self.experiment_id,
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
                 delivery_id=41,
             )
         )
@@ -579,7 +569,8 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
 
     def _assert_indexed_reads(self) -> None:
         delivery_reads = [
-            count for sql, count in self.store.reads
+            count
+            for sql, count in self.store.reads
             if "FROM tracking_deliveries" in sql
         ]
         event_reads = [
@@ -608,9 +599,7 @@ class TrackingDeliveryLookupCostTest(unittest.TestCase):
         # transaction, replaying the OLDEST delivery behind every later one.
         replayed = self._record(run_id="run_redelivered", delivery_id=41)
 
-        self.assertEqual(
-            replayed["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}"
-        )
+        self.assertEqual(replayed["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}")
         self._assert_indexed_reads()
 
 

@@ -40,10 +40,12 @@ from tests.support.brain import TestBrain
 from merv.brain.artifacts import Artifacts
 from merv.brain.feed.persistence import install_feed_schema
 from merv.brain.surface.config import build_state_store, resolve_db_url
-from merv.brain.application.queries import TenantCountersQuery
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.sandbox.quotas import QuotaService
-from merv.brain.kernel.state.dialects import PostgresStateStore, translate_schema_to_postgres
+from merv.brain.kernel.state.dialects import (
+    PostgresStateStore,
+    translate_schema_to_postgres,
+)
 from merv.brain.kernel.state.store import (
     EXPERIMENT_MLFLOW_COLUMNS,
     MIGRATIONS,
@@ -81,7 +83,9 @@ def _docker_available() -> bool:
         return False
 
 
-REQUIRE_POSTGRES_TESTS = os.environ.get("MERV_REQUIRE_POSTGRES_TESTS", "").strip().lower() in {
+REQUIRE_POSTGRES_TESTS = os.environ.get(
+    "MERV_REQUIRE_POSTGRES_TESTS", ""
+).strip().lower() in {
     "1",
     "true",
     "yes",
@@ -549,7 +553,13 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 )
                 VALUES (%s, %s, 'experiment', %s, 'experiment_reviewer', '', 'submitted', '', %s, %s)
                 """,
-                ("rr_synopsis_old", "proj_synopsis_old", "exp_synopsis_old", created, created),
+                (
+                    "rr_synopsis_old",
+                    "proj_synopsis_old",
+                    "exp_synopsis_old",
+                    created,
+                    created,
+                ),
             )
             conn.execute(
                 """
@@ -606,7 +616,9 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_legacy_postgres_store_gains_project_keys_and_generation_key_id(self) -> None:
+    def test_legacy_postgres_store_gains_project_keys_and_generation_key_id(
+        self,
+    ) -> None:
         """Old-DB upgrade through the agent-anywhere Phase-A block: replay ledger
         rows < 26 against a schema with neither project_api_keys nor
         sandbox_generations.key_id, re-open, and confirm migrations 26/27 add
@@ -720,9 +732,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 "oauth_authorization_codes",
                 "oauth_refresh_tokens",
             ):
-                self.assertTrue(
-                    store._has_table(conn=conn, table=table), table
-                )
+                self.assertTrue(store._has_table(conn=conn, table=table), table)
             ledger = conn.execute(
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
@@ -753,18 +763,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         store = PostgresStateStore(dsn=dsn)
         conn = store.connect()
         try:
-            self.assertFalse(
-                store._has_table(conn=conn, table="feed_upload_tokens")
-            )
+            self.assertFalse(store._has_table(conn=conn, table="feed_upload_tokens"))
         finally:
             conn.close()
 
         install_feed_schema(store)
         conn = store.connect()
         try:
-            self.assertTrue(
-                store._has_table(conn=conn, table="feed_upload_tokens")
-            )
+            self.assertTrue(store._has_table(conn=conn, table="feed_upload_tokens"))
             for column in ("token", "post_id", "media_kind", "expires_at"):
                 self.assertTrue(
                     store._has_column(
@@ -922,7 +928,15 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                ("exp_live", "proj_pg", "sb-live", "running", now_iso(), now_iso(), now_iso()),
+                (
+                    "exp_live",
+                    "proj_pg",
+                    "sb-live",
+                    "running",
+                    now_iso(),
+                    now_iso(),
+                    now_iso(),
+                ),
             )
             conn.execute(
                 """
@@ -933,8 +947,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
-                    "exp_done", "proj_pg", "sb-done", "terminated",
-                    now_iso(), now_iso(), now_iso(), now_iso(),
+                    "exp_done",
+                    "proj_pg",
+                    "sb-done",
+                    "terminated",
+                    now_iso(),
+                    now_iso(),
+                    now_iso(),
+                    now_iso(),
                 ),
             )
 
@@ -956,9 +976,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             ).fetchall()
             self.assertEqual([str(r["column_name"]) for r in pk], ["sandbox_uid"])
             # every legacy row got a distinct uuid.
-            rows = conn.execute(
-                "SELECT sandbox_uid FROM sandboxes"
-            ).fetchall()
+            rows = conn.execute("SELECT sandbox_uid FROM sandboxes").fetchall()
             self.assertTrue(all(str(r["sandbox_uid"]) for r in rows))
             self.assertEqual(len({str(r["sandbox_uid"]) for r in rows}), 2)
             # one attachment per sandbox: live stays open, terminated is closed.
@@ -1021,12 +1039,13 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 event_type="audit.tenant-counter",
             )
 
-        counts = TenantCountersQuery(
-            event_count=self.store.tenant_event_count,
-            generation_counters=QuotaService(
-                store=self.store
-            ).tenant_generation_counters,
-        )(tenant_id="tenant_pg")
+        counts = {
+            "tenant_id": "tenant_pg",
+            "tool_calls": self.store.tenant_event_count(tenant_id="tenant_pg"),
+            **QuotaService(store=self.store).tenant_generation_counters(
+                tenant_id="tenant_pg"
+            ),
+        }
         self.assertEqual(counts["tenant_id"], "tenant_pg")
         self.assertEqual(counts["sandbox_generations"], 1)
         self.assertEqual(counts["sandbox_hours"], 2.5)
@@ -1081,7 +1100,9 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             project_id=project_id, name="tracking-refresh", intent="postgres"
         )
 
-        committed = Research(store=self.store, artifacts=artifacts).refresh_tracking_run(
+        committed = Research(
+            store=self.store, artifacts=artifacts
+        ).refresh_tracking_run(
             project_id=project_id,
             experiment_id=created["id"],
             run={"run_id": "run_pg", "status": "FINISHED"},
@@ -1612,7 +1633,9 @@ class SchemaParityTest(unittest.TestCase):
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                if not isinstance(node, ast.Constant) or not isinstance(
+                    node.value, str
+                ):
                     continue
                 sql = node.value
                 if not re.search(
@@ -1638,9 +1661,7 @@ class SchemaParityTest(unittest.TestCase):
 
     def test_build_state_store_defaults_to_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            store = build_state_store(
-                db_path=Path(tmp) / "state.sqlite", env={}
-            )
+            store = build_state_store(db_path=Path(tmp) / "state.sqlite", env={})
             self.assertIsInstance(store, StateStore)
 
 

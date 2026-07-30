@@ -130,7 +130,7 @@ def main() -> int:
         # Match the brain's own resolution: <staging-parent>/registry.sqlite
         # so the child's `<registry>.parent / "brain"` lands on the same root.
         sys.path.insert(0, str(plugin_root / "src"))
-        from merv.brain.surface.composition.brain_dirs import resolve_local_brain_staging
+        from merv.brain.surface.brain_dirs import resolve_local_brain_staging
 
         registry_store_path = (
             resolve_local_brain_staging().parent / "registry.sqlite"

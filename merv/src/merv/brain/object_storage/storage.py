@@ -7,12 +7,11 @@ import base64
 import secrets
 from contextlib import closing
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from merv.shared.storage_guidance import storage_guidance
 
 from ..kernel.ports.blob_store import validate_blob_keys
-from ..application.ports.storage import ProducedObject
 from ..kernel.state.store import (
     BaseStateStore,
     Connection,
@@ -43,6 +42,26 @@ COMPLETION_TOKEN_TTL_SECONDS = PRESIGN_TTL_SECONDS + 3600
 _LOCAL_API_BASE = "http://127.0.0.1:8787"
 
 
+class ProducedObject(TypedDict):
+    """Hosted-safe heavy-object fields exposed to experiment views."""
+
+    id: str
+    name: str
+    version: int
+    kind: str
+    content_sha256: str
+    size_bytes: int
+    content_type: str
+    status: str
+    expires_at: str | None
+    producing_run: str
+    source_uri: str
+    notes: str
+    created_at: str
+    updated_at: str
+    last_accessed_at: str | None
+
+
 def _shell_quote(value: str) -> str:
     """Quote one POSIX shell argument."""
     return "'" + value.replace("'", "'\\''") + "'"
@@ -54,8 +73,13 @@ def _checksum_sha256_b64(sha256: str) -> str:
 
 
 def storage_submit_command(
-    *, base_url: str, path: str, presigned_url: str, checksum_b64: str,
-    content_type: str, token: str
+    *,
+    base_url: str,
+    path: str,
+    presigned_url: str,
+    checksum_b64: str,
+    content_type: str,
+    token: str,
 ) -> str:
     """Build the direct upload and completion command."""
     base = (base_url or _LOCAL_API_BASE).rstrip("/")
@@ -66,7 +90,9 @@ def storage_submit_command(
         f"curl -sf -X PUT -H {checksum_header} -H {content_type_header} "
         f"-T {_shell_quote(path)} {_shell_quote(presigned_url)}"
     )
-    complete = f"curl -sf -X POST {_shell_quote(f'{base}/api/storage/u/{token}/complete')}"
+    complete = (
+        f"curl -sf -X POST {_shell_quote(f'{base}/api/storage/u/{token}/complete')}"
+    )
     return f"{put} && {complete}"
 
 
@@ -723,9 +749,7 @@ class ObjectStorage:
             return result
         columns = ", ".join(_PRODUCED_OBJECT_COLUMNS)
         with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             for start in range(0, len(ids), _EXPERIMENT_ID_BATCH_SIZE):
                 batch = ids[start : start + _EXPERIMENT_ID_BATCH_SIZE]
                 placeholders = ", ".join("?" for _ in batch)

@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Canonical agent context for work already inside one experiment."""
 
 from __future__ import annotations
@@ -61,9 +62,7 @@ class ExperimentContextQuery:
         pinned_artifacts: Iterable[Mapping[str, Any]] | None = None,
     ) -> Record:
         status = str(state.get("status") or "")
-        artifact_project_id = (
-            str(state.get("project_id") or project_id or "") or None
-        )
+        artifact_project_id = str(state.get("project_id") or project_id or "") or None
         rows, pinned_content = self._artifact_rows(
             state=state, pinned_artifacts=pinned_artifacts
         )
@@ -133,21 +132,17 @@ class ExperimentContextQuery:
         rows: list[Record] = []
         content: dict[str, str | None] = {}
         for artifact in pinned:
-            artifact_id = str(
-                artifact.get("artifact_id") or artifact.get("id") or ""
-            )
+            artifact_id = str(artifact.get("artifact_id") or artifact.get("id") or "")
             if not artifact_id:
                 continue
             merged = {
                 **by_id.get(artifact_id, {}),
                 "id": artifact_id,
-                "role": artifact.get("role")
-                or by_id.get(artifact_id, {}).get("role"),
+                "role": artifact.get("role") or by_id.get(artifact_id, {}).get("role"),
                 "lens_id": artifact.get("lens_id")
                 or by_id.get(artifact_id, {}).get("lens_id")
                 or "",
-                "path": artifact.get("path")
-                or by_id.get(artifact_id, {}).get("path"),
+                "path": artifact.get("path") or by_id.get(artifact_id, {}).get("path"),
                 "attempt_index": (
                     artifact.get("attempt_index")
                     or by_id.get(artifact_id, {}).get("attempt_index")
@@ -328,9 +323,7 @@ def _latest_review(
     return None
 
 
-def _reviews_for_role(
-    *, state: ExperimentState | Record, role: str
-) -> list[Record]:
+def _reviews_for_role(*, state: ExperimentState | Record, role: str) -> list[Record]:
     return [
         review
         for review in state.get("reviews", [])

@@ -8,15 +8,14 @@ tool contract machinery shared by HTTP MCP and trusted internal calls.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import ValidationError as PydanticValidationError
 
-from .contracts import ContractModel, TOOL_CONTRACTS
+from .contracts import TOOL_CONTRACTS, TOOL_MANIFEST
 from ..identity import ToolVisibilityError
 from ...kernel.state.activity import monotonic_ms
-from ...kernel.utils import ResearchPluginError
+from ...kernel.utils import PermissionDeniedError, ResearchPluginError
 from ...kernel.utils import ValidationError as ToolValidationError
 
 
@@ -31,40 +30,6 @@ class ToolActivity(Protocol):
 
 class ToolCallRecorder(Protocol):
     def record(self, **kwargs: Any) -> None: ...
-
-
-class ToolCallLedgerWriter(Protocol):
-    """Durable per-call ledger. Contractually never raises: a dropped
-    telemetry row may not turn a successful tool call into a failure."""
-
-    def record(self, **kwargs: Any) -> None: ...
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    input_model: type[ContractModel]
-    handler: ToolHandler
-
-    def call(
-        self,
-        *,
-        raw_arguments: dict[str, Any],
-        internal_kwargs: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        request = self.input_model.model_validate(raw_arguments)
-        kwargs = request.model_dump()
-        if internal_kwargs:
-            kwargs.update(internal_kwargs)
-        return self.handler(**kwargs)
-
-
-class ToolPermissionPolicy(Protocol):
-    """Permission surface used by the tool dispatcher."""
-
-    def reject_reviewer_mutation(
-        self, *, tool_name: str, review_session_id: str | None
-    ) -> None:
-        ...
 
 
 def _contract_error_message(*, exc: PydanticValidationError) -> str:
@@ -105,10 +70,9 @@ class ToolDispatcher:
         self,
         *,
         handlers: dict[str, ToolHandler],
-        permissions: ToolPermissionPolicy,
         activity: ToolActivity,
         tool_calls: ToolCallRecorder,
-        ledger: ToolCallLedgerWriter | None = None,
+        ledger: ToolCallRecorder | None = None,
         tool_names: Iterable[str] | None = None,
     ) -> None:
         selected_tool_names = (
@@ -118,7 +82,6 @@ class ToolDispatcher:
             handlers=handlers,
             tool_names=selected_tool_names,
         )
-        self.permissions = permissions
         self.activity = activity
         self.tool_calls = tool_calls
         # Durable sibling of the in-memory ring: sizes, digests, and outcomes
@@ -126,7 +89,7 @@ class ToolDispatcher:
         self.ledger = ledger
         self._tool_names = frozenset(selected_tool_names)
         self._tools = {
-            name: ToolSpec(contract.input_model, handlers[name])
+            name: (contract.input_model, handlers[name])
             for name, contract in TOOL_CONTRACTS.items()
             if name in self._tool_names
         }
@@ -178,15 +141,16 @@ class ToolDispatcher:
                     f"tool {name} is internal and cannot be invoked over MCP",
                     details={"tool": name, "visibility": "internal"},
                 )
-            self.permissions.reject_reviewer_mutation(
-                tool_name=name,
-                review_session_id=arguments.get("review_session_id"),
-            )
-            try:
-                result = self._tools[name].call(
-                    raw_arguments=arguments,
-                    internal_kwargs=internal_kwargs,
+            if arguments.get("review_session_id") and name != "review.submit":
+                raise PermissionDeniedError(
+                    "review sessions are read-only except review.submit"
                 )
+            try:
+                input_model, handler = self._tools[name]
+                kwargs = input_model.model_validate(arguments).model_dump()
+                if internal_kwargs:
+                    kwargs.update(internal_kwargs)
+                result = handler(**kwargs)
             except PydanticValidationError as exc:
                 raise ToolValidationError(
                     _contract_error_message(exc=exc),

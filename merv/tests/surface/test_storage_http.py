@@ -14,13 +14,13 @@ from fastapi.testclient import TestClient
 
 from tests.fakes import FakeObjectStore
 from tests.support.brain import TestBrain
-from merv.brain.surface.composition import build_local_server
+from merv.brain.surface.surface import build_local_server
 from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.object_storage import ObjectStorage
 from merv.brain.object_storage.storage import SINGLE_PUT_MAX_BYTES
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.kernel.utils import ValidationError
 
 
@@ -47,7 +47,7 @@ class StorageHttpApiTest(unittest.TestCase):
             store=store,
             storage=storage,
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
         self.project_id = self._request(
             "POST", "/api/projects", {"name": "Storage HTTP Project"}
         )["id"]
@@ -425,7 +425,7 @@ class StorageCompositionTest(unittest.TestCase):
                 server = build_local_server(state_dir=root)
                 app = server.app
             try:
-                self.assertIsNone(app._storage)
+                self.assertIsNone(app.storage)
                 self.assertFalse(
                     {tool["name"] for tool in app.tools.list_tools()}
                     & {"storage.put_object", "storage.find", "storage.object"}

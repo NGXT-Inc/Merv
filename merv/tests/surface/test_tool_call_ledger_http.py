@@ -24,7 +24,7 @@ from merv.brain.surface.transport.api.gateway import (
     ProjectAuthorizer,
     ToolInvocationGateway,
 )
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 
 
@@ -175,7 +175,7 @@ class AuthDenialLedgerTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.brain.http,
+                self.brain,
                 allowed_origins=["https://ui.example"],
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
@@ -299,7 +299,7 @@ class OpenHostedLabelTest(unittest.TestCase):
         self.brain = TestBrain(repo_root=root, db_path=root / ".merv" / "state.sqlite")
         self.client = TestClient(
             create_fastapi_app(
-                self.brain.http,
+                self.brain,
                 allowed_origins=["https://ui.example"],
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True

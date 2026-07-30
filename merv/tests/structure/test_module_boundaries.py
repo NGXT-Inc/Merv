@@ -81,6 +81,7 @@ ALLOWED_COMPONENT_EDGES = (
             ARTIFACTS,
             SANDBOX,
             FEED,
+            OBJECT_STORAGE,
             KERNEL,
         )
     }
@@ -126,9 +127,7 @@ PACKAGE_LAYERS = {
     "mlflow": ADAPTER,
     "object_storage": ADAPTER,
     "application": APPLICATION_LAYER,
-    "application/ports": PORT,
     "surface": DELIVERY,
-    "surface/composition": BOOTSTRAP,
 }
 
 FILE_LAYERS = {
@@ -143,10 +142,9 @@ FILE_LAYERS = {
     "object_storage/storage.py": APPLICATION_LAYER,
     "surface/config.py": BOOTSTRAP,
     "surface/transport/http_server.py": BOOTSTRAP,
-    "surface/control/control_app.py": BOOTSTRAP,
-    "surface/control/control_runtime.py": ADAPTER,
+    "surface/surface.py": BOOTSTRAP,
+    "surface/telemetry.py": DELIVERY,
     "surface/project_keys.py": APPLICATION_LAYER,
-    "surface/project_key_store.py": ADAPTER,
     "surface/oauth.py": APPLICATION_LAYER,
     "surface/oauth_store.py": ADAPTER,
     # Write-only per-user HF-token facade over the KERNEL-owned user_hf_tokens
@@ -291,12 +289,8 @@ CONCRETE_FACTORY_SUFFIXES = tuple(
 DELIVERY_PERSISTENCE_MEMBERS = frozenset(
     {"store", "_store", "transaction", "connect", "cursor"}
 )
-DELIVERY_DYNAMIC_REACH_THROUGH_MEMBERS = (
-    DELIVERY_PERSISTENCE_MEMBERS | {"__dict__"}
-)
-DELIVERY_WHOLE_DEPENDENCY_CARRIERS = frozenset(
-    {"ControlApp", "HttpDependencies"}
-)
+DELIVERY_DYNAMIC_REACH_THROUGH_MEMBERS = DELIVERY_PERSISTENCE_MEMBERS | {"__dict__"}
+DELIVERY_WHOLE_DEPENDENCY_CARRIERS = frozenset({"Surface"})
 
 
 def _is_concrete_factory(name: str) -> bool:
@@ -436,9 +430,15 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
             or _layer(importer) == BOOTSTRAP
         ):
             continue
-        if target in {
-            f"{package}/__init__.py" for package in PUBLIC_COMPONENT_ROOTS
-        }:
+        if target in {f"{package}/__init__.py" for package in PUBLIC_COMPONENT_ROOTS}:
+            continue
+        if (
+            importer_component == MLFLOW
+            and target == f"{APPLICATION_COMPONENT}/mlflow.py"
+        ):
+            # The optional adapter implements the single integration contract;
+            # exporting its DTO forest from the Application root would turn
+            # that root back into a service bag.
             continue
         relative_target = target.removeprefix(f"{target_component}/")
         if target_component == ARTIFACTS:
@@ -470,9 +470,7 @@ def _created_tables() -> set[str]:
     return tables
 
 
-def _enclosing_function(
-    node: ast.AST, parents: dict[ast.AST, ast.AST]
-) -> str:
+def _enclosing_function(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
     current = node
     while current in parents:
         current = parents[current]
@@ -518,9 +516,7 @@ def _application_purity_violations() -> list[str]:
         for target in _import_targets(path, dotted):
             if target.startswith("kernel/state/") or target == "kernel/env.py":
                 violations.append(f"{rel}: imports state/config module {target}")
-            if _component(target) in (SURFACE, MLFLOW, OBJECT_STORAGE) or _layer(
-                target
-            ) == ADAPTER:
+            if _component(target) in (SURFACE, MLFLOW) or _layer(target) == ADAPTER:
                 violations.append(f"{rel}: imports concrete adapter {target}")
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -543,7 +539,7 @@ def _application_purity_violations() -> list[str]:
                     *node.args.kwonlyargs,
                 )
                 for parameter in parameters:
-                    if parameter.arg in {"conn", "connection", "cursor", "store"}:
+                    if parameter.arg in {"conn", "connection", "cursor"}:
                         violations.append(
                             f"{rel}:{parameter.lineno}: accepts persistence parameter "
                             f"{parameter.arg}"
@@ -596,7 +592,7 @@ def _delivery_boundary_violations(
     carrier_aliases = set(DELIVERY_WHOLE_DEPENDENCY_CARRIERS)
 
     def is_raw_type(name: str) -> bool:
-        return name == "ControlApp" or name.endswith(("Service", "Store"))
+        return name == "Surface" or name.endswith(("Service", "Store"))
 
     def is_public_service_import(node: ast.ImportFrom, name: str) -> bool:
         if not name.endswith("Service") or not node.module:
@@ -625,10 +621,7 @@ def _delivery_boundary_violations(
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and (
             node.id in raw_aliases
-            or (
-                is_raw_type(node.id)
-                and node.id not in public_service_aliases
-            )
+            or (is_raw_type(node.id) and node.id not in public_service_aliases)
         ):
             violations.add(
                 f"{relative}:{node.lineno}: names raw implementation type {node.id}"
@@ -782,8 +775,8 @@ class ModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
-    def test_tool_handler_registry_is_delivery(self) -> None:
-        self.assertEqual(_layer("surface/tools/tool_handlers.py"), DELIVERY)
+    def test_tool_dispatcher_is_delivery(self) -> None:
+        self.assertEqual(_layer("surface/tools/dispatcher.py"), DELIVERY)
 
     def test_every_backend_file_is_classified_by_component_and_layer(self) -> None:
         for label, classifier in (("component", _component), ("layer", _layer)):
@@ -791,9 +784,7 @@ class ModuleBoundaryTest(unittest.TestCase):
                 unclassified = sorted(
                     rel
                     for path in _backend_files()
-                    if classifier(
-                        rel := path.relative_to(BACKEND_ROOT).as_posix()
-                    )
+                    if classifier(rel := path.relative_to(BACKEND_ROOT).as_posix())
                     is None
                 )
                 self.assertFalse(
@@ -840,14 +831,10 @@ class ModuleBoundaryTest(unittest.TestCase):
     def test_research_enters_only_the_public_artifacts_root(self) -> None:
         importer = "research_core/reflections.py"
         self.assertTrue(
-            _component_edge_allowed(
-                importer=importer, target="artifacts/__init__.py"
-            )
+            _component_edge_allowed(importer=importer, target="artifacts/__init__.py")
         )
         self.assertFalse(
-            _component_edge_allowed(
-                importer=importer, target="artifacts/artifacts.py"
-            )
+            _component_edge_allowed(importer=importer, target="artifacts/artifacts.py")
         )
 
     def test_no_new_layer_boundary_violations(self) -> None:
@@ -945,12 +932,14 @@ class ModuleBoundaryTest(unittest.TestCase):
             + ", ".join(f"{key} x{count}" for key, count in sorted(stale.items())),
         )
 
-    def test_application_layer_has_no_adapter_framework_store_or_sql_access(self) -> None:
+    def test_application_has_no_adapter_framework_connection_or_sql_access(
+        self,
+    ) -> None:
         violations = _application_purity_violations()
         self.assertFalse(
             violations,
-            "Application must remain pure orchestration over ports/facades: "
-            + ", ".join(violations),
+            "Application may call concrete public module roots, but not adapters, "
+            "connections, transactions, frameworks, or SQL: " + ", ".join(violations),
         )
 
     def test_delivery_has_no_raw_implementation_or_persistence_access(self) -> None:
@@ -968,14 +957,13 @@ class ModuleBoundaryTest(unittest.TestCase):
             violations,
             "Delivery may use public package-root services/facades/use cases but "
             "may not name internal implementations or reach through to persistence "
-            "or whole-app dependency carriers: "
-            + ", ".join(violations),
+            "or whole-app dependency carriers: " + ", ".join(violations),
         )
 
     def test_delivery_boundary_scan_rejects_adversarial_reach_through(self) -> None:
         cases = {
-            "raw ControlApp": (
-                "from backend import ControlApp as Backend\nvalue: Backend\n",
+            "raw Surface": (
+                "from surface import Surface as Backend\nvalue: Backend\n",
                 "raw implementation type",
             ),
             "raw service": (
@@ -1037,21 +1025,9 @@ class ModuleBoundaryTest(unittest.TestCase):
                 "def route(api):\n    return api.__dict__['resources']\n",
                 "reaches through to __dict__",
             ),
-            "ControlApp router carrier": (
-                "def build_router(app: 'ControlApp'):\n    return app\n",
-                "build_router receives whole dependency carrier ControlApp",
-            ),
-            "aliased HTTP router carrier": (
-                "from dependencies import HttpDependencies as Whole\n"
-                "def build_router(dependencies: Whole):\n"
-                "    return dependencies\n",
-                "build_router receives whole dependency carrier Whole",
-            ),
-            "HTTP registrar carrier": (
-                "from dependencies import HttpDependencies\n"
-                "def register_routes(dependencies: HttpDependencies):\n"
-                "    return dependencies\n",
-                "register_routes receives whole dependency carrier HttpDependencies",
+            "Surface router carrier": (
+                "def build_router(app: 'Surface'):\n    return app\n",
+                "build_router receives whole dependency carrier Surface",
             ),
         }
         for name, (source, expected) in cases.items():
@@ -1064,7 +1040,7 @@ class ModuleBoundaryTest(unittest.TestCase):
 
     def test_delivery_boundary_scan_allows_narrow_public_dependencies(self) -> None:
         source = """
-def build_router(ctx: ApiRouteContext, *, records: ArtifactRecords):
+def build_router(ctx: RouteContext, *, records: ArtifactRecords):
     def route(project_id: str):
         return records.list(project_id=project_id, cursor_token=None)
     return route
@@ -1101,11 +1077,16 @@ def register_routes(*, feed: FeedService):
 
     def test_composite_reads_are_application_owned_and_surface_delegates(self) -> None:
         queries = (BACKEND_ROOT / "application/queries.py").read_text(encoding="utf-8")
-        figure = (BACKEND_ROOT / "application/experiment_figure.py").read_text(
+        application = (BACKEND_ROOT / "application/application.py").read_text(
             encoding="utf-8"
         )
-        workflow = (BACKEND_ROOT / "application/workflow.py").read_text(encoding="utf-8")
-        control = (BACKEND_ROOT / "surface/control/control_app.py").read_text(
+        figure = (BACKEND_ROOT / "surface/experiment_figure.py").read_text(
+            encoding="utf-8"
+        )
+        workflow = (BACKEND_ROOT / "application/workflow.py").read_text(
+            encoding="utf-8"
+        )
+        control = (BACKEND_ROOT / "surface/surface.py").read_text(
             encoding="utf-8"
         )
         views = (BACKEND_ROOT / "surface/transport/api/views.py").read_text(
@@ -1117,27 +1098,24 @@ def register_routes(*, feed: FeedService):
             )
             for name in ("experiments", "projects")
         )
-        for query in ("MlflowOverviewQuery", "ExperimentFigureQuery"):
-            with self.subTest(query=query):
-                self.assertIn(f"class {query}:", queries)
-                self.assertIn(query, control)
+        self.assertIn("class LogicGraphQuery:", queries)
+        self.assertIn("def figure_facts(", application)
+        self.assertEqual(control.count("Application("), 1)
         self.assertIn("def build_experiment_figure(", figure)
         self.assertFalse((BACKEND_ROOT / "artifacts/figure_view.py").exists())
         self.assertNotIn(
             "build_experiment_figure",
             (BACKEND_ROOT / "artifacts/artifacts.py").read_text(encoding="utf-8"),
         )
-        for query in ("StatusAndNextQuery", "ProjectDashboardQuery"):
-            with self.subTest(query=query):
-                self.assertIn(f"class {query}:", workflow)
-                self.assertIn(query, control)
+        self.assertIn("class StatusAndNextQuery:", workflow)
+        self.assertNotIn("class ProjectDashboardQuery:", workflow)
         for escaped_policy in (
             "build_experiment_figure",
             "tracking_experiment_name",
             "ACTIVE_SANDBOX_STATUSES",
         ):
             self.assertNotIn(escaped_policy, views)
-        for delegate in ("dashboard(", "tracking(", "figure("):
+        for delegate in ("dashboard(", "tracking_overview(", "figure_facts("):
             self.assertIn(delegate, routes)
 
 

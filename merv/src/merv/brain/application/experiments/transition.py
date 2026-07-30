@@ -1,4 +1,5 @@
-"""The experiment-transition application command and its event reactions."""
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
+"""The experiment transition: prepare, commit, react, and present."""
 
 from __future__ import annotations
 
@@ -8,21 +9,21 @@ from typing import Any, TypedDict, cast
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 
 from ...artifacts import ArtifactTarget, Artifacts
+from ...feed import FeedAdvisory
 from ...kernel.events import StoredEvent
+from ...object_storage import ObjectStorage
 from ...research_core import (
+    EXPERIMENT_TERMINAL_STATUSES,
     EXPERIMENT_WORKFLOW,
     ExperimentState,
     PersistedRunState,
     Research,
 )
-from ..events import EventDispatcher
-from ..ports.storage import ProducedObjectCatalog
-from ..ports.tracking import ExperimentTracking, TrackingContextPayload
+from ..mlflow import MlflowIntegration, TrackingContextPayload
 from .create import experiment_folder
 from .exhibits import ExhibitBuilder, should_pin_exhibit
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, exhibit_bytes
 from .presentation import SlimExperimentState, slim_experiment_state
-from .tracking_presentation import attach_tracking_if_visible
 
 
 class TransitionResponse(SlimExperimentState, total=False):
@@ -58,10 +59,10 @@ class TransitionExperiment:
 
     research: Research
     artifacts: Artifacts
-    tracking: ExperimentTracking | None
+    feed: FeedAdvisory
+    mlflow: MlflowIntegration
     exhibits: ExhibitBuilder
-    dispatcher: EventDispatcher
-    objects: ProducedObjectCatalog
+    objects: ObjectStorage
 
     def agent(
         self,
@@ -72,8 +73,11 @@ class TransitionExperiment:
         project_id: str | None = None,
     ) -> TransitionReceipt:
         response, event = self._execute(
-            experiment_id=experiment_id, transition=transition, evidence=evidence,
-            project_id=project_id, include_tracking_credentials=True,
+            experiment_id=experiment_id,
+            transition=transition,
+            evidence=evidence,
+            project_id=project_id,
+            include_tracking_credentials=True,
         )
         receipt = TransitionReceipt(
             experiment_id=experiment_id,
@@ -146,9 +150,8 @@ class TransitionExperiment:
         if (
             "prepare_metrics_exhibit" in effects
             and before is not None
-            and str(before.get("status")) in EXPERIMENT_WORKFLOW.effect_sources(
-                "prepare_metrics_exhibit"
-            )
+            and str(before.get("status"))
+            in EXPERIMENT_WORKFLOW.effect_sources("prepare_metrics_exhibit")
         ):
             exhibit = self._finalize_exhibit(state=before)
 
@@ -158,35 +161,32 @@ class TransitionExperiment:
             evidence=evidence,
             project_id=project_id,
         )
-        reacted = self.dispatcher.dispatch(
-            event=committed.event, phase="post_commit", state=committed.state
+        state, tracking_warning = self.mlflow.after_transition(
+            event=committed.event,
+            state=committed.state,
         )
-        state = reacted.state
         response = cast(
             TransitionResponse,
             dict(
                 slim_experiment_state(
                     state,
                     storage_objects=storage_objects,
-                    include_legacy_tracking=self.tracking is not None,
+                    include_legacy_tracking=self.mlflow.enabled,
                 )
             ),
         )
-        if self.tracking is None:
+        if not self.mlflow.enabled:
             response.pop("mlflow_run", None)
-        presentation_warning = attach_tracking_if_visible(
-            state=response,
-            tracking=self.tracking,
+        presentation_warning = self.mlflow.decorate_after_commit(
+            response,
             project_id=resolved_project_id,
             experiment_id=experiment_id,
             include_credentials=include_tracking_credentials,
         )
-        if self.tracking is not None:
-            warning = reacted.outcomes.get("tracking_start")
-            if isinstance(warning, dict):
-                response["mlflow_warning"] = cast(dict[str, str], warning)
-            elif presentation_warning is not None:
-                response["mlflow_warning"] = presentation_warning
+        if tracking_warning is not None:
+            response["mlflow_warning"] = tracking_warning
+        elif presentation_warning is not None:
+            response["mlflow_warning"] = presentation_warning
         if "show_metrics_exhibit" in effects:
             response["metrics_exhibit"] = self._exhibit_expectation(
                 experiment_id=experiment_id, state=response
@@ -198,17 +198,30 @@ class TransitionExperiment:
                 "verdict": exhibit["verdict"],
             }
 
-        late = self.dispatcher.dispatch(
-            event=committed.event, phase="post_response", state=state
-        )
-        note = late.outcomes.get("feed")
-        if isinstance(note, str):
+        note = self._feed_advisory(event=committed.event, state=state)
+        if note:
             response["feed_note"] = note
         return response, committed.event
 
-    def _finalize_exhibit(
-        self, *, state: ExperimentState
-    ) -> dict[str, object] | None:
+    def _feed_advisory(
+        self, *, event: StoredEvent, state: ExperimentState
+    ) -> str | None:
+        status = str(state.get("status") or "")
+        if (
+            event.type != EXPERIMENT_WORKFLOW.event_type
+            or status not in EXPERIMENT_TERMINAL_STATUSES
+        ):
+            return None
+        try:
+            return self.feed.transition_advisory(
+                project_id=str(state.get("project_id") or ""),
+                experiment_id=str(state.get("id") or ""),
+                event=f"experiment_{status}",
+            )
+        except Exception:
+            return None
+
+    def _finalize_exhibit(self, *, state: ExperimentState) -> dict[str, object] | None:
         exhibit = self.exhibits.generate(state=state)
         pinned = should_pin_exhibit(exhibit=exhibit, state=state)
         verdict = {
@@ -236,19 +249,20 @@ class TransitionExperiment:
         )
         return exhibit
 
-    def _exhibit_path(
-        self, *, experiment_id: str, state: dict[str, Any]
-    ) -> str:
-        return experiment_folder(
-            experiment_id=experiment_id,
-            name=str(state.get("name") or ""),
-        ) + METRICS_EXHIBIT_FILENAME
+    def _exhibit_path(self, *, experiment_id: str, state: dict[str, Any]) -> str:
+        return (
+            experiment_folder(
+                experiment_id=experiment_id,
+                name=str(state.get("name") or ""),
+            )
+            + METRICS_EXHIBIT_FILENAME
+        )
 
     def _exhibit_expectation(
         self, *, experiment_id: str, state: dict[str, Any]
     ) -> dict[str, object]:
         path = self._exhibit_path(experiment_id=experiment_id, state=state)
-        if self.tracking is None:
+        if not self.mlflow.enabled:
             return {
                 "final_path": path,
                 "preview_tool": "experiment.exhibit",
@@ -280,5 +294,6 @@ class TransitionExperiment:
                 "the finalized exhibit."
             ),
         }
+
 
 __all__ = ["TransitionExperiment", "TransitionReceipt", "TransitionResponse"]

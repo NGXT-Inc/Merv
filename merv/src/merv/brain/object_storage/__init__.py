@@ -6,7 +6,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from .storage import ObjectStorage
+from .storage import ObjectStorage, ProducedObject
 
 
 def __getattr__(name: str) -> Any:
@@ -17,4 +17,4 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(name)
 
 
-__all__ = ["ObjectStorage", "S3CompatibleObjectStore"]
+__all__ = ["ObjectStorage", "ProducedObject", "S3CompatibleObjectStore"]

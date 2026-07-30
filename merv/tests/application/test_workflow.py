@@ -1,3 +1,5 @@
+"""Application workflow read performance."""
+
 from __future__ import annotations
 
 import tempfile
@@ -19,7 +21,7 @@ class CountingStateStore(StateStore):
         return conn
 
 
-class ProjectDashboardQueryTest(unittest.TestCase):
+class ApplicationDashboardTest(unittest.TestCase):
     """Keep the one performance invariant that matters: no experiment N+1."""
 
     def setUp(self) -> None:
@@ -61,7 +63,7 @@ class ProjectDashboardQueryTest(unittest.TestCase):
 
     def _dashboard(self, project_id: str) -> tuple[dict, int]:
         self.store.statements.clear()
-        result = self.app.project_dashboard_query(project_id=project_id)
+        result = self.app.application.dashboard(project_id=project_id)
         selects = sum(
             statement.lstrip().upper().startswith(("SELECT", "WITH"))
             for statement in self.store.statements

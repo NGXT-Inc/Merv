@@ -9,15 +9,15 @@ from fastapi import APIRouter, Body, Request
 from ....kernel.utils import NotFoundError
 from .shared import JsonBody, path_scoped_body
 
-from .context import ApiRouteContext
+from .gateway import ToolInvocationGateway
 
 
-def build_router(ctx: ApiRouteContext) -> APIRouter:
+def build_router(gateway: ToolInvocationGateway) -> APIRouter:
     api_router = APIRouter()
 
     @api_router.get("/api/projects/{project_id}/claims")
     def list_claims(project_id: str, request: Request) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request, name="claim.list", arguments={"project_id": project_id}
         )
 
@@ -25,7 +25,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     def create_claim(
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="claim.create",
             arguments=path_scoped_body(body, project_id=project_id),
@@ -33,7 +33,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/projects/{project_id}/claims/{claim_id}")
     def get_claim(project_id: str, claim_id: str, request: Request) -> dict[str, Any]:
-        claims = ctx.call_tool(
+        claims = gateway.call_http(
             request, name="claim.list", arguments={"project_id": project_id}
         )["claims"]
         for claim in claims:
@@ -49,7 +49,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         request: Request,
         body: JsonBody = Body(default=None),
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="claim.update",
             arguments=path_scoped_body(body, project_id=project_id, claim_id=claim_id),

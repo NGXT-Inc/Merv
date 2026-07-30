@@ -12,28 +12,16 @@ import unittest
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, get_args, get_origin, get_type_hints, is_typeddict
 
-from merv.brain.application.events import (
-    DispatchResult,
-    EventCatalogEntry,
-    EventContext,
-    EventReaction,
-)
-from merv.brain.application.experiments.tracking import (
-    ExperimentDetailResponse,
-    FinalizeTrackingResponse,
-    TrackingContextResponse,
-)
 from merv.brain.application.experiments.create import ExperimentCreateArgs
 from merv.brain.application.experiments.presentation import SlimExperimentState
 from merv.brain.application.experiments.transition import (
     TransitionReceipt,
     TransitionResponse,
 )
-from merv.brain.application.ports.storage import ProducedObject
-from merv.brain.application.ports.tracking import (
+from merv.brain.object_storage import ProducedObject
+from merv.brain.application.mlflow import (
     CreateRunResult,
     FinalizeRunResult,
     MetricsSnapshot,
@@ -59,18 +47,7 @@ from tests.paths import BACKEND_ROOT
 
 APPLICATION_DATACLASS_EXCLUSIONS = frozenset(
     {
-        "merv.brain.application.experiments.create.CreateExperiment",
-        "merv.brain.application.experiments.queries.ExperimentCollectionQuery",
-        "merv.brain.application.experiments.reactions.ExperimentReactions",
-        "merv.brain.application.experiments.tracking.AgentExperimentQuery",
-        "merv.brain.application.experiments.tracking.ExperimentDetailQuery",
         "merv.brain.application.experiments.transition.TransitionExperiment",
-        "merv.brain.application.reflections.ReflectionCommands",
-        "merv.brain.application.reviews.RequestReview",
-        "merv.brain.application.reviews.ReviewQueue",
-        "merv.brain.application.reviews.ReadReviewStatus",
-        "merv.brain.application.reviews.StartReviewSession",
-        "merv.brain.application.workflow.ProjectDashboardQuery",
         "merv.brain.application.workflow.StatusAndNextQuery",
     }
 )
@@ -87,12 +64,15 @@ def _boundary_types() -> dict[str, type]:
         "application/events.py",
         "application/experiments/presentation.py",
         "kernel/events.py",
+        "object_storage/storage.py",
         "research_core/models.py",
     }
     for path in sorted(BACKEND_ROOT.rglob("*.py")):
         relative = path.relative_to(BACKEND_ROOT).as_posix()
         source = path.read_text(encoding="utf-8")
-        is_application_export = relative.startswith("application/") and "__all__" in source
+        is_application_export = (
+            relative.startswith("application/") and "__all__" in source
+        )
         is_boundary_module = (
             relative.endswith("/facade.py")
             or "/ports/" in relative
@@ -197,45 +177,6 @@ SAMPLES: dict[type, object] = {
         "updated_at": "2026-07-21T12:00:00Z",
         "last_accessed_at": None,
     },
-    TrackingContextResponse: {
-        "project_id": "proj_1",
-        "experiment_id": "exp_1",
-        "scope": "experiment",
-        "mlflow": {
-            "configured": True,
-            "mode": "control",
-            "tracking_uri": "https://tracking.example",
-            "dashboard_url": "https://tracking.example/ui",
-            "experiment_name": "proj_1.exp_1",
-            "env": {"MLFLOW_TRACKING_URI": "https://tracking.example"},
-            "note": "configured",
-            "project_id": "proj_1",
-            "experiment_namespace_prefix": "proj_1",
-            "experiments": [{"id": "exp_1", "name": "Example"}],
-        },
-        "guidance": "Log every run.",
-    },
-    FinalizeTrackingResponse: {
-        "run": RUN,
-        "project_id": "proj_1",
-        "experiment_id": "exp_1",
-        "experiment": {"id": "exp_1", "status": "completed"},
-        "configured": True,
-        "run_id": "run_1",
-        "error": "",
-        "mlflow_warning": {"tracking": "unavailable", "error": "down", "repair": "…"},
-        "feed_note": "Run finalized.",
-    },
-    ExperimentDetailResponse: {
-        "id": "exp_1",
-        "project_id": "proj_1",
-        "name": "Example",
-        "intent": "Test one claim",
-        "status": "running",
-        "attempt_index": 1,
-        "mlflow_run": RUN,
-        "mlflow": {"configured": True},
-    },
     TransitionResponse: {
         "id": "exp_1",
         "project_id": "proj_1",
@@ -267,21 +208,6 @@ SAMPLES: dict[type, object] = {
         "mlflow_warning": {"tracking": "unavailable", "error": "down", "repair": "…"},
     },
     StoredEvent: EVENT,
-    EventCatalogEntry: EventCatalogEntry(
-        producer="merv.brain.research_core.Research.transition_experiment",
-        event_type="experiment.transitioned",
-        payload_version=1,
-        transaction_boundary="merv.brain.research_core.Research.transition_experiment",
-        reaction_phase="post_commit",
-        handler_identity="tracking_start",
-        failure="degraded",
-        idempotency="requires_adapter_key_for_redelivery",
-    ),
-    EventContext: EventContext(event=EVENT, state={"id": "exp_1"}),
-    EventReaction: EventReaction(state={"id": "exp_1"}, value="noted"),
-    DispatchResult: DispatchResult(
-        state={"id": "exp_1"}, outcomes=MappingProxyType({"feed": "noted"})
-    ),
     PersistedRunState: {**RUN, "delivery_id": 7},
     ExperimentCreateArgs: {
         "name": "example",
@@ -357,12 +283,8 @@ JSON_ROUNDTRIP_DEBT: Counter[tuple[str, str]] = Counter()
 
 ANNOTATION_DEBT = frozenset(
     {
-        ("merv.brain.application.ports.tracking.TrackingMetric.step", "object"),
-        ("merv.brain.application.ports.tracking.TrackingSnapshotRun.params", "object"),
-        (
-            "merv.brain.application.experiments.tracking.ExperimentDetailResponse.mlflow",
-            "Any",
-        ),
+        ("merv.brain.application.mlflow.TrackingMetric.step", "object"),
+        ("merv.brain.application.mlflow.TrackingSnapshotRun.params", "object"),
         (
             "merv.brain.application.experiments.transition.TransitionResponse.metrics_exhibit",
             "object",
@@ -371,16 +293,20 @@ ANNOTATION_DEBT = frozenset(
             "merv.brain.application.experiments.transition.TransitionReceipt.metrics_exhibit",
             "object",
         ),
-        ("merv.brain.application.events.EventReaction.value", "object"),
-        ("merv.brain.application.events.DispatchResult.outcomes", "object"),
         ("merv.brain.research_core.models.ResearchSnapshot.project", "Any"),
         ("merv.brain.research_core.models.ResearchSnapshot.claims", "Any"),
         ("merv.brain.research_core.models.ResearchSnapshot.open_reflection", "Any"),
-        ("merv.brain.research_core.models.ResearchSnapshot.latest_published_reflection", "Any"),
+        (
+            "merv.brain.research_core.models.ResearchSnapshot.latest_published_reflection",
+            "Any",
+        ),
         ("merv.brain.research_core.models.ResearchSnapshot.reflection_signal", "Any"),
         ("merv.brain.research_core.models.ResearchSnapshot.gate_evaluations", "Any"),
         ("merv.brain.research_core.models.ResearchSnapshot.recent_claims", "Any"),
-        ("merv.brain.research_core.models.ResearchSnapshot.claim_events_since_reflection", "Any"),
+        (
+            "merv.brain.research_core.models.ResearchSnapshot.claim_events_since_reflection",
+            "Any",
+        ),
         ("merv.brain.research_core.models.ExhibitVerdict.mlflow", "object"),
     }
 )
@@ -396,9 +322,13 @@ def _to_json_value(value: object, *, boundary_types: set[type]) -> object:
         raise TypeError(f"boundary contains runtime service: {_qualified(value_type)}")
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         if value_type not in boundary_types:
-            raise TypeError(f"unregistered boundary dataclass: {_qualified(value_type)}")
+            raise TypeError(
+                f"unregistered boundary dataclass: {_qualified(value_type)}"
+            )
         return {
-            field.name: _to_json_value(getattr(value, field.name), boundary_types=boundary_types)
+            field.name: _to_json_value(
+                getattr(value, field.name), boundary_types=boundary_types
+            )
             for field in dataclasses.fields(value)
         }
     if isinstance(value, Mapping):
@@ -453,7 +383,9 @@ class BoundaryValueContractTest(unittest.TestCase):
                     failures[(_qualified(value_type), str(exc))] += 1
         self.assertEqual(failures, JSON_ROUNDTRIP_DEBT)
 
-    def test_boundary_annotation_debt_is_exact_and_has_no_persistence_types(self) -> None:
+    def test_boundary_annotation_debt_is_exact_and_has_no_persistence_types(
+        self,
+    ) -> None:
         debt: set[tuple[str, str]] = set()
         forbidden: list[str] = []
         for value_type in _boundary_types().values():
@@ -469,9 +401,13 @@ class BoundaryValueContractTest(unittest.TestCase):
                 if origin is dict and args and args[0] is not str:
                     debt.add((label, "non-string-key"))
                 for node in nodes:
-                    if isinstance(node, type) and _PERSISTENCE_OR_SERVICE.search(node.__name__):
+                    if isinstance(node, type) and _PERSISTENCE_OR_SERVICE.search(
+                        node.__name__
+                    ):
                         forbidden.append(f"{label}: {_qualified(node)}")
-        self.assertFalse(forbidden, "persistence/service types escaped: " + ", ".join(forbidden))
+        self.assertFalse(
+            forbidden, "persistence/service types escaped: " + ", ".join(forbidden)
+        )
         self.assertEqual(debt, ANNOTATION_DEBT)
 
     def test_runtime_connection_or_service_objects_are_rejected(self) -> None:

@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Canonical bounded project context for agent operations."""
 
 from __future__ import annotations
@@ -14,12 +15,8 @@ from ..research_core import EXPERIMENT_WORKFLOW, Research, preferred_artifact
 
 Record = dict[str, Any]
 
-_EXPERIMENT_PATH = EXPERIMENT_WORKFLOW.forward_path(
-    EXPERIMENT_WORKFLOW.initial
-)
-_EXECUTION_STATUS = next(
-    iter(EXPERIMENT_WORKFLOW.effect_sources("result_submission"))
-)
+_EXPERIMENT_PATH = EXPERIMENT_WORKFLOW.forward_path(EXPERIMENT_WORKFLOW.initial)
+_EXECUTION_STATUS = next(iter(EXPERIMENT_WORKFLOW.effect_sources("result_submission")))
 _PLAN_SUMMARY_STATUSES = frozenset(
     _EXPERIMENT_PATH[: _EXPERIMENT_PATH.index(_EXECUTION_STATUS) + 1]
 )
@@ -40,8 +37,7 @@ class ProjectContextQuery:
         experiments = facts["experiments"]
         experiment_ids = tuple(str(row["id"]) for row in experiments)
         attempts = {
-            str(row["id"]): int(row.get("attempt_index") or 0)
-            for row in experiments
+            str(row["id"]): int(row.get("attempt_index") or 0) for row in experiments
         }
         experiment_evidence = tuple(
             artifact
@@ -143,8 +139,7 @@ class ProjectContextQuery:
         summaries: Mapping[str, str],
     ) -> Record:
         artifacts = [
-            _artifact_record(item, tldr=summaries.get(item.id, ""))
-            for item in evidence
+            _artifact_record(item, tldr=summaries.get(item.id, "")) for item in evidence
         ]
         plan = preferred_artifact(artifacts=artifacts, roles=("plan",))
         report = preferred_artifact(artifacts=artifacts, roles=("report",))
@@ -185,9 +180,7 @@ class ProjectContextQuery:
             document = preferred_artifact(
                 artifacts=artifacts, roles=("reflection_doc",)
             )
-            graph = preferred_artifact(
-                artifacts=artifacts, roles=(PROJECT_GRAPH_ROLE,)
-            )
+            graph = preferred_artifact(artifacts=artifacts, roles=(PROJECT_GRAPH_ROLE,))
             summary = str((document or {}).get("tldr") or "").strip()
             if not summary:
                 summary = str(latest.get("title") or "").strip()
@@ -226,9 +219,7 @@ class ProjectContextQuery:
         source = facts.get("literature_summary") or {}
         summary = str(source.get("tldr") or "").strip()
         if not summary and str(source.get("body") or "").strip():
-            summary = content_tldr(
-                source.get("body"), role="literature_summary"
-            )
+            summary = content_tldr(source.get("body"), role="literature_summary")
         return {
             "summary": summary,
             "paper_count": int(facts.get("paper_count") or 0),
@@ -236,17 +227,13 @@ class ProjectContextQuery:
         }
 
     @staticmethod
-    def _artifact_reference(
-        artifact: Record, *, descriptor: str
-    ) -> Record:
+    def _artifact_reference(artifact: Record, *, descriptor: str) -> Record:
         return {
             "descriptor": descriptor,
             "id": artifact.get("id"),
             "path": artifact.get("path"),
             "submitted_at": (
-                artifact.get("updated_at")
-                or artifact.get("created_at")
-                or ""
+                artifact.get("updated_at") or artifact.get("created_at") or ""
             ),
         }
 

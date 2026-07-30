@@ -23,7 +23,7 @@ from ...identity import (
     LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key, is_local_principal,
 )
 from ...tools.contracts import TOOL_MANIFEST
-from ...tools.tool_facade import ToolDispatcher
+from ...tools.dispatcher import ToolDispatcher
 from ....research_core import Research
 from ....sandbox import SandboxEngine
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
@@ -32,6 +32,7 @@ from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
                      ledger_refusal, ledger_tool_refusal,
                      open_hosted_operator_denial, operator_denial,
                      operator_membership_recovery)
+from .views import present
 from . import oauth, project_keys
 @dataclass(frozen=True)
 class RequestAuthenticator:
@@ -190,6 +191,7 @@ class ToolInvocationGateway:
     # Per-composition: the SAME key this app's /wait route verifies with, so
     # two apps over one backend each sign only what their own route accepts.
     wait_secret: bytes | None = None
+    auth_meta: dict[str, Any] | None = None
 
     def call(
         self,
@@ -370,6 +372,25 @@ class ToolInvocationGateway:
             activity_source="mcp",
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
             base_url=str(request.base_url).rstrip("/"),  # caller-reachable base
+        )
+
+    def call_http(
+        self,
+        request: Request,
+        *,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        project_scope: str | None = None,
+    ) -> dict[str, Any]:
+        return present(
+            self.call(
+                name=name,
+                arguments=arguments,
+                project_scope=project_scope,
+                activity_source="http",
+                principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
+                base_url=str(request.base_url).rstrip("/"),
+            )
         )
 
     def authorize_project(self, request: Request, project_id: str) -> None:

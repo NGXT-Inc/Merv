@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Pure experiment projections owned by the application boundary."""
 
 from __future__ import annotations
@@ -5,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Iterable, cast
 
 from ...research_core import ExperimentState, SYNOPSIS_MAX_LEN
-from ..ports.storage import ProducedObject
+from ...object_storage import ProducedObject
 from .claim_guidance import claim_update_suggestions
 
 
@@ -164,7 +165,9 @@ def rich_experiment_state(
     if "gate_checklist" in result and "claim_update_suggestions" not in result:
         items = list(result.items())
         index = list(result).index("gate_checklist") + 1
-        items.insert(index, ("claim_update_suggestions", claim_update_suggestions(full)))
+        items.insert(
+            index, ("claim_update_suggestions", claim_update_suggestions(full))
+        )
         result = dict(items)
     result.pop("storage_objects", None)
     items = list(result.items())
@@ -226,9 +229,7 @@ def slim_experiment_state(
             "tested_claims": project_rows(
                 rich.get("tested_claims", []), _SLIM_CLAIM_FIELDS
             ),
-            "current_attempt_artifacts": project_rows(
-                current, _SLIM_ARTIFACT_FIELDS
-            ),
+            "current_attempt_artifacts": project_rows(current, _SLIM_ARTIFACT_FIELDS),
             "storage_objects": project_rows(
                 rich.get("storage_objects", []), _SLIM_STORAGE_FIELDS
             ),
@@ -240,5 +241,13 @@ def slim_experiment_state(
     return cast(SlimExperimentState, slim)
 
 
-__all__ = ["SlimExperimentState", "claim_update_suggestions", "project_fields", "project_rows",
-           "review_body", "rich_experiment_state", "slim_experiment_state", "slim_review_rows"]
+__all__ = [
+    "SlimExperimentState",
+    "claim_update_suggestions",
+    "project_fields",
+    "project_rows",
+    "review_body",
+    "rich_experiment_state",
+    "slim_experiment_state",
+    "slim_review_rows",
+]

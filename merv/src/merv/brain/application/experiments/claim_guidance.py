@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Agent-facing claim follow-ups derived from completed experiment facts."""
 
 from __future__ import annotations
@@ -8,12 +9,26 @@ from typing import Any
 from ...research_core import EXPERIMENT_WORKFLOW, ExperimentState
 
 
-_STATUS_MARKERS: tuple[
-    tuple[re.Pattern[str], str | None, str | None], ...
-] = (
-    (re.compile(r"\bcontradict\w*|\brefut\w*|\bfalsif\w*|\bdisprov\w*"), "contradicted", None),
-    (re.compile(r"\bsupport(?:s|ed|ing)?\b|\bconfirm\w*|\bbeats?\b|\bimprov\w*|\bpositive result\w*|\b(?:target|criterion|criteria|threshold) met\b"), "supported", "weakened"),
-    (re.compile(r"\bunsupported\b|\bnegative result\w*|\bweaken\w*|\binconclusive\b|\bmixed (?:results?|evidence|findings|signals?)\b|\bpartial(?:ly)? support\w*|\bno (?:significant )?effect\b|\bnot significant\b|\binsignificant\b|\bbelow (?:the )?baseline\b|\bbeaten\b|\bworse than\b|\bunderperform\w*"), "weakened", None),
+_STATUS_MARKERS: tuple[tuple[re.Pattern[str], str | None, str | None], ...] = (
+    (
+        re.compile(r"\bcontradict\w*|\brefut\w*|\bfalsif\w*|\bdisprov\w*"),
+        "contradicted",
+        None,
+    ),
+    (
+        re.compile(
+            r"\bsupport(?:s|ed|ing)?\b|\bconfirm\w*|\bbeats?\b|\bimprov\w*|\bpositive result\w*|\b(?:target|criterion|criteria|threshold) met\b"
+        ),
+        "supported",
+        "weakened",
+    ),
+    (
+        re.compile(
+            r"\bunsupported\b|\bnegative result\w*|\bweaken\w*|\binconclusive\b|\bmixed (?:results?|evidence|findings|signals?)\b|\bpartial(?:ly)? support\w*|\bno (?:significant )?effect\b|\bnot significant\b|\binsignificant\b|\bbelow (?:the )?baseline\b|\bbeaten\b|\bworse than\b|\bunderperform\w*"
+        ),
+        "weakened",
+        None,
+    ),
 )
 _NEGATION = re.compile(
     r"\b(?:not|no|never|neither|nor|without|cannot|can't|couldn't|didn't|"
@@ -59,8 +74,10 @@ def claim_update_suggestions(experiment: ExperimentState) -> list[dict[str, Any]
                     "claim_id": claim_id,
                     "status": suggested_status,
                 },
-                "claim": {field: claim.get(field) for field in
-                          ("id", "statement", "status", "confidence", "scope")},
+                "claim": {
+                    field: claim.get(field)
+                    for field in ("id", "statement", "status", "confidence", "scope")
+                },
                 "suggested_status": suggested_status,
                 "reason": (
                     "Experiment completed with a passing review; apply a scoped "

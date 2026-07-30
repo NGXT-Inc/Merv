@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Cross-component housekeeping triggered by an operator or scheduler."""
 
 from __future__ import annotations
@@ -42,9 +43,7 @@ class CleanupReport:
     # Sandboxes whose provider deletion was never confirmed. `ok` stays False
     # while any remain — a possibly-billing VM must not read as a clean pass
     # (audit SAN-05).
-    cleanup_pending: dict[str, Any] = field(
-        default_factory=lambda: dict(SKIPPED_PRUNE)
-    )
+    cleanup_pending: dict[str, Any] = field(default_factory=lambda: dict(SKIPPED_PRUNE))
     # Structured, not a count: a failed sweep must be distinguishable from a
     # sweep that legitimately deleted nothing (audit OPS-03).
     blobs_swept: dict[str, Any] = field(default_factory=lambda: dict(SKIPPED_PRUNE))
@@ -139,7 +138,9 @@ class CleanupService:
         try:
             now_iso = format_iso(now or datetime.now(tz=UTC))
             return {"deleted": int(self.blobs.sweep_expired(now=now_iso)), "ok": True}
-        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
             return _sweep_failure(exc)
 
     def sweep_expired_storage(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -149,7 +150,9 @@ class CleanupService:
         try:
             now_iso = format_iso(now or datetime.now(tz=UTC))
             return {"deleted": int(self.storage.sweep_expired(now=now_iso)), "ok": True}
-        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
             return _sweep_failure(exc)
 
     def prune_tool_calls(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -177,7 +180,9 @@ class CleanupService:
             return dict(SKIPPED_PRUNE)
         try:
             return dict(ledger.prune(now=now))
-        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
             return _sweep_failure(exc)
 
     def sweep_stale_provisions(self, *, now: datetime | None = None) -> int:

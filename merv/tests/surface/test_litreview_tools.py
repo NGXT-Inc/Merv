@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.tools.contracts import TOOL_MANIFEST
-from merv.brain.surface.tools.tool_facade import ToolValidationError
+from merv.brain.surface.tools.dispatcher import ToolValidationError
 
 from tests.support.brain import TestBrain
 

@@ -347,10 +347,7 @@ class SandboxBackendContractTest(unittest.TestCase):
                 self.assertNotIn("hasattr(self.backend", source)
                 self.assertNotIn("getattr(caps", source)
 
-        for path in (
-            SURFACE_ROOT / "control" / "control_app.py",
-            SURFACE_ROOT / "composition" / "control_mode.py",
-        ):
+        for path in (SURFACE_ROOT / "surface.py",):
             with self.subTest(path=path.name):
                 source = path.read_text(encoding="utf-8")
                 self.assertNotIn("getattr(self.execution_backend", source)
@@ -374,9 +371,7 @@ class SandboxBackendContractTest(unittest.TestCase):
     def test_control_composition_forces_the_expiry_reaper(self) -> None:
         # The control composition (not the sandbox module) computes the force
         # flag, so scheduler stays independent of Surface configuration.
-        control_source = (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
-            encoding="utf-8"
-        )
+        control_source = (SURFACE_ROOT / "surface.py").read_text(encoding="utf-8")
         self.assertIn("force_expiry_reaper=True", control_source)
         scheduler_source = (
             BACKEND_ROOT / "sandbox" / "scheduler.py"

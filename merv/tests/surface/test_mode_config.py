@@ -23,7 +23,7 @@ from merv.brain.surface.config import (
     storage_feature_enabled,
 )
 from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.utils import ValidationError
 
@@ -139,7 +139,7 @@ class LocalModeParityTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -195,7 +195,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http, surface_policy=_hosted_surface(), env=OPEN_HOSTED
+                self.app, surface_policy=_hosted_surface(), env=OPEN_HOSTED
             ),
             raise_server_exceptions=False,
         )
@@ -409,7 +409,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
 
         client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=_hosted_surface(),
                 cleanup=cleanup,
                 tenant_counters=tenant_counters,
@@ -443,7 +443,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
     def test_data_plane_submission_endpoint_is_deleted(self) -> None:
         client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=_hosted_surface(),
                 env=OPEN_HOSTED,
             ),
@@ -540,12 +540,12 @@ class VersionHandshakeTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http, surface_policy=_hosted_surface(), env=OPEN_HOSTED
+                self.app, surface_policy=_hosted_surface(), env=OPEN_HOSTED
             ),
             raise_server_exceptions=False,
         )
         self.local_client = TestClient(
-            create_fastapi_app(self.app.http), raise_server_exceptions=False
+            create_fastapi_app(self.app), raise_server_exceptions=False
         )
 
     def tearDown(self) -> None:
@@ -607,7 +607,7 @@ class ModeCompositionTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_control_server_builds_http_mcp_and_token_uploads(self) -> None:
-        from merv.brain.surface.composition import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         server = build_control_server(
             repo_root=self.repo,
@@ -628,7 +628,7 @@ class ModeCompositionTest(unittest.TestCase):
         self.assertIn("upload token", upload.text)
 
     def test_daemon_builder_is_removed(self) -> None:
-        import merv.brain.surface.composition as composition
+        import merv.brain.surface.surface as composition
 
         self.assertFalse(hasattr(composition, "build_daemon_server"))
 

@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Application-owned agent guidance over Research and Sandbox facts."""
 
 from __future__ import annotations
@@ -137,9 +138,8 @@ class StatusGuidancePolicy:
             allowed=list(ready.tools),
             revision=(
                 experiment.get("revision_context", "")
-                if status not in EXPERIMENT_WORKFLOW.effect_sources(
-                    "start_attempt_clock"
-                )
+                if status
+                not in EXPERIMENT_WORKFLOW.effect_sources("start_attempt_clock")
                 else ""
             ),
         )
@@ -172,9 +172,7 @@ class StatusGuidancePolicy:
         status = target["status"]
         role = gate.role
         workflow = (
-            REFLECTION_WORKFLOW
-            if target_type == "reflection"
-            else EXPERIMENT_WORKFLOW
+            REFLECTION_WORKFLOW if target_type == "reflection" else EXPERIMENT_WORKFLOW
         )
         review = workflow.review(role)
         if review is None:
@@ -356,9 +354,7 @@ class StatusGuidancePolicy:
         allowed = ["workflow.status_and_next"]
         blocked: list[dict[str, str]] = []
         if signal.get("experiment_create_blocked"):
-            reason = (reflection or {}).get(
-                "hint"
-            ) or reflection_create_block_reason(
+            reason = (reflection or {}).get("hint") or reflection_create_block_reason(
                 signal=signal
             )
             blocked.append({"action": "experiment.create", "reason": reason})
@@ -440,9 +436,7 @@ class StatusGuidancePolicy:
                 artifact_guidance=(
                     self._reflection_artifact_guidance()
                     if status == REFLECTION_WORKFLOW.initial
-                    else self._synthesizing_artifact_guidance(
-                        key=guidance.artifact_key
-                    )
+                    else self._synthesizing_artifact_guidance(key=guidance.artifact_key)
                 ),
                 revision=reflection.get("revision_context", ""),
             )
@@ -498,7 +492,9 @@ class StatusGuidancePolicy:
             "status": reflection.get("status"),
             "attempt_index": reflection.get("attempt_index"),
             "revision_context": reflection.get("revision_context"),
-            "roster": project_rows(reflection.get("roster", []), ("id", "title", "core")),
+            "roster": project_rows(
+                reflection.get("roster", []), ("id", "title", "core")
+            ),
             "reflection_coverage": reflection.get("reflection_coverage"),
             "current_attempt_artifacts": project_rows(
                 reflection.get("current_attempt_artifacts", []), _SLIM_ARTIFACT_FIELDS
@@ -617,8 +613,7 @@ class StatusGuidancePolicy:
             ),
             "retention_guidance": (
                 "While a sandbox is live, treat its work folder as ephemeral "
-                "scratch. Before submitting result artifacts, "
-                + heavy_retention
+                "scratch. Before submitting result artifacts, " + heavy_retention
             ),
             "storage_guidance": dict(self.storage_guidance),
             "report_guidance": (

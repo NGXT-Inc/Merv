@@ -1056,6 +1056,20 @@ class Research:
                 ref: resolved[ref] for ref in refs if ref in resolved
             }
 
+    # Event ledger reads ---------------------------------------------------
+
+    def tenant_event_count(self, *, tenant_id: str) -> int:
+        return self.store.tenant_event_count(tenant_id=tenant_id)
+
+    def project_event_signal(self, *, project_id: str) -> str:
+        return self.store.project_event_signal(project_id=project_id)
+
+    def recent_events(self, *, project_id: str, limit: int) -> dict[str, Any]:
+        return self.store.recent_events(project_id=project_id, limit=limit)
+
+    def events_since(self, *, project_id: str, after_id: int) -> dict[str, Any]:
+        return self.store.events_since(project_id=project_id, after_id=after_id)
+
     # Read helpers ---------------------------------------------------------
 
     def _reflection(

@@ -145,9 +145,8 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
 
         from tests.support.sandbox_backend import FakeSandboxBackend
         from merv.brain.surface.auth import SupabaseVerifier
-        from merv.brain.surface.project_key_store import SqlProjectKeyRepository
         from merv.brain.surface.project_keys import ProjectKeys
-        from merv.brain.surface.transport.http_api import create_fastapi_app
+        from merv.brain.surface.transport.api import create_fastapi_app
         from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
         from tests.support.brain import TestBrain
 
@@ -159,7 +158,7 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
             db_path=root / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.keys = ProjectKeys(repository=SqlProjectKeyRepository(store=self.app.store))
+        self.keys = ProjectKeys(store=self.app.store)
         self.verifier = SupabaseVerifier(
             supabase_url="https://example.supabase.co", jwt_secret=SECRET,
             service_key="service-key", project_keys=self.keys,
@@ -167,7 +166,7 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         self.verifier._http = httpx.Client(transport=httpx.MockTransport(_postgrest))
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),

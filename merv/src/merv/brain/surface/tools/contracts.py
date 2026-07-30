@@ -54,9 +54,7 @@ _REFLECTION_RERUN_RETURN = next(
 _REFLECTION_REVISION_RETURN = next(
     route for route in REFLECTION_WORKFLOW.review_returns if route.attempt == "same"
 )
-_REFLECTION_INITIAL_STATE = REFLECTION_WORKFLOW.state(
-    REFLECTION_WORKFLOW.initial
-)
+_REFLECTION_INITIAL_STATE = REFLECTION_WORKFLOW.state(REFLECTION_WORKFLOW.initial)
 if _REFLECTION_INITIAL_STATE is None:
     raise RuntimeError("reflection workflow is missing its first transition")
 _REFLECTION_FIRST_TRANSITION = _REFLECTION_INITIAL_STATE.forward.name
@@ -98,6 +96,7 @@ class ToolManifest:
                 else "none"
             )
             object.__setattr__(self, "scope_strategy", inferred)
+
 
 # Compatibility name for code that describes only the schema/description half.
 ToolContract = ToolManifest
@@ -155,6 +154,7 @@ class ProjectInput(ContractModel):
         default="",
         description="Short user-confirmed project purpose or scope.",
     )
+
     @model_validator(mode="after")
     def _check_action(self) -> "ProjectInput":
         if self.action == "list":
@@ -956,14 +956,14 @@ class LitreviewViewInput(ProjectScopedInput):
         ge=0,
         description="papers=true: created_seq cursor from the previous page's next_cursor.",
     )
-    limit: int = Field(
-        default=20, ge=1, le=50, description="papers=true: page size."
-    )
+    limit: int = Field(default=20, ge=1, le=50, description="papers=true: page size.")
 
 
 class LitreviewOrderPair(ContractModel):
     id: str = Field(max_length=64, description="Section id (lit_...).")
-    revision: int = Field(ge=1, description="The revision you last read for this section.")
+    revision: int = Field(
+        ge=1, description="The revision you last read for this section."
+    )
 
 
 class LitreviewEditInput(ProjectScopedInput):
@@ -1049,9 +1049,17 @@ class LitreviewCiteTarget(ContractModel):
 
 
 class LitreviewCiteInput(ProjectScopedInput):
-    url: str = Field(default="", max_length=2048, description="Paper URL (arXiv/DOI forms are normalized).")
-    doi: str = Field(default="", max_length=256, description="Bare DOI, e.g. 10.1038/xyz.")
-    arxiv_id: str = Field(default="", max_length=64, description="Bare arXiv id, e.g. 2107.03374.")
+    url: str = Field(
+        default="",
+        max_length=2048,
+        description="Paper URL (arXiv/DOI forms are normalized).",
+    )
+    doi: str = Field(
+        default="", max_length=256, description="Bare DOI, e.g. 10.1038/xyz."
+    )
+    arxiv_id: str = Field(
+        default="", max_length=64, description="Bare arXiv id, e.g. 2107.03374."
+    )
     targets: list[LitreviewCiteTarget] = Field(
         default_factory=list,
         max_length=20,
@@ -1061,7 +1069,9 @@ class LitreviewCiteInput(ProjectScopedInput):
         ),
     )
     note: str = Field(
-        default="", max_length=300, description="Optional one-liner: why this paper matters here."
+        default="",
+        max_length=300,
+        description="Optional one-liner: why this paper matters here.",
     )
     title: str = Field(
         default="",
@@ -1079,7 +1089,7 @@ class LitreviewCiteInput(ProjectScopedInput):
 
 TOOL_MANIFEST: dict[str, ToolManifest] = {
     "workflow.status_and_next": ToolContract(
-        handler_identity="workflow.status_and_next_agent",
+        handler_identity="application.status_for_agent",
         input_model=WorkflowStatusAndNextInput,
         description=(
             "The canonical entrypoint for starting or resuming work. Without "
@@ -1096,7 +1106,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "project": ToolContract(
-        handler_identity="operations.project",
+        handler_identity="application.project",
         scope_strategy="caller-selected",
         input_model=ProjectInput,
         description=(
@@ -1132,7 +1142,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         description="Get project metadata.",
     ),
     "project.list": ToolContract(
-        handler_identity="operations.project_list",
+        handler_identity="application.project_list",
         visibility="internal",
         input_model=EmptyInput,
         description="List projects in the current tool scope.",
@@ -1163,7 +1173,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "experiment.create": ToolContract(
-        handler_identity="create_experiment.create",
+        handler_identity="application.create_experiment",
         input_model=ExperimentCreateInput,
         description=(
             f"Create a {EXPERIMENT_WORKFLOW.initial} experiment. Requires an intent and a short "
@@ -1172,13 +1182,13 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "experiment.list": ToolContract(
-        handler_identity="operations.experiment_list",
+        handler_identity="application.list_experiments",
         visibility="internal",
         input_model=ExperimentListInput,
         description="List experiments with state.",
     ),
     "experiment.get_state": ToolContract(
-        handler_identity="agent_experiment.experiment",
+        handler_identity="application.experiment",
         visibility="internal",
         input_model=ExperimentGetStateInput,
         description=(
@@ -1188,7 +1198,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "experiment.transition": ToolContract(
-        handler_identity="experiment_transition.agent",
+        handler_identity="application.transition_experiment",
         input_model=ExperimentTransitionInput,
         description=(
             "Apply a transition allowed by workflow.status_and_next. Returns "
@@ -1205,7 +1215,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "experiment.exhibit": ToolContract(
-        handler_identity="experiment_exhibit.preview",
+        handler_identity="application.exhibit",
         input_model=ExperimentExhibitInput,
         description=(
             "Read-only preview of the system-generated metrics exhibit for a "
@@ -1217,7 +1227,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "mlflow.context": ToolContract(
-        handler_identity="tracking_context.execute",
+        handler_identity="application.tracking_context",
         input_model=MlflowContextInput,
         description=(
             "Central MLflow bridge context. With no experiment_id, returns the "
@@ -1231,7 +1241,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "mlflow.finalize_run": ToolContract(
-        handler_identity="tracking_finalize.execute",
+        handler_identity="application.finalize_tracking",
         input_model=MlflowFinalizeRunInput,
         description=(
             "Finalize a plugin experiment's MLflow run and read it back through "
@@ -1242,7 +1252,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "reflection.create": ToolContract(
-        handler_identity="reflection_tools.create",
+        handler_identity="application.create_reflection",
         input_model=ReflectionCreateInput,
         description=(
             "Open a project reflection wave. "
@@ -1257,7 +1267,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "reflection.get": ToolContract(
-        handler_identity="reflection_tools.get",
+        handler_identity="application.reflection",
         input_model=ReflectionGetInput,
         description=(
             "Get one reflection wave state: roster, per-lens "
@@ -1273,13 +1283,13 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "reflection.list": ToolContract(
-        handler_identity="reflection_tools.list",
+        handler_identity="application.reflections",
         visibility="internal",
         input_model=ReflectionListInput,
         description="List the project's reflection waves with state.",
     ),
     "reflection.transition": ToolContract(
-        handler_identity="reflection_tools.transition",
+        handler_identity="application.transition_reflection",
         input_model=ReflectionTransitionInput,
         description=(
             "Apply an allowed reflection transition ("
@@ -1425,7 +1435,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.request": ToolContract(
-        handler_identity="review_request.execute",
+        handler_identity="application.request_review",
         input_model=ReviewRequestInput,
         description=(
             "Create a review request and request-scoped reviewer capability; "
@@ -1437,7 +1447,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.start": ToolContract(
-        handler_identity="review_session.execute",
+        handler_identity="application.start_review",
         scope_strategy="capability",
         input_model=ReviewStartInput,
         description=(
@@ -1472,7 +1482,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.status": ToolContract(
-        handler_identity="review_status.execute",
+        handler_identity="application.review_status",
         visibility="internal",
         input_model=ReviewStatusInput,
         description=(
@@ -1644,7 +1654,9 @@ TOOL_MANIFEST.update(FEED_TOOL_CONTRACTS)
 # Compatibility name for callers that describe the manifest as contracts.
 TOOL_CONTRACTS = TOOL_MANIFEST
 STORAGE_TOOL_NAMES = {
-    name for name, tool in TOOL_MANIFEST.items() if "storage" in tool.feature_requirements
+    name
+    for name, tool in TOOL_MANIFEST.items()
+    if "storage" in tool.feature_requirements
 }
 MCP_HIDDEN_TOOL_NAMES = frozenset(
     name for name, tool in TOOL_MANIFEST.items() if tool.visibility == "internal"

@@ -13,11 +13,32 @@ from merv.brain.kernel.utils import ValidationError
 from tests.support.sandbox_backend import FakeSandboxBackend
 
 SLIM_ARTIFACT_KEYS = {
-    "id", "role", "path", "lens_id", "size_bytes", "title", "tldr",
+    "id",
+    "role",
+    "path",
+    "lens_id",
+    "size_bytes",
+    "title",
+    "tldr",
 }
-WASTE_ARTIFACT_KEYS = {"content_sha256", "content_type", "created_by", "created_at",
-                       "updated_at", "project_id", "attempt_index", "submitted_order"}
-WASTE_REVIEW_KEYS = {"target_snapshot_id", "request_id", "session_id", "target_id", "target_type", "project_id"}
+WASTE_ARTIFACT_KEYS = {
+    "content_sha256",
+    "content_type",
+    "created_by",
+    "created_at",
+    "updated_at",
+    "project_id",
+    "attempt_index",
+    "submitted_order",
+}
+WASTE_REVIEW_KEYS = {
+    "target_snapshot_id",
+    "request_id",
+    "session_id",
+    "target_id",
+    "target_type",
+    "project_id",
+}
 
 
 class ExperimentSlimTest(unittest.TestCase):
@@ -29,7 +50,9 @@ class ExperimentSlimTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.project_id = self.call("project", action="create", name="Slim get_state")["id"]
+        self.project_id = self.call("project", action="create", name="Slim get_state")[
+            "id"
+        ]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -39,7 +62,9 @@ class ExperimentSlimTest(unittest.TestCase):
 
     def _experiment_with_artifacts(self) -> str:
         exp_id = self.call(
-            "experiment.create", name="reve-small", project_id=self.project_id,
+            "experiment.create",
+            name="reve-small",
+            project_id=self.project_id,
             intent="Train REVE-Small.\n\nTitle: REVE-Small",
         )["id"]
         for path, role, body in [
@@ -60,8 +85,12 @@ class ExperimentSlimTest(unittest.TestCase):
             ),
         ]:
             self.app.submit_artifact(
-                project_id=self.project_id, target_type="experiment",
-                target_id=exp_id, role=role, path=path, body=body,
+                project_id=self.project_id,
+                target_type="experiment",
+                target_id=exp_id,
+                role=role,
+                path=path,
+                body=body,
             )
         return exp_id
 
@@ -80,7 +109,9 @@ class ExperimentSlimTest(unittest.TestCase):
 
     def test_get_state_tool_is_slim(self) -> None:
         exp_id = self._experiment_with_artifacts()
-        slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        slim = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
 
         # The duplicate all-attempts `resources` list is gone.
         self.assertNotIn("artifacts", slim)
@@ -94,52 +125,84 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertIn("conclusion", slim)
         self.assertIn("gate_checklist", slim)
         self.assertEqual(slim["storage_objects"], [])
-        self.assertEqual({"id", "statement", "confidence", "status", "scope"},
-                         set(slim["tested_claims"][0]) if slim["tested_claims"] else {"id", "statement", "confidence", "status", "scope"})
+        self.assertEqual(
+            {"id", "statement", "confidence", "status", "scope"},
+            (
+                set(slim["tested_claims"][0])
+                if slim["tested_claims"]
+                else {"id", "statement", "confidence", "status", "scope"}
+            ),
+        )
         # Single-attempt experiment: no prior-attempt block.
         self.assertNotIn("prior_attempt_artifacts", slim)
 
-    def _seed_review(self, *, exp_id: str, review_id: str, seq: int, **overrides) -> None:
+    def _seed_review(
+        self, *, exp_id: str, review_id: str, seq: int, **overrides
+    ) -> None:
         """Write a review row directly (FK off) with bookkeeping + findings."""
         import sqlite3
+
         raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
         raw.execute("PRAGMA foreign_keys=OFF")
         cols = [r[1] for r in raw.execute("PRAGMA table_info(reviews)").fetchall()]
         vals = {
-            "id": review_id, "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
-            "role": "experiment_reviewer", "verdict": "pass", "status": "submitted",
+            "id": review_id,
+            "project_id": self.project_id,
+            "target_type": "experiment",
+            "target_id": exp_id,
+            "role": "experiment_reviewer",
+            "verdict": "pass",
+            "status": "submitted",
             "findings_json": json.dumps([{"issue": "narrow", "severity": "low"}]),
-            "evidence_json": json.dumps({"exit_code": 0}), "notes": "looks good",
-            "target_snapshot_id": "experiment|" + "x" * 500, "created_at": "2026-06-03T04:41:27Z",
-            "request_id": "rr_x", "session_id": "rvs_x", "created_seq": seq,
+            "evidence_json": json.dumps({"exit_code": 0}),
+            "notes": "looks good",
+            "target_snapshot_id": "experiment|" + "x" * 500,
+            "created_at": "2026-06-03T04:41:27Z",
+            "request_id": "rr_x",
+            "session_id": "rvs_x",
+            "created_seq": seq,
             **overrides,
         }
         present = {k: v for k, v in vals.items() if k in cols}
-        raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
-        raw.commit(); raw.close()
+        raw.execute(
+            f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})",
+            list(present.values()),
+        )
+        raw.commit()
+        raw.close()
 
     def test_get_state_review_list_is_synopsis_only(self) -> None:
         exp_id = self._experiment_with_artifacts()
         self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1)
 
-        slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        slim = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         review = slim["reviews"][0]
         self.assertEqual(review["verdict"], "pass")
         self.assertEqual(review["synopsis"], "looks good")
         self.assertNotIn("findings", review)
         self.assertNotIn("notes", review)
         self.assertNotIn("evidence", review)
-        self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())     # bookkeeping dropped
+        self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())  # bookkeeping dropped
 
     def test_get_state_older_rounds_arrive_as_tldrs(self) -> None:
         exp_id = self._experiment_with_artifacts()
         self._seed_review(
-            exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z",
-            verdict="needs_changes", return_to="planned", synopsis="",
+            exp_id=exp_id,
+            review_id="rev_1",
+            seq=1,
+            created_at="2026-06-01T00:00:00Z",
+            verdict="needs_changes",
+            return_to="planned",
+            synopsis="",
             notes="The first pass never separated the arms.\nlong prose follows",
         )
         self._seed_review(
-            exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z",
+            exp_id=exp_id,
+            review_id="rev_2",
+            seq=2,
+            created_at="2026-06-03T00:00:00Z",
             synopsis="The rerun clears the baseline, so the attempt stands.",
         )
 
@@ -148,22 +211,37 @@ class ExperimentSlimTest(unittest.TestCase):
         )["reviews"]
 
         self.assertEqual([review["id"] for review in reviews], ["rev_2", "rev_1"])
-        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis"})
-        self.assertEqual(set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"})
-        self.assertEqual(reviews[1]["synopsis"], "The first pass never separated the arms.")
+        self.assertEqual(
+            set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis"}
+        )
+        self.assertEqual(
+            set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"}
+        )
+        self.assertEqual(
+            reviews[1]["synopsis"], "The first pass never separated the arms."
+        )
 
     def test_get_state_review_id_reads_an_older_body_back(self) -> None:
         exp_id = self._experiment_with_artifacts()
         self._seed_review(
-            exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z",
-            verdict="needs_changes", return_to="planned", notes="the arms overlap",
+            exp_id=exp_id,
+            review_id="rev_1",
+            seq=1,
+            created_at="2026-06-01T00:00:00Z",
+            verdict="needs_changes",
+            return_to="planned",
+            notes="the arms overlap",
             findings_json=json.dumps([{"issue": "confounded", "severity": "high"}]),
         )
-        self._seed_review(exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z")
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z"
+        )
 
         state = self.call(
-            "experiment.get_state", project_id=self.project_id,
-            experiment_id=exp_id, review_id="rev_1",
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            review_id="rev_1",
         )
 
         self.assertEqual(state["review"]["id"], "rev_1")
@@ -180,8 +258,10 @@ class ExperimentSlimTest(unittest.TestCase):
 
         with self.assertRaises(ValidationError) as ctx:
             self.call(
-                "experiment.get_state", project_id=self.project_id,
-                experiment_id=exp_id, review_id="rev_nope",
+                "experiment.get_state",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                review_id="rev_nope",
             )
 
         self.assertIn("rev_nope", str(ctx.exception))
@@ -191,7 +271,9 @@ class ExperimentSlimTest(unittest.TestCase):
         self._experiment_with_artifacts()
         listed = self.call("experiment.list", project_id=self.project_id)["experiments"]
         self.assertNotIn("artifacts", listed[0])
-        self.assertEqual(set(listed[0]["current_attempt_artifacts"][0]), SLIM_ARTIFACT_KEYS)
+        self.assertEqual(
+            set(listed[0]["current_attempt_artifacts"][0]), SLIM_ARTIFACT_KEYS
+        )
 
     def test_transition_returns_a_receipt_without_experiment_context(self) -> None:
         exp_id = self.call(
@@ -232,7 +314,9 @@ class ExperimentSlimTest(unittest.TestCase):
 
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
         exp_id = self._experiment_with_artifacts()
-        full = self.app.experiments.get_state(experiment_id=exp_id, project_id=self.project_id)
+        full = self.app.experiments.get_state(
+            experiment_id=exp_id, project_id=self.project_id
+        )
         self.assertIn("artifacts", full)
         self.assertIn("content_type", full["current_attempt_artifacts"][0])
 

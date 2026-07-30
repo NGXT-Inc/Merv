@@ -1,4 +1,5 @@
 """ETag/304 semantics and the SSE event stream (UI push, blind-poll relief)."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 
 
 class ConditionalRequestTestBase(unittest.TestCase):
@@ -22,8 +23,10 @@ class ConditionalRequestTestBase(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
-        project = self.client.post("/api/projects", json={"name": "Cond", "summary": ""}).json()
+        self.client = TestClient(create_fastapi_app(self.app))
+        project = self.client.post(
+            "/api/projects", json={"name": "Cond", "summary": ""}
+        ).json()
         self.project_id = project["id"]
 
     def tearDown(self) -> None:
@@ -41,7 +44,9 @@ class EtagTest(ConditionalRequestTestBase):
 
     def get(self, suffix: str, etag: str | None = None):
         headers = {"If-None-Match": etag} if etag else {}
-        return self.client.get(f"/api/projects/{self.project_id}{suffix}", headers=headers)
+        return self.client.get(
+            f"/api/projects/{self.project_id}{suffix}", headers=headers
+        )
 
     def test_etag_present_and_stable_across_identical_reads(self) -> None:
         for suffix in self.PATHS:
@@ -52,7 +57,9 @@ class EtagTest(ConditionalRequestTestBase):
             self.assertEqual(first.headers["etag"], second.headers["etag"], suffix)
             # Unconditional 200 bodies stay byte-identical between reads.
             self.assertEqual(first.content, second.content, suffix)
-            self.assertTrue(first.headers["content-type"].startswith("application/json"))
+            self.assertTrue(
+                first.headers["content-type"].startswith("application/json")
+            )
 
     def test_if_none_match_returns_304_with_empty_body(self) -> None:
         for suffix in self.PATHS:
@@ -75,9 +82,7 @@ class EtagTest(ConditionalRequestTestBase):
             response = self.get(suffix, etag=etag)
             self.assertEqual(response.status_code, 200, suffix)
             self.assertNotEqual(response.headers["etag"], etag, suffix)
-        self.assertEqual(
-            self.get("/home").json()["stats"]["claims"], 1
-        )
+        self.assertEqual(self.get("/home").json()["stats"]["claims"], 1)
 
     def test_stale_etag_still_serves_full_payload(self) -> None:
         response = self.get("/home", etag='"not-the-etag"')
@@ -120,16 +125,16 @@ class EtagTest(ConditionalRequestTestBase):
         # The composite signal never calls status_and_next; the heavy home
         # render (which leads with it) must not run on a matching ETag.
         etag = self.get("/home").headers["etag"]
-        original = self.app.workflow.status_and_next
+        original = self.app.application.dashboard
 
         def fail_status(*args, **kwargs):
             self.fail("matching home ETag should not render the status body")
 
-        self.app.workflow.status_and_next = fail_status  # type: ignore[method-assign]
+        self.app.application.dashboard = fail_status  # type: ignore[method-assign]
         try:
             response = self.get("/home", etag=etag)
         finally:
-            self.app.workflow.status_and_next = original  # type: ignore[method-assign]
+            self.app.application.dashboard = original  # type: ignore[method-assign]
         self.assertEqual(response.status_code, 304)
         self.assertEqual(response.content, b"")
 
@@ -142,9 +147,13 @@ class EventStreamTest(ConditionalRequestTestBase):
     def read_session(self, path: str, headers: dict | None = None) -> list[str]:
         # TestClient buffers whole responses, so run a bounded stream session
         # (max_ms) and parse the complete SSE transcript it returns.
-        response = self.client.get(f"{path}&poll_ms=100&max_ms=100", headers=headers or {})
+        response = self.client.get(
+            f"{path}&poll_ms=100&max_ms=100", headers=headers or {}
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
         return response.text.splitlines()
 
     @staticmethod
@@ -158,7 +167,9 @@ class EventStreamTest(ConditionalRequestTestBase):
     def test_since_zero_replays_rows_then_signals_state(self) -> None:
         self.create_claim("First claim.")
         self.create_claim("Second claim.")
-        recorded = self.client.get(f"/api/projects/{self.project_id}/events?limit=500").json()["events"]
+        recorded = self.client.get(
+            f"/api/projects/{self.project_id}/events?limit=500"
+        ).json()["events"]
         lines = self.read_session(self.stream_path(since=0))
 
         self.assertIn("retry: 3000", lines)
@@ -178,7 +189,9 @@ class EventStreamTest(ConditionalRequestTestBase):
 
     def test_last_event_id_header_resumes_after_cursor(self) -> None:
         self.create_claim("Old claim.")
-        old_id = self.client.get(f"/api/projects/{self.project_id}/events?limit=1").json()["events"][0]["id"]
+        old_id = self.client.get(
+            f"/api/projects/{self.project_id}/events?limit=1"
+        ).json()["events"][0]["id"]
         self.create_claim("New claim.")
         lines = self.read_session(
             self.stream_path(), headers={"Last-Event-ID": str(old_id)}
@@ -188,8 +201,12 @@ class EventStreamTest(ConditionalRequestTestBase):
         self.assertTrue(all(row["id"] > old_id for row in appended))
 
     def test_stream_is_project_scoped(self) -> None:
-        other = self.client.post("/api/projects", json={"name": "Other", "summary": ""}).json()
-        self.client.post(f"/api/projects/{other['id']}/claims", json={"statement": "Foreign claim."})
+        other = self.client.post(
+            "/api/projects", json={"name": "Other", "summary": ""}
+        ).json()
+        self.client.post(
+            f"/api/projects/{other['id']}/claims", json={"statement": "Foreign claim."}
+        )
         self.create_claim("Local claim.")
         lines = self.read_session(self.stream_path(since=0))
         appended = self.events_of(lines, "append")

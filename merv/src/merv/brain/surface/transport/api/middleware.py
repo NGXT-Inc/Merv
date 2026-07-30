@@ -27,7 +27,7 @@ from ...identity import (
     ProjectKeyScopeError,
     ToolVisibilityError,
 )
-from ...observability import StructuredLogger
+from ...telemetry import StructuredLogger
 from ..http_policy import HttpSurfacePolicy
 from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, redact_upload_tokens
 

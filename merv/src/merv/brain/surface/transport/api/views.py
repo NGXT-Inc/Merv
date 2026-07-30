@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import NotFoundError
 from ....research_core import EXPERIMENT_WORKFLOW
 from ....sandbox import SandboxEngine
-from .dependencies import ActivityTelemetry, ToolCallTelemetry
+
+
+class ActivityTelemetry(Protocol):
+    def recent(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class ToolCallTelemetry(Protocol):
+    def stats(self, **kwargs: Any) -> dict[str, Any]: ...
+    def get(self, **kwargs: Any) -> dict[str, Any] | None: ...
 
 _LOCAL_DATA_PLANE_RESPONSE_KEYS = frozenset(
     {"repo_root", "local_sync_dir", "local_experiment_dir"}

@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from ..application.ports.tracking import MAX_TRACKING_SNAPSHOT_RUNS
+from ..application.mlflow import MAX_TRACKING_SNAPSHOT_RUNS
 
 # Extraction bounds: the archive is a results record, not a full MLflow mirror.
 MAX_EXPERIMENTS = 20
@@ -78,7 +78,11 @@ def snapshot_mlflow(
                 )
     except Exception as exc:  # noqa: BLE001 - normalized for the tracking facade
         raise MlflowSnapshotError("MLflow snapshot failed") from exc
-    return {"source": "mlflow", "base_url": base, "experiments": captured} if captured else None
+    return (
+        {"source": "mlflow", "base_url": base, "experiments": captured}
+        if captured
+        else None
+    )
 
 
 def snapshot_mlflow_project(
@@ -132,7 +136,9 @@ def _search_experiments(
     elif name_like:
         params["filter"] = "name LIKE '" + name_like.replace("'", "\\'") + "'"
     try:
-        response = client.get(f"{base}/api/2.0/mlflow/experiments/search", params=params)
+        response = client.get(
+            f"{base}/api/2.0/mlflow/experiments/search", params=params
+        )
         response.raise_for_status()
     except Exception:
         if not (experiment_name or name_like):

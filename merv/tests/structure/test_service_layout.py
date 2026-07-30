@@ -24,15 +24,13 @@ ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
 
 GLUE_SERVICE_FILES = (
-    *(SERVICES_ROOT / name for name in ("auth.py", "identity.py", "permissions.py")),
+    *(SERVICES_ROOT / name for name in ("auth.py", "identity.py")),
     BACKEND_ROOT / "application" / "maintenance.py",
 )
 RESEARCH_CORE = RESEARCH_CORE_ROOT
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
-    SURFACE_ROOT / "transport" / "admin_http.py",
     SURFACE_ROOT / "transport" / "feed_http.py",
-    SURFACE_ROOT / "transport" / "http_api.py",
     SURFACE_ROOT / "transport" / "mcp_http.py",
     *sorted((SURFACE_ROOT / "transport" / "api").glob("*.py")),
 )
@@ -43,7 +41,7 @@ HTTP_API_PACKAGE = SURFACE_ROOT / "transport" / "api"
 
 _CONTROL_APP_SCAN_EXCLUSIONS = {
     "config.py",
-    "control/control_app.py",
+    "surface.py",
     "transport/http_server.py",
 }
 CONTROL_APP_SCAN_MODULES = tuple(
@@ -53,7 +51,7 @@ CONTROL_APP_SCAN_MODULES = tuple(
     and path.relative_to(SURFACE_ROOT).as_posix() not in _CONTROL_APP_SCAN_EXCLUSIONS
 )
 
-# Exact, line-independent debt ledgers for the remaining whole-ControlApp HTTP
+# Exact, line-independent debt ledgers for the remaining whole-Surface HTTP
 # seams. Counter keys deliberately identify a file and top-level collaborator,
 # not a line number, so harmless formatting does not churn the baseline. Both
 # ledgers are shrinking: a new entry is a regression, while a removed entry
@@ -670,9 +668,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn(
             "surface = surface_policy or HttpSurfacePolicy.for_surface(", source
         )
-        control_source = (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
-            encoding="utf-8"
-        )
+        control_source = (SURFACE_ROOT / "surface.py").read_text(encoding="utf-8")
         self.assertIn("surface_policy=surface", control_source)
         for decision in (
             "CONTROL_RESTRICT_CORS_ENV_VAR",
@@ -767,34 +763,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("data_plane_http_capabilities", route_source)
         self.assertNotIn("require_data_plane_for_http", route_source)
 
-    def test_admin_http_routes_are_lifted_out_of_main_factory(self) -> None:
-        source = _api_app_source()
-        admin_source = (SURFACE_ROOT / "transport" / "admin_http.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertEqual(
-            _import_module_names(SURFACE_ROOT / "transport" / "admin_http.py"),
-            {"typing"},
-        )
-        self.assertIn("register_admin_routes(", source)
-        self.assertIn('"/api/admin/cleanup"', admin_source)
-        self.assertIn('"/api/admin/tenants/{tenant_id}/counters"', admin_source)
-        self.assertNotIn('"/api/admin/cleanup"', source)
-        self.assertNotIn('"/api/admin/tenants/{tenant_id}/counters"', source)
-        self.assertNotIn("TenantCounters", source)
-        self.assertIn(
-            "tenant_counters=tenant_counters or api.tenant_counters",
-            source,
-        )
-        self.assertNotIn("app=api.app", source)
-        self.assertNotIn("app.", admin_source)
-        self.assertIn("cleanup.run_all().as_dict()", admin_source)
-        self.assertIn("tenant_counters(tenant_id=tenant_id)", admin_source)
-        self.assertNotIn("TenantCounters", admin_source)
-        self.assertNotIn("require_admin", admin_source)
-        self.assertNotIn("require_tenant_or_admin", admin_source)
-
     def test_mcp_http_routes_are_shared_by_local_and_control(self) -> None:
         source = _api_app_source()
         mcp_source = (SURFACE_ROOT / "transport" / "mcp_http.py").read_text(
@@ -852,7 +820,7 @@ class ServiceLayoutTest(unittest.TestCase):
             encoding="utf-8"
         )
         quotas = (BACKEND_ROOT / "sandbox" / "quotas.py").read_text(encoding="utf-8")
-        queries = (BACKEND_ROOT / "application" / "queries.py").read_text(
+        application = (BACKEND_ROOT / "application" / "application.py").read_text(
             encoding="utf-8"
         )
 
@@ -860,7 +828,9 @@ class ServiceLayoutTest(unittest.TestCase):
         end = store.index("\n    def ", start + 5)
         self.assertNotIn("sandbox_generations", store[start:end])
         self.assertIn("def tenant_generation_counters", quotas)
-        self.assertIn("class TenantCountersQuery", queries)
+        self.assertIn("def tenant_counters", application)
+        self.assertIn("self.sandboxes.tenant_generation_counters(", application)
+        self.assertIn("self.research.tenant_event_count(", application)
 
     def test_surface_raw_control_app_access_baseline_only_shrinks(self) -> None:
         current = _raw_control_app_accesses()
@@ -935,31 +905,6 @@ class ServiceLayoutTest(unittest.TestCase):
         source = _api_package_source()
         self.assertNotIn("project_ids_for_tenant", source)
         self.assertNotIn("SELECT id FROM projects WHERE tenant_id", source)
-
-    def test_permission_service_owns_only_tool_authorization(self) -> None:
-        permission_path = SERVICES / "permissions.py"
-        self.assertEqual(
-            _class_method_names(permission_path, "PermissionService"),
-            {"reject_reviewer_mutation"},
-        )
-        permission_imports = _import_module_names(permission_path)
-        self.assertNotIn("merv.shared.artifact_roles", permission_imports)
-        self.assertFalse(
-            any("research_core" in module for module in permission_imports)
-        )
-        for path in sorted(BACKEND_ROOT.rglob("*.py")):
-            with self.subTest(module=str(path.relative_to(BACKEND_ROOT))):
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.ImportFrom) or not node.module:
-                        continue
-                    if node.module.split(".")[-1] != "permissions":
-                        continue
-                    leaked = VOCABULARY_NAMES & {alias.name for alias in node.names}
-                    self.assertFalse(
-                        leaked,
-                        f"import vocabulary from domain.vocabulary/artifacts.roles, not permissions: {sorted(leaked)}",
-                    )
 
     def test_identity_constants_are_foundation_vocabulary(self) -> None:
         from merv.brain.kernel.identity import LOCAL_CLIENT_ID, LOCAL_TENANT_ID

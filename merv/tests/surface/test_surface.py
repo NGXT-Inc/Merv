@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from merv.brain.surface.composition.control_mode import build_control_app
-from merv.brain.surface.composition import control_mode
+from merv.brain.surface.surface import build_control_app
+from merv.brain.surface import surface as control_mode
 from merv.brain.surface.config import (
     ALLOW_OPEN_CONTROL_ENV_VAR,
     ALLOWED_ORIGINS_ENV_VAR,
@@ -32,7 +32,7 @@ from merv.brain.mlflow.config import (
 )
 from merv.brain.mlflow import CentralMlflowService
 from tests.support.sandbox_backend import FakeSandboxBackend, seed_sandbox
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
@@ -63,8 +63,8 @@ def _open_control_env(root: Path) -> dict[str, str]:
     return {**_mounted_mgmt_key_env(root), ALLOW_OPEN_CONTROL_ENV_VAR: "1"}
 
 
-class ControlAppTest(unittest.TestCase):
-    def test_control_app_records_scoped_activity_without_local_runtime(self) -> None:
+class SurfaceTest(unittest.TestCase):
+    def test_surface_records_scoped_activity_without_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = build_control_app(
@@ -75,7 +75,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app.http,
+                    app=app,
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
                         hosted_control=True,
@@ -142,7 +142,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app.http,
+                    app=app,
                     allowed_origins=["http://localhost:5173"],
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
@@ -192,7 +192,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app.http,
+                    app=app,
                     allowed_origins=["http://localhost:5173"],
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
@@ -217,7 +217,7 @@ class ControlAppTest(unittest.TestCase):
                 "http://localhost:5173",
             )
 
-    def test_control_app_uses_mounted_management_key_when_configured(self) -> None:
+    def test_surface_uses_mounted_management_key_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = _mounted_mgmt_key_env(root)
@@ -238,7 +238,7 @@ class ControlAppTest(unittest.TestCase):
                 app.sandboxes._keys.key_path(sandbox_uid="sb_1"), key_path
             )
 
-    def test_control_app_rejects_partial_management_key_config(self) -> None:
+    def test_surface_rejects_partial_management_key_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValidationError):
                 build_control_app(
@@ -247,7 +247,7 @@ class ControlAppTest(unittest.TestCase):
                     execution_backend=FakeSandboxBackend(),
                 )
 
-    def test_control_app_requires_mounted_management_key(self) -> None:
+    def test_surface_requires_mounted_management_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValidationError) as ctx:
                 build_control_app(
@@ -256,7 +256,7 @@ class ControlAppTest(unittest.TestCase):
                 )
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_ignores_legacy_mlflow_env_without_injection(self) -> None:
+    def test_surface_ignores_legacy_mlflow_env_without_injection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = build_control_app(
@@ -296,7 +296,7 @@ class ControlAppTest(unittest.TestCase):
 
             self.assertIsNone(app._tracking)
 
-    def test_control_app_can_require_healthy_sandbox_backend(self) -> None:
+    def test_surface_can_require_healthy_sandbox_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             backend = FakeSandboxBackend()
@@ -314,7 +314,7 @@ class ControlAppTest(unittest.TestCase):
         self.assertIn(REQUIRE_SANDBOX_BACKEND_ENV_VAR, ctx.exception.message)
         self.assertIn("fake", ctx.exception.message)
 
-    def test_control_app_lazy_central_metrics_record_without_archive(self) -> None:
+    def test_surface_lazy_central_metrics_record_without_archive(self) -> None:
         snapshot = {
             "source": "mlflow",
             "base_url": "http://mlflow:5000",
@@ -372,7 +372,7 @@ class ControlAppTest(unittest.TestCase):
             self.assertNotIn("base_url", result)
             self.assertEqual(result["experiments"][0]["name"], "central")
 
-    def test_control_app_without_repo_root_requires_durable_config(self) -> None:
+    def test_surface_without_repo_root_requires_durable_config(self) -> None:
         with self.assertRaises(ValidationError) as ctx:
             build_control_app(repo_root=None, env={}, execution_backend=FakeSandboxBackend())
 
@@ -380,7 +380,7 @@ class ControlAppTest(unittest.TestCase):
         self.assertIn(BLOB_BUCKET_ENV_VAR, ctx.exception.message)
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_without_repo_root_uses_non_created_compat_root(self) -> None:
+    def test_surface_without_repo_root_uses_non_created_compat_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mounted_env = _mounted_mgmt_key_env(root)
@@ -393,11 +393,11 @@ class ControlAppTest(unittest.TestCase):
             }
             with (
                 patch(
-                    "merv.brain.surface.composition.control_mode.build_state_store",
+                    "merv.brain.surface.surface.build_state_store",
                     return_value=store,
                 ) as state_factory,
                 patch(
-                    "merv.brain.surface.composition.control_mode.build_blob_store",
+                    "merv.brain.surface.surface.build_blob_store",
                     return_value=blobs,
                 ) as blob_factory,
             ):
@@ -420,7 +420,7 @@ class ControlAppTest(unittest.TestCase):
 
     def test_hosted_control_refuses_to_boot_without_a_verifier(self) -> None:
         """SEC-02: an unauthenticated hosted surface is never the default."""
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -451,12 +451,12 @@ class ControlAppTest(unittest.TestCase):
                 restrict_cors=True, hosted_control=True
             )
             with self.assertRaises(ValidationError) as ctx:
-                create_fastapi_app(app=app.http, surface_policy=hosted, env={})
+                create_fastapi_app(app=app, surface_policy=hosted, env={})
             self.assertIn(ALLOW_OPEN_CONTROL_ENV_VAR, ctx.exception.message)
 
             # Naming the open mode is the only way through, and it works.
             opened = create_fastapi_app(
-                app=app.http,
+                app=app,
                 surface_policy=hosted,
                 env={ALLOW_OPEN_CONTROL_ENV_VAR: "1"},
             )
@@ -465,14 +465,14 @@ class ControlAppTest(unittest.TestCase):
 
             # The local preset is untouched: no flag, no verifier, still serves.
             local = TestClient(
-                create_fastapi_app(app=app.http, env={}),
+                create_fastapi_app(app=app, env={}),
                 raise_server_exceptions=False,
             )
             self.assertEqual(local.get("/api/projects").status_code, 200)
 
     def test_a_misspelled_open_flag_fails_the_boot_instead_of_opening(self) -> None:
         """The flag turns a security control off, so it is parsed strictly."""
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -491,7 +491,7 @@ class ControlAppTest(unittest.TestCase):
         self.assertEqual(ctx.exception.details["value"], "ture")
 
     def test_an_explicit_off_value_keeps_the_plane_closed(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         for value in ("0", "false", "off", "no"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
@@ -507,7 +507,7 @@ class ControlAppTest(unittest.TestCase):
                 self.assertIn(SUPABASE_URL_ENV_VAR, ctx.exception.message)
 
     def test_require_auth_without_credentials_still_names_the_missing_ones(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -523,7 +523,7 @@ class ControlAppTest(unittest.TestCase):
         )
 
     def test_the_open_flag_boots_an_open_plane_and_says_so(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -538,7 +538,7 @@ class ControlAppTest(unittest.TestCase):
 
     def test_the_cleanup_pass_sweeps_oauth_registrations(self) -> None:
         # AUTH-03: the sweep only runs if composition hands it the repository.
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -551,7 +551,7 @@ class ControlAppTest(unittest.TestCase):
     def test_local_deployment_keeps_its_unauthenticated_default(self) -> None:
         # Loopback single-user mode never had a verifier and still does not
         # need the open-mode flag.
-        from merv.brain.surface.composition.control_mode import build_local_server
+        from merv.brain.surface.surface import build_local_server
 
         with tempfile.TemporaryDirectory() as tmp:
             server = build_local_server(state_dir=Path(tmp), env={})
@@ -560,7 +560,7 @@ class ControlAppTest(unittest.TestCase):
             self.assertEqual(client.get("/api/projects").status_code, 200)
 
     def test_control_server_reads_allowed_origins_from_env(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -600,12 +600,12 @@ class ControlAppTest(unittest.TestCase):
             )
 
     def test_control_server_warns_when_allowed_origins_empty(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self.assertLogs(
-                "merv.brain.surface.composition.control_mode", level="WARNING"
+                "merv.brain.surface.surface", level="WARNING"
             ) as logs:
                 server = build_control_server(
                     repo_root=root,
@@ -615,7 +615,7 @@ class ControlAppTest(unittest.TestCase):
             self.assertIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
 
     def test_control_server_private_surface_and_cors_are_configured_independently(self) -> None:
-        from merv.brain.surface.composition.control_mode import build_control_server
+        from merv.brain.surface.surface import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -624,7 +624,7 @@ class ControlAppTest(unittest.TestCase):
             # but that warning belongs to the auth module now, leaving this
             # logger silent — which is the assertion this test wants.
             with self.assertNoLogs(
-                "merv.brain.surface.composition.control_mode", level="WARNING"
+                "merv.brain.surface.surface", level="WARNING"
             ):
                 server = build_control_server(
                     repo_root=root,

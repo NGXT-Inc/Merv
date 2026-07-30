@@ -137,7 +137,7 @@ class ControlRestartTest(unittest.TestCase):
         return backend
 
     def _build(self):
-        from merv.brain.surface.composition.control_mode import build_control_app
+        from merv.brain.surface.surface import build_control_app
 
         backend = self._reaper_backend()
         app = build_control_app(

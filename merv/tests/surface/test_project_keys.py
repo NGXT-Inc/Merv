@@ -24,9 +24,8 @@ from merv.brain.surface.auth import (
     SupabaseVerifier,
     UnauthorizedError,
 )
-from merv.brain.surface.project_key_store import SqlProjectKeyRepository
 from merv.brain.surface.project_keys import ProjectKeyRecord, ProjectKeys
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 
 SECRET = "project-key-tests-jwt-secret-32-bytes"
@@ -68,7 +67,7 @@ class ProjectKeySurfaceTest(unittest.TestCase):
             db_path=self.root / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.keys = ProjectKeys(repository=SqlProjectKeyRepository(store=self.app.store))
+        self.keys = ProjectKeys(store=self.app.store)
         self.verifier = SupabaseVerifier(
             supabase_url="https://example.supabase.co",
             jwt_secret=SECRET,
@@ -78,7 +77,7 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         self.verifier._http = httpx.Client(transport=httpx.MockTransport(_postgrest))
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),
@@ -181,7 +180,7 @@ class ProjectKeySurfaceTest(unittest.TestCase):
     def test_minted_record_has_no_profile_and_create_rejects_profile_kwarg(self) -> None:
         result = self.keys.create(project_id=self.project_a, owner_user_id=USER_A)
         self.assertNotIn("profile", result["key"])
-        record = self.keys._repository.by_id(key_id=str(result["key"]["id"]))
+        record = self.keys.verify_secret(secret=str(result["secret"]))
         self.assertIsInstance(record, ProjectKeyRecord)
         self.assertFalse(hasattr(record, "profile"))
         with self.assertRaises(TypeError):
@@ -532,7 +531,7 @@ class ProjectKeySurfaceTest(unittest.TestCase):
 
         admin_client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),
@@ -576,7 +575,7 @@ class ProjectKeySurfaceTest(unittest.TestCase):
 
         open_client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),

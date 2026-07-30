@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from merv.brain.kernel.state.tool_call_stats import percentile
-from merv.brain.surface.control.control_runtime import ControlToolCallSink
+from merv.brain.surface.telemetry import ControlToolCallSink
 
 
 class PercentileTest(unittest.TestCase):
@@ -64,7 +64,7 @@ class ControlToolCallSinkTest(unittest.TestCase):
         from tests.paths import BACKEND_ROOT
 
         source = (
-            BACKEND_ROOT / "surface" / "control" / "control_runtime.py"
+            BACKEND_ROOT / "surface" / "telemetry.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("def _percentile", source)
         self.assertNotIn("def _by_tool", source)

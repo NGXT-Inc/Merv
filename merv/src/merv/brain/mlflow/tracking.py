@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..application.ports.tracking import (
+from ..application.mlflow import (
     CreateRunResult,
     FinalizeRunResult,
     MetricsSnapshot,
@@ -29,6 +29,7 @@ from .metrics import (
     snapshot_mlflow_project,
 )
 from ..kernel.env import mlflow_suspended
+from ..kernel.utils import format_iso
 from .config import (
     MLFLOW_AGENT_USERNAME,
     resolve_mlflow_agent_key,
@@ -93,7 +94,7 @@ class CentralMlflowService:
         self.tracking_uri = tracking_uri.strip().rstrip("/")
         self._control_uri = server_uri.strip().rstrip("/")
         self.server_uri = self._control_uri or self.tracking_uri
-        self.dashboard_url = (dashboard_url.strip().rstrip("/") or self.tracking_uri)
+        self.dashboard_url = dashboard_url.strip().rstrip("/") or self.tracking_uri
         self.note = note.strip()
         # Credential for the authenticated hosted /mlflow route. Only ever
         # serialized into agent-facing env blocks (include_credentials=True);
@@ -108,9 +109,7 @@ class CentralMlflowService:
         self._last_reachable: bool | None = None
 
     @classmethod
-    def from_env(
-        cls, env: Mapping[str, str] | None = None
-    ) -> "CentralMlflowService":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "CentralMlflowService":
         return cls(
             mode=resolve_mlflow_mode(env),
             tracking_uri=resolve_mlflow_tracking_uri(env),
@@ -223,11 +222,7 @@ class CentralMlflowService:
             dashboard_url=self.dashboard_url,
             experiment_name=experiment_name,
             env=env,
-            note=(
-                ""
-                if configured
-                else self._unconfigured_note()
-            ),
+            note=("" if configured else self._unconfigured_note()),
         )
 
     def create_run(
@@ -343,10 +338,12 @@ class CentralMlflowService:
         if not run_id:
             result["error"] = "MLflow run id is required."
             return result
-        if normalized_status and normalized_status not in _TRACKING_TERMINAL_RUN_STATUSES:
-            result["error"] = (
-                "MLflow terminal status must be one of: "
-                + ", ".join(sorted(_TRACKING_TERMINAL_RUN_STATUSES))
+        if (
+            normalized_status
+            and normalized_status not in _TRACKING_TERMINAL_RUN_STATUSES
+        ):
+            result["error"] = "MLflow terminal status must be one of: " + ", ".join(
+                sorted(_TRACKING_TERMINAL_RUN_STATUSES)
             )
             return result
         if not read_uri:
@@ -381,9 +378,9 @@ class CentralMlflowService:
                     # its status (e.g. a script-recorded FAILED must not be
                     # rewritten by our FINISHED default).
                     pre_status = str(
-                        self._read_run(
-                            client=client, base=read_uri, run_id=run_id
-                        ).get("status")
+                        self._read_run(client=client, base=read_uri, run_id=run_id).get(
+                            "status"
+                        )
                         or ""
                     )
                     if pre_status in _TRACKING_TERMINAL_RUN_STATUSES:
@@ -439,7 +436,9 @@ class CentralMlflowService:
                         break
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
         except Exception as exc:  # noqa: BLE001 - readback is advisory
-            result["error"] = f"MLflow run finalize/readback failed: {self._redacted(exc)}"
+            result["error"] = (
+                f"MLflow run finalize/readback failed: {self._redacted(exc)}"
+            )
             result["readback_attempts"] = attempts
             return result
 
@@ -464,9 +463,7 @@ class CentralMlflowService:
                 message = message.replace(host, "<mlflow-server>")
         return message
 
-    def _read_run(
-        self, *, client: httpx.Client, base: str, run_id: str
-    ) -> TrackingRun:
+    def _read_run(self, *, client: httpx.Client, base: str, run_id: str) -> TrackingRun:
         response = client.get(
             f"{base}/api/2.0/mlflow/runs/get",
             params={"run_id": run_id},
@@ -673,9 +670,9 @@ class CentralMlflowService:
 
     def namespace_experiments(self, *, project_id: str) -> list[dict[str, object]]:
         """List experiment metadata under one project's MLflow namespace."""
-        return self.project_results_snapshot(
-            project_id=project_id, experiment_ids=()
-        )[1]
+        return self.project_results_snapshot(project_id=project_id, experiment_ids=())[
+            1
+        ]
 
     def _dashboard_experiment_url(
         self, snapshot: dict[str, object], experiment_name: str
@@ -685,7 +682,9 @@ class CentralMlflowService:
         The backend owns the namespace→URL mapping so UI surfaces never have to
         reconstruct MLflow's ``#/experiments/<numeric_id>`` route themselves.
         """
-        experiments = snapshot.get("experiments") if isinstance(snapshot, dict) else None
+        experiments = (
+            snapshot.get("experiments") if isinstance(snapshot, dict) else None
+        )
         entries = [entry for entry in experiments or [] if isinstance(entry, dict)]
         match = next(
             (entry for entry in entries if entry.get("name") == experiment_name),
@@ -735,6 +734,4 @@ def _mlflow_ms_to_iso(value: object) -> str:
         millis = int(value)
     except (TypeError, ValueError):
         return ""
-    return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).isoformat().replace(
-        "+00:00", "Z"
-    )
+    return format_iso(datetime.fromtimestamp(millis / 1000, tz=timezone.utc))

@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 from tests.support.brain import TestBrain
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier, UnauthorizedError
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.version import CLIENT_VERSION_HEADER
 
@@ -141,7 +141,7 @@ class AuthedSurfaceTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 allowed_origins=["https://ui.example"],
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True

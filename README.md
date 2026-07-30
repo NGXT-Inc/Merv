@@ -129,10 +129,3 @@ Postgres, and an S3-compatible store — yourself. Start from the reference
 deployment in [merv/deploy/README.md](merv/deploy/README.md); operations are in
 [CONTROL_PLANE_OPERATIONS.md](merv/docs/CONTROL_PLANE_OPERATIONS.md). Clients
 connect the same way — point the MCP `url` at your own brain.
-
-## Migrating from Research Suite (`research-plugin`)
-
-Upgrading from the old `research-plugin`? Everything was renamed in v0.0012
-and the hosted brain now requires sign-in, but your data carries over
-untouched. See [MIGRATING.md](MIGRATING.md) for the per-client steps
-(Claude Code, Cursor, Codex).

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from merv.brain.surface.composition import build_local_server
+from merv.brain.surface.surface import build_local_server
 from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
@@ -26,13 +26,15 @@ class TestBrain:
     """Unified localhost brain with test conveniences around control dispatch.
 
     Tests keep the old repo_root/db_path construction convenience, while the
-    record/lifecycle brain is the production ControlApp path built by
+    record/lifecycle brain is the production Surface path built by
     build_local_server.
     """
 
     __test__ = False
     _PRIVATE_ALIASES = {
-        "store": "_store", "blobs": "_blobs", "storage": "_storage",
+        "store": "_store",
+        "blobs": "_blobs",
+        "storage": "storage",
         "mlflow_tracking": "_tracking",
     }
     _SANDBOX_TEST_PARTS = {
@@ -124,15 +126,12 @@ class TestBrain:
                 list_claims=research.list_claims,
             ),
             "experiments": research._experiments,
-            "graph_refs": SimpleNamespace(
-                resolve_index=research.resolve_graph_refs
-            ),
+            "graph_refs": SimpleNamespace(resolve_index=research.resolve_graph_refs),
             "reflection_waves": research._reflections,
             "reviews": research._reviews,
             "artifacts": self._app.artifacts,
             "feed": self._app.feed,
             "literature": self._app.literature,
-            "permissions": self._app.tools.permissions,
         }
         self.fastapi_app = self.server.fastapi_app
         self._client = TestClient(self.fastapi_app)
@@ -152,7 +151,7 @@ class TestBrain:
         return getattr(self._app, self._PRIVATE_ALIASES.get(name, name))
 
     def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:
-        return self._app.project_dashboard_query.current_project(tenant_id=tenant_id)
+        return self._app.application.current_project(tenant_id=tenant_id)
 
     def list_tools(self) -> list[dict[str, Any]]:
         return self._app.tools.list_tools()

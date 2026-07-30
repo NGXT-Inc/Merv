@@ -6,15 +6,15 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Request
 
-from ....application.facade import ReviewQueue
+from ....application import Application
 from ....research_core import Research
 from .shared import JsonBody, path_scoped_body
 
-from .context import ApiRouteContext
+from .gateway import ToolInvocationGateway
 
 
 def build_router(
-    ctx: ApiRouteContext, *, research: Research, queue: ReviewQueue
+    gateway: ToolInvocationGateway, *, application: Application, research: Research
 ) -> APIRouter:
     api_router = APIRouter()
 
@@ -26,8 +26,8 @@ def build_router(
         target_id: str | None = None,
     ) -> dict[str, Any]:
         if not target_id:
-            return queue(project_id=project_id)
-        return ctx.call_tool(
+            return application.review_queue(project_id=project_id)
+        return gateway.call_http(
             request,
             name="review.status",
             arguments={
@@ -41,7 +41,7 @@ def build_router(
     def request_review(
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="review.request",
             arguments=path_scoped_body(body, project_id=project_id),
@@ -58,7 +58,7 @@ def build_router(
             project_id=project_id,
             review_request_id=payload.get("review_request_id"),
         )
-        return ctx.call_tool(
+        return gateway.call_http(
             request,
             name="review.start",
             arguments=payload,
@@ -74,6 +74,8 @@ def build_router(
             project_id=project_id,
             review_session_id=payload.get("review_session_id"),
         )
-        return ctx.call_tool(request, name="review.submit", arguments=payload)
+        return gateway.call_http(
+            request, name="review.submit", arguments=payload
+        )
 
     return api_router

@@ -6,12 +6,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError as PydanticValidationError
 
 from tests.support.brain import TestBrain
+from merv.brain.kernel.utils import PermissionDeniedError
 from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from merv.brain.surface.tools.contracts import (
     MCP_HIDDEN_TOOL_NAMES,
@@ -34,8 +34,7 @@ from merv.brain.surface.tools.contracts import (
     available_tool_names,
 )
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.surface.tools.tool_facade import ToolDispatcher
-from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
+from merv.brain.surface.tools.dispatcher import ToolDispatcher
 
 
 BASE_PUBLIC_TOOLS = frozenset(
@@ -89,9 +88,7 @@ BASE_INTERNAL_TOOLS = frozenset(
 STORAGE_PUBLIC_TOOLS = frozenset(
     {"storage.fetch", "storage.find", "storage.object", "storage.submit"}
 )
-STORAGE_INTERNAL_TOOLS = frozenset(
-    {"storage.complete_upload", "storage.put_object"}
-)
+STORAGE_INTERNAL_TOOLS = frozenset({"storage.complete_upload", "storage.put_object"})
 TRACKING_PUBLIC_TOOLS = frozenset({"mlflow.context", "mlflow.finalize_run"})
 
 # Normalized Pydantic schemas: prose and non-semantic ordering are deliberately
@@ -163,9 +160,7 @@ def _normalized_schema(value, *, parent_key: str = ""):
             if key not in {"title", "description"}
         }
     if isinstance(value, list):
-        items = [
-            _normalized_schema(item, parent_key=parent_key) for item in value
-        ]
+        items = [_normalized_schema(item, parent_key=parent_key) for item in value]
         if parent_key in _UNORDERED_SCHEMA_ARRAYS:
             return sorted(
                 items,
@@ -175,45 +170,6 @@ def _normalized_schema(value, *, parent_key: str = ""):
             )
         return items
     return value
-
-
-class _HandlerTarget:
-    def __getattr__(self, _name: str):
-        def _handler(**_kwargs):
-            return {}
-
-        return _handler
-
-
-class _PermissionTarget:
-    def reject_reviewer_mutation(
-        self, *, tool_name: str, review_session_id: str | None
-    ) -> None:
-        return None
-
-
-def _handler_targets() -> dict[str, Any]:
-    target = _HandlerTarget()
-    return {
-        "workflow": target,
-        "research": target,
-        "create_experiment": target,
-        "agent_experiment": target,
-        "reflection_tools": target,
-        "artifact_submissions": target,
-        "storage": target,
-        "review_request": target,
-        "review_session": target,
-        "sandboxes": target,
-        "feed": target,
-        "experiment_transition": target,
-        "experiment_exhibit": target,
-        "tracking_context": target,
-        "tracking_finalize": target,
-        "review_status": target,
-        "operations": target,
-        "litreview": target,
-    }
 
 
 class ToolContractRegistryTest(unittest.TestCase):
@@ -281,7 +237,11 @@ class ToolContractRegistryTest(unittest.TestCase):
                     tracking_enabled=tracking_enabled,
                 )
                 self.assertEqual(
-                    {name for name in available if TOOL_MANIFEST[name].visibility == "public"},
+                    {
+                        name
+                        for name in available
+                        if TOOL_MANIFEST[name].visibility == "public"
+                    },
                     public,
                 )
                 self.assertEqual(available - public, internal)
@@ -306,11 +266,7 @@ class ToolContractRegistryTest(unittest.TestCase):
             - by_scope["none"],
         )
         self.assertEqual(
-            {
-                name
-                for name, tool in TOOL_MANIFEST.items()
-                if tool.feature_requirements
-            },
+            {name for name, tool in TOOL_MANIFEST.items() if tool.feature_requirements},
             STORAGE_PUBLIC_TOOLS | STORAGE_INTERNAL_TOOLS,
         )
 
@@ -402,12 +358,18 @@ class ToolContractRegistryTest(unittest.TestCase):
             "storage.object": StorageObjectInput,
         }
         self.assertEqual(
-            STORAGE_TOOL_NAMES, set(expected), "storage surface must be exactly these 6 tools"
+            STORAGE_TOOL_NAMES,
+            set(expected),
+            "storage surface must be exactly these 6 tools",
         )
         for name, model in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
-        self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
-        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.submit"].description)
+        self.assertIn(
+            "checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description
+        )
+        self.assertIn(
+            "logs/traces over about 10 MB", TOOL_CONTRACTS["storage.submit"].description
+        )
 
     def test_storage_find_enforces_resolve_vs_list_mode(self) -> None:
         # List mode: neither selector.
@@ -432,9 +394,7 @@ class ToolContractRegistryTest(unittest.TestCase):
                 "parts": [{"PartNumber": 1, "ETag": '"abc"'}],
             }
         )
-        self.assertEqual(
-            validated.parts, [{"part_number": 1, "etag": '"abc"'}]
-        )
+        self.assertEqual(validated.parts, [{"part_number": 1, "etag": '"abc"'}])
 
     def test_storage_object_action_is_required_and_enumerated(self) -> None:
         StorageObjectInput.model_validate(
@@ -448,7 +408,9 @@ class ToolContractRegistryTest(unittest.TestCase):
             )
 
     def test_artifact_tools_are_manifested(self) -> None:
-        self.assertIs(TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput)
+        self.assertIs(
+            TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput
+        )
         self.assertIs(TOOL_CONTRACTS["artifact.find"].input_model, ArtifactFindInput)
         # The whole resource-tracking tool family died with the resource cut.
         for removed in ("resource.register", "resource.find", "resource.delete"):
@@ -472,7 +434,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(parsed.lens_id, "amplify")
 
-    def test_reflection_get_defaults_to_summaries_with_explicit_full_opt_in(self) -> None:
+    def test_reflection_get_defaults_to_summaries_with_explicit_full_opt_in(
+        self,
+    ) -> None:
         default = ReflectionGetInput.model_validate(
             {"project_id": "proj_1", "reflection_id": "syn_1"}
         )
@@ -551,7 +515,6 @@ class ToolDispatcherTest(unittest.TestCase):
         handlers = {name: (lambda **_: {}) for name in tool_names}
         dispatcher = ToolDispatcher(
             handlers=handlers,
-            permissions=_PermissionTarget(),
             activity=object(),
             tool_calls=object(),
             tool_names=tool_names,
@@ -560,29 +523,19 @@ class ToolDispatcherTest(unittest.TestCase):
         listed_names = {tool["name"] for tool in dispatcher.list_tools()}
         self.assertEqual(listed_names, tool_names)
 
-
-class ToolHandlerRegistryTest(unittest.TestCase):
-    def test_default_handlers_omit_dormant_tracking_tools(self) -> None:
-        handlers = build_control_tool_handlers(**_handler_targets())
-
-        self.assertEqual(
-            set(handlers),
-            available_tool_names(storage_enabled=True, tracking_enabled=False),
+    def test_reviewer_session_cannot_mutate_through_another_tool(self) -> None:
+        dispatcher = ToolDispatcher(
+            handlers={"claim.create": lambda **_: {}},
+            activity=Mock(),
+            tool_calls=Mock(),
+            tool_names={"claim.create"},
         )
 
-    def test_legacy_tracking_handlers_remain_injectable(self) -> None:
-        handlers = build_control_tool_handlers(
-            **_handler_targets(), tracking_enabled=True
-        )
-
-        self.assertEqual(set(handlers), set(TOOL_MANIFEST))
-
-    def test_control_handlers_omit_storage_when_disabled(self) -> None:
-        targets = _handler_targets()
-        targets["storage"] = None
-        handlers = build_control_tool_handlers(**targets)
-
-        self.assertFalse(set(handlers) & STORAGE_TOOL_NAMES)
+        with self.assertRaisesRegex(PermissionDeniedError, "read-only"):
+            dispatcher.call_tool(
+                "claim.create",
+                {"project_id": "proj_1", "review_session_id": "rvs_1"},
+            )
 
 
 if __name__ == "__main__":

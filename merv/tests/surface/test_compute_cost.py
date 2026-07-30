@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 
 
 class ComputeCostEndpointTest(unittest.TestCase):
@@ -26,7 +26,7 @@ class ComputeCostEndpointTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
         self.project_id = self.app.call_tool("project", {"action": "create", "name": "Cost P"})["id"]
 
     def tearDown(self) -> None:

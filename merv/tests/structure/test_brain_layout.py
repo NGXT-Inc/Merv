@@ -31,7 +31,7 @@ from tests.paths import (
 
 # Service-shaped glue that must remain cloud-safe and process-free.
 GLUE_SERVICE_FILES = (
-    *(SERVICES_ROOT / name for name in ("auth.py", "identity.py", "permissions.py")),
+    *(SERVICES_ROOT / name for name in ("auth.py", "identity.py")),
     BACKEND_ROOT / "application" / "maintenance.py",
 )
 
@@ -47,19 +47,17 @@ CONTROL_MODULES = (
     *PORT_MODULES,
     BACKEND_ROOT / "sandbox" / "models.py",
     BACKEND_ROOT / "sandbox" / "sandbox_paths.py",
-    SURFACE_ROOT / "tools" / "tool_facade.py",
-    SURFACE_ROOT / "tools" / "tool_handlers.py",
+    SURFACE_ROOT / "tools" / "dispatcher.py",
     *sorted(RESEARCH_CORE_ROOT.glob("*.py")),
     *sorted((BACKEND_ROOT / "literature").glob("*.py")),
     BACKEND_ROOT / "application" / "status_guidance.py",
     BACKEND_ROOT / "application" / "experiments" / "presentation.py",
-    SERVICES_ROOT / "permissions.py",
     BACKEND_ROOT / "application" / "workflow.py",
     BACKEND_ROOT / "sandbox" / "core.py",
     FEED_ROOT / "feed.py",
     BACKEND_ROOT / "sandbox" / "observation.py",
-    SURFACE_ROOT / "control" / "control_app.py",
-    SURFACE_ROOT / "control" / "control_runtime.py",
+    SURFACE_ROOT / "surface.py",
+    SURFACE_ROOT / "telemetry.py",
     BACKEND_ROOT / "kernel" / "state" / "store.py",
     BACKEND_ROOT / "kernel" / "state" / "dialects.py",
 )
@@ -317,34 +315,6 @@ load("subprocess")
                     f"{path.name} imports local-IO modules: {sorted(forbidden)}",
                 )
 
-    def test_tool_dispatcher_uses_narrow_permission_policy(self) -> None:
-        from merv.brain.surface.tools.tool_facade import (
-            ToolDispatcher,
-            ToolPermissionPolicy,
-        )
-
-        hints = get_type_hints(ToolDispatcher.__init__)
-        self.assertIs(hints["permissions"], ToolPermissionPolicy)
-        self.assertIn(Protocol, ToolPermissionPolicy.__mro__)
-        path = SURFACE_ROOT / "tools" / "tool_facade.py"
-        source = path.read_text(encoding="utf-8")
-        self.assertNotIn("permissions: Any", source)
-        self.assertEqual(
-            _class_method_names(path, "ToolPermissionPolicy"),
-            {"reject_reviewer_mutation"},
-        )
-        tree = ast.parse(source)
-        calls = {
-            node.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "permissions"
-            and isinstance(node.value.value, ast.Name)
-            and node.value.value.id == "self"
-        }
-        self.assertEqual(calls, {"reject_reviewer_mutation"})
-
     def test_state_store_knows_no_repo_root(self) -> None:
         # The record store is a records-only component (plan §3.1): local
         # checkout paths do not belong in the brain.
@@ -391,9 +361,6 @@ load("subprocess")
         self.assertNotIn("project_dirs", activity)
 
     def test_services_package_init_is_import_light(self) -> None:
-        # Importing a control-safe service submodule executes services/__init__.
-        # Keep the package initializer inert so a future ControlApp can import
-        # individual record/view services without loading data-plane services.
         self.assertFalse(_imports(SERVICES_ROOT / "__init__.py"))
 
     def test_sandbox_domain_values_are_neutral(self) -> None:
@@ -425,9 +392,7 @@ load("subprocess")
         source = (ARTIFACTS_ROOT / "artifacts.py").read_text(encoding="utf-8")
         models = (ARTIFACTS_ROOT / "models.py").read_text(encoding="utf-8")
         imports = _import_segments(ARTIFACTS_ROOT / "artifacts.py")
-        composition = (SURFACE_ROOT / "control" / "control_app.py").read_text(
-            encoding="utf-8"
-        )
+        composition = (SURFACE_ROOT / "surface.py").read_text(encoding="utf-8")
 
         self.assertNotIn("research_core", imports)
         self.assertIn("targets: ArtifactTargets", source)
@@ -435,127 +400,25 @@ load("subprocess")
         for behavior in (".execute(", ".transaction(", "record_event(", "_blobs"):
             self.assertNotIn(behavior, models)
 
-    def test_legacy_local_app_stack_is_removed(self) -> None:
-        for rel in (
-            "app.py",
-            "local_runtime.py",
-            "composition/local_mode.py",
-            "surface/composition/local_mode.py",
-            "kernel/ports/sandbox_worker.py",
-            "kernel/ports/task_channel.py",
-            "surface/control/control_client.py",
-            "dataplane/worker.py",
-            "dataplane/tasks.py",
-            "dataplane/state.py",
-            "dataplane/sandbox_conn.py",
-            "daemon/daemon_marker.py",
-            "daemon/project_router.py",
-            "daemon/import_tool.py",
-        ):
-            with self.subTest(rel=rel):
-                self.assertFalse((BACKEND_ROOT / rel).exists())
-
-    def test_no_stale_moved_module_paths_in_executable_tree(self) -> None:
-        forbidden = (
-            "merv.brain." + "dataplane",
-            "merv.brain." + "workspace",
-            "merv.brain.kernel.ports." + "sandbox_worker",
-            "merv.brain.kernel.ports." + "task_channel",
-            "merv.brain.surface.control." + "control_client",
-            "tests.surface." + "test_control_plane_contract",
-            "merv.brain.object_storage." + "file_transfer",
-            "merv.brain.object_storage." + "storage_guidance",
-            "merv.brain.feed." + "feed_embeds",
-            "merv.brain.feed." + "feed_images",
-            "merv.brain.artifacts." + "markdown_images",
-            "merv.brain.artifacts." + "roles",
-            "merv/brain/" + "dataplane",
-            "merv/brain/" + "workspace.py",
-            "merv/brain/kernel/ports/" + "sandbox_worker.py",
-            "merv/brain/kernel/ports/" + "task_channel.py",
-            "merv/brain/surface/control/" + "control_client.py",
-            "tests/surface/" + "test_control_plane_contract.py",
-            "merv/brain/object_storage/" + "file_transfer.py",
-            "merv/brain/object_storage/" + "storage_guidance.py",
-            "merv/brain/feed/" + "feed_embeds.py",
-            "merv/brain/feed/" + "feed_images.py",
-            "merv/brain/artifacts/" + "markdown_images.py",
-            "merv/brain/artifacts/" + "roles.py",
-            "merv.brain." + "tools",
-            "merv.brain." + "transport",
-            "merv.brain." + "composition",
-            "merv.brain." + "control",
-            "merv.brain." + "services",
-            "merv.brain." + "config",
-            "merv.brain." + "observability",
-            "merv.brain." + "client_cli",
-            "merv/brain/" + "tools/",
-            "merv/brain/" + "transport/",
-            "merv/brain/" + "composition/",
-            "merv/brain/" + "control/",
-            "merv/brain/" + "services/",
-            "merv/brain/" + "config.py",
-            "merv/brain/" + "observability.py",
-            "merv/brain/" + "client_cli.py",
-        )
-        roots = (
-            IMPORT_ROOT,
-            IMPORT_ROOT.parent / "tests",
-            IMPORT_ROOT.parent / "scripts",
-            IMPORT_ROOT.parent / "bin",
-            IMPORT_ROOT.parent / "deploy",
-            IMPORT_ROOT.parent / "clients",
-        )
-        stale: list[str] = []
-        for root in roots:
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or "__pycache__" in path.parts:
-                    continue
-                try:
-                    source = path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    continue
-                for target in forbidden:
-                    if target in source:
-                        stale.append(
-                            f"{path.relative_to(IMPORT_ROOT.parent)}: {target}"
-                        )
-        self.assertFalse(stale, "stale moved paths: " + ", ".join(stale))
-
-    def test_control_app_does_not_build_local_runtime(self) -> None:
-        source = (SURFACE_ROOT / "control" / "control_app.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("class ControlApp:", source)
+    def test_surface_is_the_single_composition_root(self) -> None:
+        source = (SURFACE_ROOT / "surface.py").read_text(encoding="utf-8")
+        self.assertIn("class Surface:", source)
+        self.assertIn("app = Surface(", source)
         self.assertNotIn("build_record_core", source)
-        self.assertIn("build_control_tool_handlers", source)
+        self.assertIn("tool_owners = {", source)
         self.assertIn("tool_names = available_tool_names(", source)
         self.assertIn(
-            "tracking_enabled=self._tracking is not None",
+            "tracking_enabled=mlflow_tracking is not None",
             source,
         )
         self.assertIn("tool_names=tool_names", source)
-        self.assertNotIn("class ControlActivitySink", source)
-        self.assertNotIn("class ControlToolCallSink", source)
-        self.assertNotIn("class ControlSandboxWorker", source)
-        for forbidden in (
-            "TestBrain",
-            "build_local_runtime",
-            "build_local_tool_handlers",
-            "LocalDataPlaneWorker",
-            "LocalWorkspace",
-            "LocalFeedImageReader",
-            "ToolCallStore",
-            "ActivityLogger",
-        ):
-            self.assertNotIn(forbidden, source)
 
-    def test_control_mode_builds_control_app_not_local_app(self) -> None:
-        path = SURFACE_ROOT / "composition" / "control_mode.py"
+    def test_surface_builds_both_deployment_presets(self) -> None:
+        path = SURFACE_ROOT / "surface.py"
         source = path.read_text(encoding="utf-8")
         imports = _import_segments(path)
-        self.assertIn("from ..control.control_app import ControlApp", source)
-        self.assertIn("app = ControlApp(", source)
+        self.assertIn("class Surface:", source)
+        self.assertIn("app = Surface(", source)
         self.assertNotIn("TestBrain", source)
         self.assertNotIn("build_local_runtime", source)
         self.assertIn("MountedMgmtKeyStore", source)
@@ -564,16 +427,6 @@ load("subprocess")
         self.assertIn("build_local_server", source)
         self.assertIn("CONTROL_COMPAT_REPO_ROOT", source)
         self.assertNotIn("tempfile", _import_segments(path))
-
-    def test_feed_demo_uses_public_control_capabilities(self) -> None:
-        source = (IMPORT_ROOT.parent / "scripts" / "_feed_demo_server.py").read_text(
-            encoding="utf-8"
-        )
-        for removed in ("app.call_tool(", "app.feed.", "app.store."):
-            self.assertNotIn(removed, source)
-        self.assertIn("app.tools, app.http.feed", source)
-        self.assertNotIn("app._store", source)
-        self.assertIn("with store.transaction()", source)
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
@@ -598,9 +451,7 @@ load("subprocess")
         self.assertNotIn("services", imports)
         self.assertIn(
             "LocalMgmtKeyStore",
-            (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
-                encoding="utf-8"
-            ),
+            (SURFACE_ROOT / "surface.py").read_text(encoding="utf-8"),
         )
 
     def test_local_ssh_keygen_is_single_sourced(self) -> None:

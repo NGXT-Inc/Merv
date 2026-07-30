@@ -27,7 +27,8 @@ Adding another stateful public object requires an architectural reason.
 ## Files
 
 - `research.py`: public root; project and claim writes, workflow delegation,
-  canonical project snapshots, project context, membership facts, graph refs.
+  canonical project snapshots, project context, membership and event facts,
+  graph refs.
 - `experiments.py`: experiment state machine, gate evaluation, artifact sealing,
   attempt handling, MLflow run state, and idempotent tracking-delivery ledger.
 - `reflections.py`: reflection state machine, corpus snapshots, lens coverage,

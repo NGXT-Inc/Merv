@@ -15,10 +15,7 @@ types — wildcards, IPv6, IPv4-mapped forms, and the empty string.
 
 from __future__ import annotations
 
-import contextlib
 import errno
-import importlib.util
-import io
 import ipaddress
 import socket
 import tempfile
@@ -299,7 +296,7 @@ class LocalLauncherBindTest(unittest.TestCase):
             with self.subTest(host=host):
                 with (
                     mock.patch(
-                        "merv.brain.surface.composition.build_local_server"
+                        "merv.brain.surface.surface.build_local_server"
                     ) as build,
                     mock.patch.object(http_server, "_bind_socket") as bind,
                 ):
@@ -312,7 +309,7 @@ class LocalLauncherBindTest(unittest.TestCase):
     def test_serve_local_tells_run_server_the_surface_is_unauthenticated(self) -> None:
         """The two guards are one decision, not two opinions that can drift."""
         with (
-            mock.patch("merv.brain.surface.composition.build_local_server"),
+            mock.patch("merv.brain.surface.surface.build_local_server"),
             mock.patch.object(http_server, "_run_server", return_value=0) as run,
         ):
             http_server._serve_local(host="127.0.0.1", port=0, state_dir=None)
@@ -323,68 +320,13 @@ class LocalLauncherBindTest(unittest.TestCase):
         with (
             mock.patch("sys.argv", ["merv-http", "--host", "0.0.0.0", "--port", "0"]),
             mock.patch.object(http_server, "resolve_mode", return_value=Mode.LOCAL),
-            mock.patch("merv.brain.surface.composition.build_local_server") as build,
+            mock.patch("merv.brain.surface.surface.build_local_server") as build,
             mock.patch.object(http_server, "_bind_socket") as bind,
         ):
             with self.assertRaises(ValidationError):
                 http_server.main()
         build.assert_not_called()
         bind.assert_not_called()
-
-
-class ReflectionDaemonBindTest(unittest.TestCase):
-    """The dev harness boots the same unauthenticated local composition, so it
-    inherits the same refusal rather than trusting its own ``--host``."""
-
-    def _daemon(self) -> Any:
-        path = (
-            Path(__file__).resolve().parents[2] / "scripts" / "_reflection_daemon.py"
-        )
-        spec = importlib.util.spec_from_file_location("merv_reflection_daemon", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    def test_the_daemon_refuses_a_non_loopback_host(self) -> None:
-        daemon = self._daemon()
-        for host in ("0.0.0.0", "::", "192.168.1.10"):
-            with self.subTest(host=host):
-                with mock.patch(
-                    "sys.argv", ["_reflection_daemon.py", "--host", host]
-                ), self.assertRaises(ValidationError) as ctx:
-                    daemon.main()
-                self.assertIn(host, str(ctx.exception))
-
-    def test_the_daemon_pins_a_loopback_name_to_a_numeric_bind(self) -> None:
-        """The daemon asked the guard for a VERDICT and then handed uvicorn its
-        own ``--host``, so ``localhost`` — blessed by NAME — reached the socket
-        unpinned and a resolver answering with a LAN address would serve the
-        unauthenticated harness off-machine. The guard's RETURN is the bind."""
-        daemon = self._daemon()
-        out = io.StringIO()
-        with tempfile.TemporaryDirectory() as state_dir:
-            with (
-                mock.patch.object(daemon, "uvicorn") as uv,
-                mock.patch.object(daemon, "build_local_server"),
-                mock.patch.object(daemon, "StateStore"),
-                mock.patch.object(daemon, "LocalDirBlobStore"),
-                mock.patch(
-                    "sys.argv",
-                    [
-                        "_reflection_daemon.py",
-                        "--host",
-                        "localhost",
-                        "--state-dir",
-                        state_dir,
-                    ],
-                ),
-                contextlib.redirect_stdout(out),
-            ):
-                self.assertEqual(daemon.main(), 0)
-        self.assertEqual(uv.run.call_args.kwargs["host"], "127.0.0.1")
-        # The banner an operator copies must name the address actually bound.
-        self.assertIn("http://127.0.0.1:", out.getvalue())
-        self.assertNotIn("localhost", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from tests.support.brain import TestBrain
 from merv.brain import __version__
 from tests.support.sandbox_backend import FakeSandboxBackend
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.mcp_http import register_mcp_routes
 from merv.brain.surface.transport.mcp_streamable_http import (
     PRETTY_RESULT_THRESHOLD_BYTES,
@@ -110,7 +110,7 @@ class McpStreamableHttpProtocolTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.http = TestClient(create_fastapi_app(self.brain.http))
+        self.http = TestClient(create_fastapi_app(self.brain))
 
     def tearDown(self) -> None:
         self.brain.shutdown()

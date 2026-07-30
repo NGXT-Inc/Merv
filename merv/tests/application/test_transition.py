@@ -5,21 +5,17 @@ import unittest
 from copy import deepcopy
 from typing import Any
 
-from merv.brain.application.events import EventDispatcher
-from merv.brain.application.experiments.reactions import (
-    ExperimentReactions,
-    TrackingPersistenceError,
-)
 from merv.brain.application.experiments.transition import TransitionExperiment
-from merv.brain.application.ports.tracking import TrackingCapabilities
+from merv.brain.application.mlflow import MlflowIntegration, TrackingCapabilities
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.models import (
     CommittedExperimentUpdate as CommittedExperimentTransition,
 )
+from merv.shared.errors import TrackingPersistenceError
 
 
-REACTIONS_LOGGER = "merv.brain.application.experiments.reactions"
-PRESENTATION_LOGGER = "merv.brain.application.experiments.tracking_presentation"
+REACTIONS_LOGGER = "merv.brain.application.mlflow"
+PRESENTATION_LOGGER = "merv.brain.application.mlflow"
 PROJECT_ID = "proj_1"
 EXPERIMENT_ID = "exp_1"
 CREATED_AT = "2026-07-19T12:34:56.789000Z"
@@ -437,9 +433,7 @@ class RecordingResearch:
 
 
 class RecordingArtifacts:
-    def __init__(
-        self, order: list[str], *, pin_error: Exception | None = None
-    ) -> None:
+    def __init__(self, order: list[str], *, pin_error: Exception | None = None) -> None:
         self.order = order
         self.pin_error = pin_error
         self.pin_attempts: list[dict[str, Any]] = []
@@ -505,9 +499,7 @@ class RecordingExhibits:
 
 
 class RecordingObjects:
-    def __init__(
-        self, order: list[str], *, error: Exception | None = None
-    ) -> None:
+    def __init__(self, order: list[str], *, error: Exception | None = None) -> None:
         self.order = order
         self.error = error
 
@@ -527,17 +519,19 @@ def _use_case(
     exhibits: RecordingExhibits,
     objects: RecordingObjects | None = None,
 ) -> TransitionExperiment:
-    dispatcher = EventDispatcher()
-    ExperimentReactions(
-        research=research, feed=feed, tracking=tracking
-    ).bind(dispatcher)
+    objects = objects or RecordingObjects(research.order)
     return TransitionExperiment(
         research=research,
         artifacts=artifacts,
-        tracking=tracking,
+        feed=feed,
+        mlflow=MlflowIntegration(
+            research=research,
+            feed=feed,
+            objects=objects,
+            adapter=tracking,
+        ),
         exhibits=exhibits,
-        dispatcher=dispatcher,
-        objects=objects or RecordingObjects(research.order),
+        objects=objects,
     )
 
 
@@ -683,7 +677,9 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             ["objects.by_experiment", "research.transition"],
         )
 
-    def test_start_reuses_an_existing_run_and_retains_exact_transition_state(self) -> None:
+    def test_start_reuses_an_existing_run_and_retains_exact_transition_state(
+        self,
+    ) -> None:
         committed = _state("running", run=_open_run())
         use_case, research, tracking, _feed, _order = self._fixture(
             committed=committed,
@@ -1103,7 +1099,9 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         )
         self.assertIn("mlflow.context", result["mlflow_warning"]["repair"])
 
-    def test_retry_reuses_open_run_but_replaces_terminal_run_for_same_attempt(self) -> None:
+    def test_retry_reuses_open_run_but_replaces_terminal_run_for_same_attempt(
+        self,
+    ) -> None:
         cases = (
             (_open_run("run_open"), False, "run_open"),
             ({**_open_run("run_failed"), "status": "FAILED"}, True, "run_retry"),
@@ -1140,7 +1138,9 @@ class StartAndRetryTransitionTest(unittest.TestCase):
                     )
                 self.assertEqual(result["mlflow_run"]["run_id"], expected_run_id)
 
-    def test_retry_without_a_tracking_attempt_does_not_replay_a_stale_error(self) -> None:
+    def test_retry_without_a_tracking_attempt_does_not_replay_a_stale_error(
+        self,
+    ) -> None:
         order: list[str] = []
         stale = _state(
             "running",
@@ -1295,24 +1295,29 @@ class TerminalTrackingTransitionTest(unittest.TestCase):
                 "run": {**_open_run(), "status": "FINISHED"},
             },
         )
-        dispatcher = EventDispatcher()
-        ExperimentReactions(
+        integration = MlflowIntegration(
             research=research,
             feed=RecordingFeed(order),
-            tracking=tracking,
-        ).bind(dispatcher)
-
-        first = dispatcher.dispatch(event=event, phase="post_commit", state=initial)
-        second = dispatcher.dispatch(
-            event=event, phase="post_commit", state=first.state
+            objects=RecordingObjects(order),
+            adapter=tracking,
+        )
+        first, _ = integration.after_transition(
+            event=event,
+            state=initial,
+        )
+        second, _ = integration.after_transition(
+            event=event,
+            state=first,
         )
 
-        self.assertIs(first.state, persisted)
-        self.assertIs(second.state, persisted)
+        self.assertIs(first, persisted)
+        self.assertIs(second, persisted)
         self.assertEqual(len(tracking.finalize_calls), 1)
         self.assertEqual(len(research.persist_calls), 1)
 
-    def test_terminal_adapter_and_persistence_failures_are_suppressed_and_feed_runs(self) -> None:
+    def test_terminal_adapter_and_persistence_failures_are_suppressed_and_feed_runs(
+        self,
+    ) -> None:
         failures = ("adapter", "persistence")
         for failure_kind in failures:
             with self.subTest(failure=failure_kind):
@@ -1335,9 +1340,7 @@ class TerminalTrackingTransitionTest(unittest.TestCase):
                         if failure_kind == "adapter"
                         else None
                     ),
-                    finalize_result={
-                        "run": {**_open_run(), "status": "FINISHED"}
-                    },
+                    finalize_result={"run": {**_open_run(), "status": "FINISHED"}},
                 )
                 feed = RecordingFeed(order)
                 use_case = _use_case(
@@ -1424,7 +1427,9 @@ class FeedTransitionReactionTest(unittest.TestCase):
         )
         return result, feed, research, order
 
-    def test_feed_event_is_mapped_from_final_state_not_event_payload_or_command(self) -> None:
+    def test_feed_event_is_mapped_from_final_state_not_event_payload_or_command(
+        self,
+    ) -> None:
         cases = (
             ("complete", "mark_failed", "experiment_complete"),
             ("failed", "complete", "experiment_failed"),
@@ -1457,7 +1462,9 @@ class FeedTransitionReactionTest(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertNotIn("feed_note", result)
 
-    def test_feed_query_is_after_response_context_assembly_and_none_stays_absent(self) -> None:
+    def test_feed_query_is_after_response_context_assembly_and_none_stays_absent(
+        self,
+    ) -> None:
         order: list[str] = []
         tracking = RecordingTracking(order)
         result, feed, _research, observed = self._execute(
@@ -1562,7 +1569,9 @@ class SubmitResultsExhibitPrerequisiteTest(unittest.TestCase):
             order,
         )
 
-    def test_verdict_and_pin_commit_before_transition_and_pinned_summary_is_returned(self) -> None:
+    def test_verdict_and_pin_commit_before_transition_and_pinned_summary_is_returned(
+        self,
+    ) -> None:
         use_case, research, artifacts, _tracking, _feed, exhibits, order = (
             self._fixture()
         )
@@ -1638,8 +1647,8 @@ class SubmitResultsExhibitPrerequisiteTest(unittest.TestCase):
 
     def test_gate_failure_after_pin_preserves_prerequisite_residue(self) -> None:
         gate_error = RuntimeError("workflow gate rejected report")
-        use_case, research, artifacts, tracking, feed, _exhibits, order = (
-            self._fixture(transition_error=gate_error)
+        use_case, research, artifacts, tracking, feed, _exhibits, order = self._fixture(
+            transition_error=gate_error
         )
 
         with self.assertRaisesRegex(RuntimeError, "workflow gate rejected report"):
@@ -1653,7 +1662,9 @@ class SubmitResultsExhibitPrerequisiteTest(unittest.TestCase):
         self.assertEqual(len(artifacts.pins), 1)
         self.assertEqual(len(research.transition_calls), 1)
         self.assertFalse(research.transition_committed)
-        self.assertLess(order.index("artifacts.pin"), order.index("research.transition"))
+        self.assertLess(
+            order.index("artifacts.pin"), order.index("research.transition")
+        )
         self.assertEqual(tracking.finalize_calls, [])
         self.assertEqual(feed.calls, [])
 
@@ -1708,9 +1719,7 @@ class TrackingCredentialFlagTest(unittest.TestCase):
                     tracking.context_calls[0]["include_credentials"],
                     include_credentials,
                 )
-                password = result["mlflow"]["env"].get(
-                    "MLFLOW_TRACKING_PASSWORD"
-                )
+                password = result["mlflow"]["env"].get("MLFLOW_TRACKING_PASSWORD")
                 self.assertEqual(
                     password,
                     "credential-for-public-response" if include_credentials else None,

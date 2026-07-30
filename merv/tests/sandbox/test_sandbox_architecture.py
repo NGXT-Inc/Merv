@@ -83,11 +83,11 @@ class SandboxArchitectureTest(unittest.TestCase):
         offenders: list[str] = []
         bootstrap_seams = {
             (
-                "surface/composition/control_mode.py",
+                "surface/surface.py",
                 "merv.brain.sandbox.adapters",
             ),
             (
-                "surface/composition/control_mode.py",
+                "surface/surface.py",
                 "merv.brain.sandbox.keys",
             ),
         }

@@ -18,7 +18,7 @@ from merv.shared.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from merv.brain.feed.feed import POST_TEXT_MAX
 from merv.brain.kernel.ports.web_preview import WebPreviewError
 from merv.brain.surface.web_preview import extract_card, unfurl
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.feed_http import _image_headers
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 
@@ -533,7 +533,7 @@ class FeedHttpTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.client = TestClient(create_fastapi_app(self.app.http))
+        self.client = TestClient(create_fastapi_app(self.app))
         self.pid = self.app.call_tool(
             "project", {"action": "create", "name": "Feed HTTP Test"}
         )["id"]
@@ -617,7 +617,7 @@ class FeedHttpTest(unittest.TestCase):
         )
         token = pending["run"].rsplit("/", 1)[-1].rstrip("'")
         buffer = io.StringIO()
-        logger = self.app.http.structured_log
+        logger = self.app.structured_log
         logger.enabled = True
         logger._stream = buffer
         response = self.client.put(f"/api/feed/u/{token}", content=_PNG)

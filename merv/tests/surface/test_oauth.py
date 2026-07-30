@@ -31,9 +31,8 @@ from tests.support.sandbox_backend import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier
 from merv.brain.surface.oauth import MAX_CLIENTS_ENV_VAR, OAuthError, OAuthService
 from merv.brain.surface.oauth_store import SqlOAuthRepository
-from merv.brain.surface.project_key_store import SqlProjectKeyRepository
 from merv.brain.surface.project_keys import ProjectKeys
-from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from tests.support.brain import TestBrain
 
@@ -77,9 +76,7 @@ class OAuthSurfaceTest(unittest.TestCase):
             db_path=root / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.keys = ProjectKeys(
-            repository=SqlProjectKeyRepository(store=self.app.store)
-        )
+        self.keys = ProjectKeys(store=self.app.store)
         self.oauth = OAuthService(
             repository=SqlOAuthRepository(store=self.app.store),
             project_keys=self.keys,
@@ -92,7 +89,7 @@ class OAuthSurfaceTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),
@@ -475,7 +472,7 @@ class OAuthSurfaceTest(unittest.TestCase):
         # Over the wire the refusal is a server condition, not bad metadata.
         capped = TestClient(
             create_fastapi_app(
-                self.app.http,
+                self.app,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
                 ),

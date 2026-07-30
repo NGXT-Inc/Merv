@@ -4,12 +4,11 @@ import unittest
 from unittest.mock import Mock
 
 from merv.brain.artifacts import ArtifactTarget, Artifacts
-from merv.brain.kernel.utils import PermissionDeniedError, ValidationError
+from merv.brain.kernel.utils import ValidationError
 from merv.brain.research_core.policy import (
     validate_review_role,
     validate_review_verdict,
 )
-from merv.brain.surface.permissions import PermissionService
 
 
 class OwnedPermissionPolicyTest(unittest.TestCase):
@@ -45,17 +44,6 @@ class OwnedPermissionPolicyTest(unittest.TestCase):
                 path="graph.json",
             )
         self.assertEqual(graph_error.exception.details["replacement_role"], "project_graph")
-
-    def test_surface_permission_is_only_tool_authorization(self) -> None:
-        policy = PermissionService()
-        policy.reject_reviewer_mutation(
-            tool_name="review.submit", review_session_id="rvs_1"
-        )
-        with self.assertRaises(PermissionDeniedError):
-            policy.reject_reviewer_mutation(
-                tool_name="claim.create", review_session_id="rvs_1"
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

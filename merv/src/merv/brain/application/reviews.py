@@ -1,177 +1,188 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Producer-facing review queries and their event-keyed response reactions."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
 from ..artifacts import Artifacts
+from ..feed import FeedAdvisory
 from ..kernel.utils import parse_iso
-from ..research_core import Research
-from .events import EventDispatcher
+from ..research_core import EXPERIMENT_WORKFLOW, REFLECTION_WORKFLOW, Research
 from .experiments.context import ExperimentContextQuery
 from .project_context import ProjectContextQuery
-from .review_handoff import reviewer_handoff_payload
-from .reflections import ReflectionCommands
+from .reflections import present_agent_reflection_state
 
 
-@dataclass(kw_only=True, eq=False, repr=False)
-class RequestReview:
+def request_review(research: Research, **kwargs: Any) -> dict[str, Any]:
     """Add delivery instructions to a Research-owned review capability."""
+    result = research.request_review(**kwargs)
+    return {
+        **result,
+        "reviewer_handoff": reviewer_handoff_payload(
+            role=str(kwargs["role"]),
+            target_type=str(kwargs["target_type"]),
+            target_id=str(kwargs["target_id"]),
+            review_request_id=str(result["review_request_id"]),
+            reviewer_capability=str(result["reviewer_capability"]),
+        ),
+    }
 
-    research: Research
 
-    def execute(
-        self,
-        *,
-        target_type: str,
-        target_id: str,
-        role: str,
-        reason: str = "",
-        producer_session_id: str = "main",
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        result = self.research.request_review(
-            target_type=target_type,
-            target_id=target_id,
-            role=role,
-            reason=reason,
-            producer_session_id=producer_session_id,
+def reviewer_handoff_payload(
+    *,
+    role: str,
+    target_type: str,
+    target_id: str,
+    review_request_id: str = "",
+    reviewer_capability: str = "",
+) -> dict[str, Any]:
+    workflow = (
+        REFLECTION_WORKFLOW
+        if target_type == "reflection"
+        else EXPERIMENT_WORKFLOW if target_type == "experiment" else None
+    )
+    review = None if workflow is None else workflow.review(role)
+    skill = "" if review is None else review.skill
+    handoff: dict[str, Any] = {
+        "role": role,
+        "skill": skill,
+        "target_type": target_type,
+        "target_id": target_id,
+        "read_only": True,
+        "start_tool": "review.start",
+        "submit_tool": "review.submit",
+    }
+    if review_request_id and reviewer_capability and skill:
+        handoff["spawn_prompt"] = (
+            f"You are the {role} for {target_type} {target_id}. "
+            f"Follow the {skill} skill. Begin by calling review.start with "
+            f"review_request_id={review_request_id}, "
+            f"reviewer_capability={reviewer_capability}, and your own "
+            "session identity as caller_session_id (required; never the "
+            "producer's). You are read-only: your sole permitted mutation "
+            "is review.submit."
+        )
+    return handoff
+
+
+def start_review(
+    *,
+    research: Research,
+    artifacts: Artifacts,
+    experiment_context: ExperimentContextQuery,
+    project_context: ProjectContextQuery,
+    review_request_id: str,
+    reviewer_capability: str,
+    declared_agent: str = "",
+    caller_session_id: str = "",
+) -> dict[str, Any]:
+    """Start a pinned review, then attach bounded orientation for its target."""
+    result = dict(
+        research.start_review(
+            review_request_id=review_request_id,
+            reviewer_capability=reviewer_capability,
+            declared_agent=declared_agent,
+            caller_session_id=caller_session_id,
+        )
+    )
+    project_id = str(result.get("project_id") or "")
+    target_type = str(result.get("target_type") or "")
+    target_id = str(result.get("target_id") or "")
+    target_snapshot = result.pop("target_snapshot", {})
+    submitted_artifacts = _submitted_artifacts(
+        artifacts=artifacts,
+        snapshot=target_snapshot,
+    )
+    result["read_scope"] = [
+        "claim",
+        "experiment",
+        "reflection",
+        "artifact",
+        "review",
+    ]
+    result["project_context"] = project_context.build(project_id=project_id)
+    if target_type == "experiment":
+        live_state = research.experiment_state(
+            experiment_id=target_id,
             project_id=project_id,
         )
-        return {
-            **result,
-            "reviewer_handoff": reviewer_handoff_payload(
-                role=role,
-                target_type=target_type,
-                target_id=target_id,
-                review_request_id=str(result["review_request_id"]),
-                reviewer_capability=str(result["reviewer_capability"]),
-            ),
+        state = {
+            **live_state,
+            "status": target_snapshot.get("status") or live_state.get("status"),
+            "attempt_index": target_snapshot.get("attempt_index")
+            or live_state.get("attempt_index"),
         }
-
-
-@dataclass(kw_only=True, eq=False, repr=False)
-class StartReviewSession:
-    """Start a pinned review, then attach bounded orientation for its target."""
-
-    research: Research
-    artifacts: Artifacts
-    experiment_context: ExperimentContextQuery
-    project_context: ProjectContextQuery
-    reflections: ReflectionCommands
-
-    def execute(
-        self,
-        *,
-        review_request_id: str,
-        reviewer_capability: str,
-        declared_agent: str = "",
-        caller_session_id: str = "",
-    ) -> dict[str, Any]:
-        result = dict(
-            self.research.start_review(
-                review_request_id=review_request_id,
-                reviewer_capability=reviewer_capability,
-                declared_agent=declared_agent,
-                caller_session_id=caller_session_id,
-            )
+        result["context"] = experiment_context.build(
+            state=state,
+            project_id=project_id,
+            pinned_artifacts=submitted_artifacts,
         )
-        project_id = str(result.get("project_id") or "")
-        target_type = str(result.get("target_type") or "")
-        target_id = str(result.get("target_id") or "")
-        target_snapshot = result.pop("target_snapshot", {})
-        submitted_artifacts = _submitted_artifacts(
-            artifacts=self.artifacts,
-            snapshot=target_snapshot,
-        )
-        result["read_scope"] = [
-            "claim",
-            "experiment",
-            "reflection",
-            "artifact",
-            "review",
-        ]
-        result["project_context"] = self.project_context.build(
-            project_id=project_id
-        )
-        if target_type == "experiment":
-            live_state = self.research.experiment_state(
-                experiment_id=target_id, project_id=project_id
-            )
-            state = {
-                **live_state,
-                "status": target_snapshot.get("status")
-                or live_state.get("status"),
-                "attempt_index": target_snapshot.get("attempt_index")
-                or live_state.get("attempt_index"),
-            }
-            result["context"] = self.experiment_context.build(
-                state=state,
-                project_id=project_id,
-                pinned_artifacts=submitted_artifacts,
-            )
-        elif target_type == "reflection":
-            result["submitted_artifacts"] = submitted_artifacts
-            result["reflection_context"] = self.reflections.get(
+    elif target_type == "reflection":
+        result["submitted_artifacts"] = submitted_artifacts
+        result["reflection_context"] = present_agent_reflection_state(
+            research.reflection_state(
                 project_id=project_id,
                 reflection_id=target_id,
-            )
-        return result
-
-
-@dataclass(kw_only=True, eq=False, repr=False)
-class ReadReviewStatus:
-    """Read canonical review state, then attach best-effort producer guidance."""
-
-    research: Research
-    dispatcher: EventDispatcher
-
-    def execute(
-        self, *, target_type: str, target_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        result = present_review_recovery(
-            self.research.review_status(
-                target_type=target_type,
-                target_id=target_id,
-                project_id=project_id,
-            )
+                include_content=True,
+            ),
+            include_content=False,
         )
-        if target_type != "experiment" or not result.get("reviews"):
-            return result
-        try:
-            state = self.research.experiment_state(
-                experiment_id=target_id, project_id=project_id
-            )
-            event = self.research.latest_submitted_review_event(
-                target_type=target_type,
-                target_id=target_id,
-                project_id=str(state.get("project_id") or project_id or ""),
-            )
-        except Exception:  # project/event enrichment is advisory, unlike the status read
-            return result
-        if event is None:
-            return result
-        reacted = self.dispatcher.dispatch(event=event, phase="producer_read", state=state)
-        note = reacted.outcomes.get("feed")
-        if note is not None:
-            result["feed_note"] = note
-        return result
+    return result
 
 
-@dataclass(kw_only=True, slots=True)
-class ReviewQueue:
-    research: Research
-
-    def __call__(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]:
-        return present_review_recovery(
-            self.research.review_queue(project_id=project_id)
+def read_review_status(
+    *,
+    research: Research,
+    feed: FeedAdvisory,
+    target_type: str,
+    target_id: str,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Read canonical review state, then add best-effort producer guidance."""
+    result = present_review_recovery(
+        research.review_status(
+            target_type=target_type,
+            target_id=target_id,
+            project_id=project_id,
         )
+    )
+    if target_type != "experiment" or not result.get("reviews"):
+        return result
+    try:
+        state = research.experiment_state(
+            experiment_id=target_id,
+            project_id=project_id,
+        )
+        event = research.latest_submitted_review_event(
+            target_type=target_type,
+            target_id=target_id,
+            project_id=str(state.get("project_id") or project_id or ""),
+        )
+    except Exception:
+        return result
+    if event is None:
+        return result
+    try:
+        note = feed.transition_advisory(
+            project_id=str(state.get("project_id") or ""),
+            experiment_id=str(state.get("id") or ""),
+            event="experiment_review_verdict",
+        )
+    except Exception:
+        note = None
+    if note:
+        result["feed_note"] = note
+    return result
+
+
+def review_queue(
+    research: Research, *, project_id: str | None = None
+) -> dict[str, Any]:
+    return present_review_recovery(research.review_queue(project_id=project_id))
 
 
 def present_review_recovery(result: dict[str, Any]) -> dict[str, Any]:
@@ -250,8 +261,8 @@ def _submitted_artifacts(
 
 
 __all__ = [
-    "ReadReviewStatus",
-    "RequestReview",
-    "ReviewQueue",
-    "StartReviewSession",
+    "read_review_status",
+    "request_review",
+    "review_queue",
+    "start_review",
 ]

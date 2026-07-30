@@ -1,3 +1,4 @@
+# If you update this file, you must consult application.md to see whether application.md needs to be updated. application.md must not exceed 100 lines.
 """Application read model for experiment metrics exhibits."""
 
 from __future__ import annotations
@@ -8,8 +9,8 @@ from typing import Protocol
 from ...artifacts import Artifact, Artifacts
 from ...kernel.utils import WorkflowError
 from ...research_core import EXPERIMENT_WORKFLOW, ExperimentState, Research
+from ..mlflow import MlflowIntegration
 from .create import experiment_folder
-from ..ports.tracking import ExperimentTracking, tracking_experiment_name
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, build_metrics_exhibit
 
 
@@ -25,32 +26,25 @@ class ExperimentExhibits:
         *,
         research: Research,
         artifacts: Artifacts,
-        tracking: ExperimentTracking | None,
+        mlflow: MlflowIntegration,
     ) -> None:
         self.research = research
         self.artifacts = artifacts
-        self.tracking = tracking
+        self.mlflow = mlflow
 
     def generate(self, *, state: ExperimentState) -> dict[str, object]:
         project_id = str(state.get("project_id") or "")
         experiment_id = str(state.get("id") or "")
         attempt_index = int(state.get("attempt_index") or 1)
-        capabilities = self.tracking.capabilities() if self.tracking else None
-        configured = bool(capabilities and capabilities.readback)
-        snapshot = (
-            self.tracking.results_metrics(
-                project_id=project_id, experiment_id=experiment_id
-            )
-            if self.tracking and configured
-            else None
+        experiment_name, configured, snapshot = self.mlflow.exhibit_snapshot(
+            project_id=project_id,
+            experiment_id=experiment_id,
         )
         exhibit = build_metrics_exhibit(
             project_id=project_id,
             experiment_id=experiment_id,
             attempt_index=attempt_index,
-            experiment_name=tracking_experiment_name(
-                project_id=project_id, experiment_id=experiment_id
-            ),
+            experiment_name=experiment_name,
             window_started_at=self.research.attempt_started_running_at(
                 experiment_id=experiment_id
             ),
@@ -62,7 +56,7 @@ class ExperimentExhibits:
                 attempt_index=attempt_index,
             ),
         )
-        if self.tracking is None:
+        if not self.mlflow.enabled:
             # Keep the legacy adapter's envelope dormant without leaking its
             # name or namespace into normal previews and pinned artifacts.
             exhibit.pop("mlflow", None)
@@ -83,10 +77,13 @@ class ExperimentExhibits:
                 "exhibit artifact instead (artifact.find)."
             )
         exhibit = self.generate(state=state)
-        path = experiment_folder(
-            experiment_id=str(state.get("id") or experiment_id),
-            name=str(state.get("name") or ""),
-        ) + METRICS_EXHIBIT_FILENAME
+        path = (
+            experiment_folder(
+                experiment_id=str(state.get("id") or experiment_id),
+                name=str(state.get("name") or ""),
+            )
+            + METRICS_EXHIBIT_FILENAME
+        )
         return {
             "project_id": str(state.get("project_id") or ""),
             "experiment_id": experiment_id,
@@ -154,9 +151,7 @@ class ExperimentExhibits:
         return sources
 
 
-def should_pin_exhibit(
-    *, exhibit: dict[str, object], state: ExperimentState
-) -> bool:
+def should_pin_exhibit(*, exhibit: dict[str, object], state: ExperimentState) -> bool:
     verdict = exhibit["verdict"]
     tracking = exhibit.get("mlflow") or {}
     run = state.get("mlflow_run") or {}
