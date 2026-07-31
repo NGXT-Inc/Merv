@@ -65,9 +65,11 @@ against the underlying snapshot.
   analyses? Near-duplicate or charter-ignoring inputs are a lens failure.
 - **Belief update:** Are claim changes warranted by reviewed evidence and
   scoped honestly?
-- **Next wave:** Do the proposed experiments test live claims, avoid known dead
-  ends unless conditions changed, and contain enough intent to materialize?
-  Multi-experiment waves must be genuinely independent.
+- **Next wave:** Do the proposed experiments address live research questions,
+  avoid known dead ends unless conditions changed, and contain enough intent
+  to materialize? Claim references are optional, but every provided reference
+  must genuinely match what the experiment tests. Multi-experiment waves must
+  be genuinely independent.
 
 ## Choose the verdict and return
 

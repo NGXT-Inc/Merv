@@ -201,7 +201,7 @@ function ObjectPanel({ sel, cards, objects, onClose, onTransport }) {
   const refBy = referencedBy(cards, sel.type, sel.id);
   return (
     <PanelShell
-      id={sel.type === 'paper' ? `arXiv ${sel.id}` : sel.id}
+      id={sel.type === 'paper' ? obj.sourceLabel || sel.id : sel.id}
       tone={OBJ_TONE[sel.type] || 'sbx'}
       word={OBJ_WORD[sel.type] || sel.type}
       onClose={onClose}

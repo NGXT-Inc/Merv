@@ -72,9 +72,11 @@ inspect.
 ## Change spec
 
 Submit the belief-state update as `change_spec`. Use new-claim `key` values when
-an experiment in the same spec tests a claim being created. Propose one to
-three experiments; when proposing more than one, explain why each can run
-independently.
+an experiment in the same spec tests a claim being created. An experiment may
+omit `tested_claim_refs` when it does not test a tracked claim; when provided,
+each reference must name an existing claim id or a new-claim key from the same
+spec. Propose one to three experiments; when proposing more than one, explain
+why each can run independently.
 
 ```json
 {

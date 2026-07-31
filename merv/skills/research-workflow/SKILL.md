@@ -73,6 +73,23 @@ Start the graph early and update it when reasoning changes. Write the plan,
 report, and graph for a human reader; raw data and logs belong in separate
 result artifacts.
 
+Prefer the smallest experiment capable of producing a credible,
+decision-relevant signal about its intent. Start with the minimum data, scale,
+variants, seeds, compute, and infrastructure needed to distinguish the
+hypothesis or address a known validity risk. In the plan, explain why that
+scope is sufficient and what result would justify a larger follow-up; do not
+add work merely to make the first experiment exhaustive.
+
+When findings from earlier project experiments materially inspire the plan,
+cite their `exp_...` ids and identify the finding being carried forward. When
+a research paper materially informs the hypothesis, method, baseline, or
+evaluation, keep the living literature review current and cite the paper in a
+portable, source-native form: an arXiv id such as `arXiv:2401.12345`, a DOI
+such as `doi:10.1145/3290605.3300233`, or a stable canonical source URL
+(prefer `[Paper title](URL)`). Do not cite Merv's internal `paper_...` id in an
+experiment plan. Omit prior-work references when the design is genuinely
+independent; do not add decorative citations.
+
 ## Preserve honest evidence
 
 For quantitative work, save compact machine-readable results and the figures

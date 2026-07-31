@@ -106,6 +106,59 @@ class ExperimentService:
         tested_claim_ids: list[str] | str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
+        with self.store.transaction() as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            return self._create_in_transaction(
+                conn=conn,
+                project_id=project_id,
+                name=name,
+                intent=intent,
+                tested_claim_ids=tested_claim_ids,
+            )
+
+    def create_from_reflection(
+        self,
+        *,
+        conn,
+        project_id: str,
+        reflection_id: str,
+        name: str,
+        intent: str,
+        tested_claim_ids: list[str] | str | None = None,
+        proposal_key: str = "",
+        parallelism: str = "",
+    ) -> dict[str, Any]:
+        """Create one reviewed reflection proposal through normal invariants."""
+        reflection_id = str(reflection_id or "").strip()
+        source = conn.execute(
+            "SELECT id FROM reflections WHERE id = ? AND project_id = ?",
+            (reflection_id, project_id),
+        ).fetchone()
+        if source is None:
+            raise NotFoundError(f"reflection not found: {reflection_id}")
+        return self._create_in_transaction(
+            conn=conn,
+            project_id=project_id,
+            name=name,
+            intent=intent,
+            tested_claim_ids=tested_claim_ids,
+            source_reflection_id=reflection_id,
+            proposal_key=proposal_key,
+            parallelism=parallelism,
+        )
+
+    def _create_in_transaction(
+        self,
+        *,
+        conn,
+        project_id: str,
+        name: str,
+        intent: str,
+        tested_claim_ids: list[str] | str | None,
+        source_reflection_id: str = "",
+        proposal_key: str = "",
+        parallelism: str = "",
+    ) -> dict[str, Any]:
         tested_claim_ids = (
             [tested_claim_ids]
             if isinstance(tested_claim_ids, str)
@@ -114,63 +167,68 @@ class ExperimentService:
         name = validate_experiment_name(name)
         if not intent.strip():
             raise ValidationError("intent is required")
-        with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            self._reject_active_experiment_cap(conn=conn, project_id=project_id)
+        self._reject_active_experiment_cap(conn=conn, project_id=project_id)
+        if not source_reflection_id:
             self._reject_reflection_blocked_experiment_create(
                 conn=conn, project_id=project_id
             )
-            duplicate = conn.execute(
-                "SELECT id FROM experiments WHERE project_id = ? AND lower(name) = lower(?)",
-                (project_id, name),
-            ).fetchone()
-            if duplicate is not None:
-                raise ValidationError(
-                    f"an experiment named {name!r} already exists in this project "
-                    "— choose a new name"
-                )
-            for claim_id in tested_claim_ids or []:
-                if (
-                    conn.execute(
-                        "SELECT id FROM claims WHERE id = ? AND project_id = ?",
-                        (claim_id, project_id),
-                    ).fetchone()
-                    is None
-                ):
-                    raise NotFoundError(f"claim not found: {claim_id}")
-            experiment_id = new_id(prefix="exp")
-            now = now_iso()
-            conn.execute(
-                """
-                INSERT INTO experiments
-                  (id, project_id, name, intent, status, attempt_index, revision_context, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)
-                """,
-                (
-                    experiment_id,
-                    project_id,
-                    name,
-                    intent.strip(),
-                    EXPERIMENT_WORKFLOW.initial,
-                    now,
-                    now,
-                ),
+        duplicate = conn.execute(
+            "SELECT id FROM experiments WHERE project_id = ? AND lower(name) = lower(?)",
+            (project_id, name),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValidationError(
+                f"an experiment named {name!r} already exists in this project "
+                "— choose a new name"
             )
-            for claim_id in tested_claim_ids or []:
+        for claim_id in tested_claim_ids or []:
+            if (
                 conn.execute(
-                    "INSERT INTO experiment_claims (experiment_id, claim_id) VALUES (?, ?)",
-                    (experiment_id, claim_id),
-                )
-            self.store.record_event(
-                conn=conn,
-                project_id=project_id,
-                event_type="experiment.created",
-                target_type="experiment",
-                target_id=experiment_id,
-                payload={"name": name, "intent": intent},
+                    "SELECT id FROM claims WHERE id = ? AND project_id = ?",
+                    (claim_id, project_id),
+                ).fetchone()
+                is None
+            ):
+                raise NotFoundError(f"claim not found: {claim_id}")
+        experiment_id = new_id(prefix="exp")
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO experiments
+              (id, project_id, name, intent, status, attempt_index, revision_context, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)
+            """,
+            (
+                experiment_id,
+                project_id,
+                name,
+                intent.strip(),
+                EXPERIMENT_WORKFLOW.initial,
+                now,
+                now,
+            ),
+        )
+        for claim_id in tested_claim_ids or []:
+            conn.execute(
+                "INSERT INTO experiment_claims (experiment_id, claim_id) VALUES (?, ?)",
+                (experiment_id, claim_id),
             )
-            state = self.get_state(experiment_id=experiment_id, conn=conn)
-            return state
+        event_payload = {"name": name, "intent": intent}
+        if source_reflection_id:
+            event_payload.update(
+                source_reflection_id=source_reflection_id,
+                proposal_key=proposal_key.strip(),
+                parallelism=parallelism.strip(),
+            )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="experiment.created",
+            target_type="experiment",
+            target_id=experiment_id,
+            payload=event_payload,
+        )
+        return self.get_state(experiment_id=experiment_id, conn=conn)
 
     def _active_experiment_count(self, *, conn, project_id: str) -> int:
         terminal = ", ".join(

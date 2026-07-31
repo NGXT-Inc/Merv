@@ -37,23 +37,18 @@ from .evidence import (
     require_artifact_document,
     validate_reflection_roster,
 )
-from .experiment_workflow import (
-    EXPERIMENT_TERMINAL_STATUSES,
-    EXPERIMENT_WORKFLOW,
-)
+from .experiments import ExperimentService
+from .experiment_workflow import EXPERIMENT_TERMINAL_STATUSES
 from .reflection_workflow import REFLECTION_WORKFLOW
 from ..artifacts import MAX_SUBMITTED_TEXT_BYTES, ArtifactTarget, Artifacts
 from .policy import (
-    ACTIVE_EXPERIMENT_CAP,
     GateEvaluation,
     GateItem,
     RequirementEvaluation,
-    active_experiment_cap_would_exceed_message,
     covered_terminal_ids,
     evaluate_artifact_requirement,
     evaluate_review_gate,
     reflection_signal_state,
-    validate_experiment_name,
 )
 from .workflow_schema import ArtifactNeed, ReviewReturn
 from ..kernel.state.store import (
@@ -71,9 +66,11 @@ class ReflectionService:
         *,
         store: BaseStateStore,
         artifacts: Artifacts,
+        experiments: ExperimentService,
     ) -> None:
         self.store = store
         self.artifacts = artifacts
+        self.experiments = experiments
 
     # ---- create ----
 
@@ -1257,31 +1254,20 @@ class ReflectionService:
         key_to_claim_id: dict[str, str],
         experiments: list[dict[str, Any]],
     ) -> None:
-        active_count = len(
-            self._non_terminal_experiments(conn=conn, project_id=project_id)
-        )
-        if active_count + len(experiments) > ACTIVE_EXPERIMENT_CAP:
-            raise WorkflowError(
-                active_experiment_cap_would_exceed_message(
-                    active_count=active_count,
-                    proposed_count=len(experiments),
-                )
-            )
         for proposal in experiments:
-            name = validate_experiment_name(str(proposal.get("name") or ""))
-            intent = str(proposal.get("intent") or "").strip()
             claim_ids = [key_to_claim_id.get(ref, ref) for ref in claim_refs(proposal)]
             proposal_key = str(proposal.get("key") or "").strip()
-            experiment_id = self._create_experiment(
+            experiment = self.experiments.create_from_reflection(
                 conn=conn,
                 project_id=project_id,
                 reflection_id=reflection_id,
-                name=name,
-                intent=intent,
-                claim_ids=claim_ids,
+                name=str(proposal.get("name") or ""),
+                intent=str(proposal.get("intent") or ""),
+                tested_claim_ids=claim_ids,
                 proposal_key=proposal_key,
                 parallelism=str(proposal.get("parallelism") or ""),
             )
+            experiment_id = str(experiment["id"])
             conn.execute(
                 """
                 INSERT INTO reflection_experiments
@@ -1399,61 +1385,6 @@ class ReflectionService:
                 "rationale": rationale.strip(),
             },
         )
-
-    def _create_experiment(
-        self,
-        *,
-        conn,
-        project_id: str,
-        reflection_id: str,
-        name: str,
-        intent: str,
-        claim_ids: list[str],
-        proposal_key: str,
-        parallelism: str,
-    ) -> str:
-        experiment_id = new_id(prefix="exp")
-        now = now_iso()
-        conn.execute(
-            """
-            INSERT INTO experiments
-              (id, project_id, name, intent, status, attempt_index,
-               revision_context, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)
-            """,
-            (
-                experiment_id,
-                project_id,
-                name,
-                intent,
-                EXPERIMENT_WORKFLOW.initial,
-                now,
-                now,
-            ),
-        )
-        for claim_id in claim_ids:
-            conn.execute(
-                """
-                INSERT INTO experiment_claims (experiment_id, claim_id)
-                VALUES (?, ?)
-                """,
-                (experiment_id, claim_id),
-            )
-        self.store.record_event(
-            conn=conn,
-            project_id=project_id,
-            event_type="experiment.created",
-            target_type="experiment",
-            target_id=experiment_id,
-            payload={
-                "name": name,
-                "intent": intent,
-                "source_reflection_id": reflection_id,
-                "proposal_key": proposal_key.strip(),
-                "parallelism": parallelism.strip(),
-            },
-        )
-        return experiment_id
 
     def _current_graph_version_id(
         self, *, reflection: dict[str, Any]

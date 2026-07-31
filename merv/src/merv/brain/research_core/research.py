@@ -92,6 +92,7 @@ class Research:
         self._reflections = ReflectionService(
             store=store,
             artifacts=artifacts,
+            experiments=self._experiments,
         )
         self._reviews = ReviewService(
             store=store,

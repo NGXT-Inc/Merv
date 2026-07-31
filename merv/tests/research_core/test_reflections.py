@@ -164,6 +164,53 @@ class ReflectionWorkflowTest(ResearchCase):
         self.assertEqual(len(published["materialized_claims"]), 2)
         self.assertEqual(len(published["materialized_experiments"]), 1)
 
+    def test_publish_materializes_experiment_without_tested_claims(self) -> None:
+        change_spec = json.loads(VALID_CHANGE_SPEC)
+        change_spec["claim_changes"] = []
+        proposal = change_spec["decision"]["experiments"][0]
+        proposal.pop("tested_claim_refs")
+        proposal["name"] = "signal-probe"
+        proposal["intent"] = "Probe a useful signal without a tracked claim."
+
+        reflection_id = self.create_reflection("Claimless experiment")
+        self.submit_lenses(reflection_id)
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=reflection_id,
+            transition="submit_reflections",
+        )
+        self.submit_reflection_bundle(
+            reflection_id,
+            change_spec=json.dumps(change_spec),
+        )
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=reflection_id,
+            transition="submit_reflection_artifacts",
+        )
+        self.pass_review(
+            target_type="reflection",
+            target_id=reflection_id,
+            role="reflection_reviewer",
+        )
+        published = self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=reflection_id,
+            transition="publish",
+        )
+
+        experiment_id = str(published["materialized_experiments"][0]["experiment_id"])
+        experiment = self.call(
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=experiment_id,
+        )
+        self.assertEqual(experiment["name"], "signal-probe")
+        self.assertEqual(experiment["tested_claims"], [])
+
     def test_review_returns_preserve_or_reset_the_attempt_as_declared(self) -> None:
         same = self.drive_reflection_to_review("Same attempt")
         self.review(

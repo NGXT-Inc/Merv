@@ -2,7 +2,8 @@
  * Parse a PRD-style experiment plan (plan.md) into classified sections so the
  * UI can render it with progressive disclosure: the Summary becomes the face,
  * the spine (Objective & hypothesis, Evaluation) stays expanded, and the
- * recommended sections (Method, Outputs, Risks) plus the Attempt log collapse.
+ * recommended sections (Prior work, Method, Outputs, Risks) plus the Attempt
+ * log collapse.
  *
  * Mirrors the brain schema in merv/src/merv/brain/research_core/experiments.py
  * (REQUIRED_PLAN_SECTIONS) and skills/research-workflow/plan-template.md.
@@ -21,6 +22,7 @@ const SECTION_ROLES = [
   { key: 'summary', role: 'summary' },
   { key: 'objective', role: 'spine' },
   { key: 'evaluation', role: 'spine' },
+  { key: 'prior', role: 'recommended' },
   { key: 'method', role: 'recommended' },
   { key: 'output', role: 'recommended' },
   { key: 'risk', role: 'recommended' },

@@ -4,6 +4,7 @@ import { useProjectStore, selectClaims, selectExperiments, selectSandboxes } fro
 import { classifyExperiment } from '../utils/evidence';
 import { ENTITY_ID_RE, resolveEntity } from '../utils/entityResolve';
 import { expName, TERMINAL_STATUSES } from '../utils/experiment';
+import { extractPaperCitations } from '../utils/paperCitations';
 import { computeLayout, nowX as clampNowX } from './mapLayout';
 
 /**
@@ -15,19 +16,6 @@ import { computeLayout, nowX as clampNowX } from './mapLayout';
  * one compute-cost read. Returns progressively — cards render immediately off
  * the snapshot; text-derived refs and compute strings fill in as fetches land.
  */
-
-// arxiv.org/(abs|pdf)/<id> or bare arXiv:<id>; id = \d{4}.\d{4,5}, optional vN.
-const ARXIV_RE = /\barxiv(?:\.org\/(?:abs|pdf)\/|:)(\d{4}\.\d{4,5})(?:v\d+)?(?!\d)/gi;
-// Paper titles come from the citing text itself (arXiv's API sends no CORS
-// headers, so the browser can't ask it): markdown links and quoted citations.
-const ARXIV_MD_RE = /\[([^\]\n]{3,160})\]\(\s*(?:https?:\/\/)?(?:www\.)?arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})(?:v\d+)?[^)]*\)/gi;
-const ARXIV_QUOTED_RE = /["“”']([^"“”'\n]{3,160})["“”']\s*[,;:(\s-]{0,4}arxiv(?:\.org\/(?:abs|pdf)\/|:)\s*(\d{4}\.\d{4,5})/gi;
-
-// A usable harvested title: not itself a URL/arXiv id the author pasted as link text.
-const paperTitle = (raw) => {
-  const t = (raw || '').replace(/\s+/g, ' ').trim();
-  return t && !/arxiv|^https?:/i.test(t) ? t : null;
-};
 
 // ── module caches (survive re-renders, re-mounts, and project revisits) ────
 
@@ -252,22 +240,32 @@ export function useMapModel(viewW) {
     const citedBy = {};
     const cards = [];
 
-    // Pre-pass: harvest paper titles from every experiment's text first, so a
-    // title cited properly in one report names that paper on every card.
-    const paperTitles = new Map();
+    // Pre-pass: portable paper citations come from the plan, where they encode
+    // design provenance. Report text still contributes ordinary entity refs.
+    // Harvest all plans first so a titled citation names the paper everywhere.
+    const paperCitationsByExp = new Map();
     const textByExp = new Map();
     for (const e of experiments) {
-      const text = ['plan', 'report']
-        .map((role) => {
-          const r = roleArtifact(e, role);
-          return r ? textCache.get(textKey(r)) || '' : '';
-        })
-        .join('\n');
+      const planArtifact = roleArtifact(e, 'plan');
+      const reportArtifact = roleArtifact(e, 'report');
+      const planText = planArtifact ? textCache.get(textKey(planArtifact)) || '' : '';
+      const reportText = reportArtifact ? textCache.get(textKey(reportArtifact)) || '' : '';
+      const text = [planText, reportText].join('\n');
       textByExp.set(e.id, text);
-      for (const re of [ARXIV_MD_RE, ARXIV_QUOTED_RE]) {
-        for (const m of text.matchAll(re)) {
-          const t = paperTitle(m[1]);
-          if (t && !paperTitles.has(m[2])) paperTitles.set(m[2], t);
+      const citations = extractPaperCitations(planText);
+      paperCitationsByExp.set(e.id, citations);
+      for (const citation of citations) {
+        const existing = papers[citation.key];
+        if (!existing || (!existing.citation.title && citation.title)) {
+          const host = new URL(citation.url).hostname.replace(/^www\./, '');
+          papers[citation.key] = {
+            title: citation.title || citation.sourceLabel,
+            sub: citation.title ? `${citation.sourceLabel} · ${host}` : host,
+            url: citation.url,
+            detail: null,
+            sourceLabel: citation.sourceLabel,
+            citation,
+          };
         }
       }
     }
@@ -305,23 +303,15 @@ export function useMapModel(viewW) {
       }
 
       const cardPaperIds = [];
-      for (const m of text.matchAll(ARXIV_RE)) {
-        const pid = m[1];
-        const title = paperTitles.get(pid);
-        if (!papers[pid]) {
-          papers[pid] = {
-            title: title || `arXiv ${pid}`,
-            sub: title ? `arXiv ${pid} · arxiv.org` : 'arxiv.org',
-            url: `https://arxiv.org/abs/${pid}`,
-            detail: null,
-          };
-        }
+      for (const citation of paperCitationsByExp.get(e.id) || []) {
+        const pid = citation.key;
+        const paper = papers[pid];
         if (!cardPaperIds.includes(pid)) cardPaperIds.push(pid);
         pushRef({
           type: 'paper',
           id: pid,
-          label: title ? clip(title, 44) : `arXiv ${pid}`,
-          sub: title ? `arXiv ${pid}` : 'arxiv.org',
+          label: clip(paper?.title, 44) || citation.sourceLabel,
+          sub: citation.sourceLabel,
         });
       }
 
@@ -360,7 +350,7 @@ export function useMapModel(viewW) {
         ...cardPaperIds.map((pid) => ({
           type: 'paper',
           id: pid,
-          label: paperTitles.has(pid) ? satTrunc(paperTitles.get(pid)) : `arXiv ${pid}`,
+          label: satTrunc(papers[pid]?.title || papers[pid]?.sourceLabel || pid),
         })),
         ...claimIds.map((cid) => ({ type: 'claim', id: cid, label: satTrunc(claimById.get(cid)?.statement) || 'claim' })),
         ...[...sbxGroups.values()].map((g) => ({

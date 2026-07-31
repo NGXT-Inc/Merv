@@ -39,13 +39,25 @@ content is scientifically sufficient:
   Would meeting them actually justify the proposed conclusion?
 - **Method:** Is the procedure executable, appropriately sized, and capable of
   isolating the claim?
+- **Right-sizing:** Is this the smallest credible experiment that can produce a
+  decision-relevant signal about the intent? Are additional data, scale,
+  variants, seeds, compute, or infrastructure justified by a necessary
+  distinction or known validity risk?
+- **Prior work and provenance:** When earlier project findings or research
+  papers materially inspire the design, does the plan cite the relevant
+  `exp_...` experiments and use portable, source-native paper references
+  (arXiv id, DOI, or stable canonical source URL), while identifying what is
+  being carried forward? An internal `paper_...` id does not satisfy this
+  check. Omission is acceptable when the design is genuinely independent.
 - **Outputs:** Are the evidence files that must survive execution named?
 - **Risks and confounders:** Are material failure modes, leakage risks, and
   alternative explanations addressed?
 
 Reject vague evaluation criteria, moving-goalpost designs, methods that cannot
 distinguish the claim, or plans whose promised conclusion exceeds what their
-evidence could establish.
+evidence could establish. Request simplification when time or resource
+commitments do not materially improve decisiveness or validity. Do not demand
+exhaustive evidence when a scoped signal-finding experiment is sufficient.
 
 ## Submit the verdict
 

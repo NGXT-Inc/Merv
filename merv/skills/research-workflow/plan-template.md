@@ -16,6 +16,7 @@
 
   RECOMMENDED — not lint-enforced, but the design reviewer judges whether they
   are sufficient for this experiment and can return needs_changes if not:
+    - Prior work & provenance (when applicable)
     - Method
     - Outputs
     - Risks & confounders
@@ -43,6 +44,17 @@
   - Why it matters: what decision this informs / why we believe it / what
     changes if we're right or wrong.
 -->
+
+## Prior work & provenance
+<!-- RECOMMENDED WHEN APPLICABLE. If prior project experiments materially
+     inspire this design, cite their exp_... ids and state which findings are
+     being carried forward. If research papers materially inform the
+     hypothesis, method, baseline, or evaluation, cite them with a portable
+     source identifier: arXiv:2401.12345, doi:10.1145/3290605.3300233, or a
+     stable canonical source URL (prefer [Paper title](URL)). Keep the living
+     literature review current, but do not use Merv's internal paper_... ids
+     in the plan. Delete this section when the experiment is genuinely
+     independent; do not add decorative citations. -->
 
 ## Evaluation
 <!--

@@ -721,8 +721,6 @@ def decision_problems(
                 "state why this experiment can run independently of the rest"
             )
         refs = claim_refs(proposal)
-        if not refs:
-            problems.append(f"{label} must reference at least one tested claim")
         for ref in refs:
             if ref in claim_keys:
                 continue
