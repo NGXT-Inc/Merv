@@ -78,6 +78,9 @@ SANDBOX_DRIVER_DESCRIPTORS = (
     _driver("verda", ("datacrunch",)),
     _driver("voltage_park", ("voltagepark",)),
     _driver("tensordock"),
+    _driver("aws", ("ec2", "amazon")),
+    _driver("gcp", ("gce", "google", "google_cloud")),
+    _driver("azure", ("az", "microsoft_azure")),
 )
 _DESCRIPTORS_BY_NAME = {
     descriptor.name: descriptor for descriptor in SANDBOX_DRIVER_DESCRIPTORS
