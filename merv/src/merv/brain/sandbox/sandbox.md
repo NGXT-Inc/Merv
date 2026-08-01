@@ -44,7 +44,8 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
   routing; `adapters/base.py`: shared configuration/HTTP/catalog and VM+SSH
   mechanics.
 - `adapters/{lambda_labs,thunder_compute,modal,hyperstack,digitalocean,verda,
-  voltage_park,tensordock}.py`: one explicit provider adapter per file.
+  voltage_park,tensordock,aws,gcp,azure}.py`: one explicit provider adapter per
+  file.
 - `remote/bootstrap_tools.py`, `remote/vm_bootstrap.py`, and
   `remote/vm_ssh.py`: portable remote setup and SSH execution.
 - `remote/run_receipts.py`, `remote/transcript_wire.py`, and
