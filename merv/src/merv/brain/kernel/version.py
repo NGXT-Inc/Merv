@@ -27,13 +27,13 @@ CLIENT_VERSION_HEADER = "X-RP-Client-Version"
 SERVER_VERSION = __version__
 
 # Minimum MCP proxy version the control plane will serve.
-# 0.0013 fences pre-key-era proxies (Checkpoint 1): older stdio clients predate
-# the artifact-submit + mk_-key surface and get the clean 426 "upgrade" error.
-MIN_PROXY_VERSION = "0.0013"
+# 0.0014 fences clients that predate reflection consolidation. Older clients
+# would try to publish directly from reflection_review and strand the wave.
+MIN_PROXY_VERSION = "0.0014"
 
 # Bump only when the agent-facing MCP catalog changes incompatibly. Unlike the
 # retired proxy catalogs, this is a deployment-drift signal, not a file digest.
-MCP_CATALOG_VERSION = "2026-07-24"
+MCP_CATALOG_VERSION = "2026-07-30"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:

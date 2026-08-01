@@ -88,6 +88,11 @@ class ReviewService:
                 expected=None if gate.review is None else gate.review.role,
                 role=role,
             )
+            if target_type == "reflection" and role == "consolidation_reviewer":
+                self.reflections.require_consolidation_proposal(
+                    conn=conn,
+                    reflection=target,
+                )
             # Refresh is revoke-and-reissue: a new capability for the same gate
             # closes every prior open request, so a lost or stale capability can
             # never race the fresh one to submit.
@@ -167,6 +172,8 @@ class ReviewService:
         declared_agent: str = "",
         caller_session_id: str = "",
         tenant_id: str | None = None,
+        assigned_agent_session_id: str = "",
+        assigned_review_request_id: str = "",
     ) -> dict[str, Any]:
         # A supplied tenant scopes the capability; None preserves local mode.
         caller_session_id = caller_session_id.strip()
@@ -194,7 +201,15 @@ class ReviewService:
                     raise NotFoundError(
                         f"review request not found: {review_request_id}"
                     )
-            self._validate_request_open(req=req, capability=reviewer_capability)
+            assigned = (
+                bool(assigned_agent_session_id)
+                and assigned_review_request_id == review_request_id
+                and caller_session_id == assigned_agent_session_id
+            )
+            if assigned:
+                self._validate_assigned_request_open(req=req)
+            else:
+                self._validate_request_open(req=req, capability=reviewer_capability)
             if caller_session_id == req["producer_session_id"]:
                 raise PermissionDeniedError(
                     "reviewer session must differ from producer session"
@@ -306,9 +321,7 @@ class ReviewService:
             workflow = (
                 EXPERIMENT_WORKFLOW
                 if req["target_type"] == "experiment"
-                else REFLECTION_WORKFLOW
-                if req["target_type"] == "reflection"
-                else None
+                else REFLECTION_WORKFLOW if req["target_type"] == "reflection" else None
             )
             if workflow is None:
                 raise ValidationError(
@@ -555,6 +568,44 @@ class ReviewService:
             ).fetchone()
             return str(row["project_id"]) if row else None
 
+    def target_for(
+        self,
+        *,
+        review_request_id: Any = None,
+        review_session_id: Any = None,
+    ) -> tuple[str, str, str] | None:
+        """Resolve a review capability to (project, target type, target id)."""
+        if bool(review_request_id) == bool(review_session_id):
+            raise ValueError(
+                "provide exactly one of review_request_id or review_session_id"
+            )
+        with closing(self.store.connect()) as conn:
+            if review_request_id:
+                row = conn.execute(
+                    """
+                    SELECT project_id, target_type, target_id
+                    FROM review_requests WHERE id = ?
+                    """,
+                    (str(review_request_id),),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT rr.project_id, rr.target_type, rr.target_id
+                    FROM review_sessions rs
+                    JOIN review_requests rr ON rr.id = rs.request_id
+                    WHERE rs.id = ?
+                    """,
+                    (str(review_session_id),),
+                ).fetchone()
+        if row is None:
+            return None
+        return (
+            str(row["project_id"]),
+            str(row["target_type"]),
+            str(row["target_id"]),
+        )
+
     def session_project_id(self, *, review_session_id: Any) -> str | None:
         if not review_session_id:
             return None
@@ -569,6 +620,16 @@ class ReviewService:
                 (str(review_session_id),),
             ).fetchone()
             return str(row["project_id"]) if row else None
+
+    def request_id_for_session(self, *, review_session_id: Any) -> str | None:
+        if not review_session_id:
+            return None
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                "SELECT request_id FROM review_sessions WHERE id = ?",
+                (str(review_session_id),),
+            ).fetchone()
+        return str(row["request_id"]) if row else None
 
     def assert_session_in_project(
         self, *, project_id: str | None, review_session_id: Any
@@ -605,6 +666,15 @@ class ReviewService:
             stored_digest=req["capability_hash"], presented_digest=presented
         ):
             raise PermissionDeniedError("invalid reviewer capability")
+        if req["status"] not in {"requested", "started"}:
+            raise PermissionDeniedError("review request is no longer open")
+        expires = parse_iso(req["expires_at"])
+        if expires is None or datetime.now(UTC) > expires:
+            raise PermissionDeniedError("reviewer capability expired")
+
+    @staticmethod
+    def _validate_assigned_request_open(*, req: Any) -> None:
+        """The bound mas_ credential replaces the one-time handoff secret."""
         if req["status"] not in {"requested", "started"}:
             raise PermissionDeniedError("review request is no longer open")
         expires = parse_iso(req["expires_at"])

@@ -44,11 +44,14 @@ INCLUDE = (
     "README.md",
     # Codex manifest declares composerIcon: ./assets/icon.svg
     "assets",
+    # Hermes uses the canonical skill tree plus a thin setup guide/installer.
+    "clients/hermes",
     # Skills + reviewer agents (auto-discovered by every platform)
     "skills",
     "agents",
-    # Onboarding CLI and its self-contained runtime (no merv.brain import)
+    # Onboarding and machine-local agent runner (no merv.brain import)
     "bin/merv-client",
+    "bin/merv-agent-runner",
     # The portable run watcher every platform backgrounds to get woken
     "bin/merv-runs-wait",
     "src/merv/__init__.py",

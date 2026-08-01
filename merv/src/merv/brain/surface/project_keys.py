@@ -49,6 +49,7 @@ class ProjectKeyRecord:
 
 class ProjectKeyLookup(Protocol):
     def verify_secret(self, *, secret: str) -> ProjectKeyRecord | None: ...
+    def active_record(self, *, key_id: str) -> ProjectKeyRecord | None: ...
 
 
 class ProjectKeyControl(ProjectKeyLookup, Protocol):
@@ -237,6 +238,18 @@ class ProjectKeys:
             presented_digest=digest,
         ):
             return None
+        if record is None or record.revoked_at:
+            return None
+        expiry = parse_iso(record.expires_at)
+        if record.expires_at and expiry is None:
+            return None
+        if expiry is not None and expiry <= datetime.now(UTC):
+            return None
+        return record
+
+    def active_record(self, *, key_id: str) -> ProjectKeyRecord | None:
+        """Resolve delegated authority by id with the same fresh checks."""
+        record = self._record_by_id(key_id)
         if record is None or record.revoked_at:
             return None
         expiry = parse_iso(record.expires_at)

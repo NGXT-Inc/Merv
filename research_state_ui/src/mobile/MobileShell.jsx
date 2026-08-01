@@ -155,6 +155,7 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <SheetLink to={px('/artifacts')} label="Artifacts" count={stats.artifacts ?? 0} />
       <SheetLink to={px('/storage')} label="Storage" />
       <SheetLink to={px('/sandboxes')} label="Sandboxes" count={runningSandboxes ? `${runningSandboxes} running` : null} />
+      <SheetLink to={px('/settings')} label="Settings" />
       <SheetLink to="/projects" label="Projects" />
 
       <div className="msheet-section">Forensics</div>

@@ -14,6 +14,7 @@ from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
 from . import (
+    agent_sessions,
     artifacts,
     claims,
     events,
@@ -82,12 +83,14 @@ def create_fastapi_app(
         surface=surface,
         projects=authorizer,
         ledger=api.tool_ledger,
+        agent_sessions=api.agent_sessions,
         wait_secret=wait_secret,
         auth_meta=auth.meta() if auth is not None else None,
     )
     authenticator = RequestAuthenticator(
         surface=surface,
         verifier=auth,
+        agent_sessions=api.agent_sessions,
         oauth_enabled=oauth_service is not None,
         canonical_mcp_resource=oauth_resource_uri,
     )
@@ -114,7 +117,20 @@ def create_fastapi_app(
         canonical_mcp_resource=oauth_resource_uri,
     )
 
+    sandbox_routers = (
+        (
+            sandboxes.build_router(
+                gateway,
+                application=api.application,
+                sandboxes=api.sandboxes,
+            ),
+            runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
+        )
+        if api.sandbox_enabled
+        else ()
+    )
     routers = (
+        agent_sessions.build_router(gateway, application=api.application),
         meta.build_router(
             gateway,
             activity_log=api.activity,
@@ -137,13 +153,8 @@ def create_fastapi_app(
             application=api.application,
             research=api.research,
         ),
-        sandboxes.build_router(
-            gateway,
-            application=api.application,
-            sandboxes=api.sandboxes,
-        ),
+        *sandbox_routers,
         events.build_router(application=api.application),
-        runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
         user_settings.build_router(user_settings=api.user_settings),
     )
     for router in routers:
@@ -163,6 +174,7 @@ def create_fastapi_app(
             authorizer=authorizer,
             research=api.research,
             hosted=surface.use_hosted_tool_policies,
+            authorize_agent_session=gateway.authorize_agent_session,
         ),
         ledger=api.tool_ledger,
     )

@@ -32,6 +32,11 @@ class HumanSessionRequiredError(PermissionDeniedError):
 
     error_code = "human_session_required"
 
+class AgentSessionScopeError(PermissionDeniedError):
+    """A coding-agent session attempted work outside its experiment."""
+
+    error_code = "agent_session_scope_forbidden"
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -58,14 +63,24 @@ class Principal:
     oauth_family_id: str | None = None
     key_sandbox_seconds_ceiling: int | None = None
     key_blob_bytes_ceiling: int | None = None
+    agent_session_id: str | None = None
+    agent_experiment_id: str | None = None
+    agent_target_type: str | None = None
+    agent_target_id: str | None = None
+    agent_session_kind: str | None = None
+    agent_review_request_id: str | None = None
+    source_key_id: str | None = None
 
 
 LOCAL_PRINCIPAL = Principal(tenant_id=LOCAL_TENANT_ID, client_id=LOCAL_CLIENT_ID)
 
 
 def is_external_key(principal: object | None) -> bool:
-    """Whether this principal is an external project (``mk_``) key."""
-    return getattr(principal, "key_id", None) is not None
+    """Whether this principal is an external machine credential."""
+    return (
+        getattr(principal, "key_id", None) is not None
+        or getattr(principal, "agent_session_id", None) is not None
+    )
 
 
 def is_human_session(principal: object | None) -> bool:
@@ -89,6 +104,7 @@ def is_local_principal(principal: object | None) -> bool:
         return True
     return (
         getattr(principal, "key_id", None) is None
+        and getattr(principal, "agent_session_id", None) is None
         and str(getattr(principal, "client_id", "")) == LOCAL_CLIENT_ID
         and not getattr(principal, "user_id", "")
     )
@@ -105,6 +121,9 @@ def principal_label(principal: object | None) -> str:
     key_id = str(getattr(principal, "key_id", "") or "")
     if key_id:
         return f"key:{key_id}"
+    agent_session_id = str(getattr(principal, "agent_session_id", "") or "")
+    if agent_session_id:
+        return f"agent-session:{agent_session_id}"
     user_id = str(getattr(principal, "user_id", "") or "")
     if user_id:
         return f"user:{user_id}"
@@ -113,6 +132,7 @@ def principal_label(principal: object | None) -> str:
 
 __all__ = [
     "HumanSessionRequiredError",
+    "AgentSessionScopeError",
     "LOCAL_PRINCIPAL",
     "Principal",
     "ProjectKeyScopeError",

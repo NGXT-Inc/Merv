@@ -55,12 +55,20 @@ class WorkflowSchemaTest(unittest.TestCase):
                     verdict=verdict,
                     return_to=requested,
                 )
-                self.assertEqual((route.to_status, route.attempt), (destination, attempt))
+                self.assertEqual(
+                    (route.to_status, route.attempt), (destination, attempt)
+                )
 
     def test_reflection_forward_and_review_return_paths_are_declared(self) -> None:
         self.assertEqual(
             REFLECTION_WORKFLOW.forward_path("reflecting"),
-            ("reflecting", "synthesizing", "reflection_review", "published"),
+            (
+                "reflecting",
+                "synthesizing",
+                "reflection_review",
+                "consolidating",
+                "published",
+            ),
         )
         cases = (
             ("synthesizing", "same"),
@@ -75,6 +83,16 @@ class WorkflowSchemaTest(unittest.TestCase):
                     return_to=destination,
                 )
                 self.assertEqual(route.attempt, attempt)
+        consolidation = resolve_review_return(
+            workflow=REFLECTION_WORKFLOW,
+            role="consolidation_reviewer",
+            verdict="needs_changes",
+            return_to="consolidating",
+        )
+        self.assertEqual(
+            (consolidation.to_status, consolidation.attempt),
+            ("consolidating", "same"),
+        )
 
     def test_invalid_review_returns_are_rejected_by_the_schema(self) -> None:
         cases = (
@@ -82,6 +100,12 @@ class WorkflowSchemaTest(unittest.TestCase):
             (EXPERIMENT_WORKFLOW, "design_reviewer", "needs_changes", "running"),
             (EXPERIMENT_WORKFLOW, "experiment_reviewer", "needs_changes", ""),
             (REFLECTION_WORKFLOW, "reflection_reviewer", "needs_changes", ""),
+            (
+                REFLECTION_WORKFLOW,
+                "consolidation_reviewer",
+                "needs_changes",
+                "reflecting",
+            ),
         )
         for workflow, role, verdict, destination in cases:
             with self.subTest(role=role, destination=destination):
@@ -114,6 +138,28 @@ class WorkflowSchemaTest(unittest.TestCase):
                 {"artifact_id": "art_a", "role": "plan", "attempt_index": 3},
                 {"artifact_id": "art_b", "role": "report", "attempt_index": 3},
             ],
+        )
+        consolidation = review_snapshot_id(
+            target_type="reflection",
+            target={
+                "id": "ref_1",
+                "status": "consolidating",
+                "attempt_index": 1,
+                "snapshot_token": "cpr_1",
+                "code_sha": "a" * 40,
+            },
+        )
+        self.assertEqual(
+            snapshot_from_id(snapshot_id=consolidation),
+            {
+                "target_type": "reflection",
+                "target_id": "ref_1",
+                "status": "consolidating",
+                "attempt_index": 1,
+                "artifacts": [],
+                "snapshot_token": "cpr_1",
+                "code_sha": "a" * 40,
+            },
         )
 
     def test_synopsis_and_review_exemptions_keep_the_security_envelope(self) -> None:

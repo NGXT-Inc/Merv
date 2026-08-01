@@ -153,27 +153,19 @@ class Research:
         hidden: bool | None = None,
     ) -> dict[str, Any]:
         with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT * FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"project not found: {project_id}")
             next_name = (
-                str(row["name"])
-                if name is None
-                else self._validate_project_name(name)
+                str(row["name"]) if name is None else self._validate_project_name(name)
             )
-            next_summary = (
-                str(row["summary"]) if summary is None else summary.strip()
-            )
+            next_summary = str(row["summary"]) if summary is None else summary.strip()
             settings = parse_project_settings(row["settings_json"])
             if require_verified_reviews is not None:
-                settings["require_verified_reviews"] = bool(
-                    require_verified_reviews
-                )
+                settings["require_verified_reviews"] = bool(require_verified_reviews)
             if hidden is not None:
                 settings["hidden"] = bool(hidden)
             conn.execute(
@@ -206,13 +198,9 @@ class Research:
             ).fetchone()
             return self._project_view(updated)
 
-    def get_project(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]:
+    def get_project(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT * FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
@@ -243,24 +231,18 @@ class Research:
         projects = [self._project_view(row) for row in rows]
         if not include_hidden:
             projects = [
-                project
-                for project in projects
-                if not project["settings"].get("hidden")
+                project for project in projects if not project["settings"].get("hidden")
             ]
         return {"projects": projects}
 
-    def current_project(
-        self, *, tenant_id: str | None = None
-    ) -> dict[str, Any]:
+    def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:
         projects = self.list_projects(tenant_id=tenant_id)["projects"]
         if not projects:
             return {"exists": False, "project": None}
         if len(projects) > 1:
             raise ValidationError(
                 "multiple projects exist in this state store; use an explicit project_id",
-                details={
-                    "project_ids": [project["id"] for project in projects]
-                },
+                details={"project_ids": [project["id"] for project in projects]},
             )
         return {"exists": True, "project": projects[0]}
 
@@ -278,47 +260,29 @@ class Research:
         if user_id:
             memberships = self.project_ids_for_user(user_id=user_id)
             projects = [
-                project
-                for project in projects
-                if str(project["id"]) in memberships
+                project for project in projects if str(project["id"]) in memberships
             ]
         if key_project_id:
             projects = [
-                project
-                for project in projects
-                if project["id"] == key_project_id
+                project for project in projects if project["id"] == key_project_id
             ]
         return {"projects": projects}
 
     def is_project_member(self, *, project_id: str, user_id: str) -> bool:
-        return self.store.is_project_member(
-            project_id=project_id, user_id=user_id
-        )
+        return self.store.is_project_member(project_id=project_id, user_id=user_id)
 
     def project_members(self, *, project_id: str) -> dict[str, Any]:
-        return {
-            "members": self.store.list_project_members(project_id=project_id)
-        }
+        return {"members": self.store.list_project_members(project_id=project_id)}
 
-    def add_project_member(
-        self, *, project_id: str, user_id: str
-    ) -> dict[str, Any]:
+    def add_project_member(self, *, project_id: str, user_id: str) -> dict[str, Any]:
         user_id = str(user_id or "").strip()
         if not user_id:
-            raise ValidationError(
-                "user_id is required", details={"field": "user_id"}
-            )
-        self.store.add_project_member(
-            project_id=project_id, user_id=user_id
-        )
+            raise ValidationError("user_id is required", details={"field": "user_id"})
+        self.store.add_project_member(project_id=project_id, user_id=user_id)
         return self.project_members(project_id=project_id)
 
-    def remove_project_member(
-        self, *, project_id: str, user_id: str
-    ) -> dict[str, Any]:
-        self.store.remove_project_member(
-            project_id=project_id, user_id=user_id
-        )
+    def remove_project_member(self, *, project_id: str, user_id: str) -> dict[str, Any]:
+        self.store.remove_project_member(project_id=project_id, user_id=user_id)
         return self.project_members(project_id=project_id)
 
     def project_ids_for_user(self, *, user_id: str) -> set[str]:
@@ -347,9 +311,7 @@ class Research:
         if confidence not in CLAIM_CONFIDENCES:
             raise ValidationError(f"unknown claim confidence: {confidence}")
         with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             claim_id = new_id(prefix="claim")
             conn.execute(
                 """
@@ -394,17 +356,13 @@ class Research:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         if status is None and confidence is None:
-            raise ValidationError(
-                "nothing to update: provide status and/or confidence"
-            )
+            raise ValidationError("nothing to update: provide status and/or confidence")
         if status is not None and status not in CLAIM_STATUSES:
             raise ValidationError(f"unknown claim status: {status}")
         if confidence is not None and confidence not in CLAIM_CONFIDENCES:
             raise ValidationError(f"unknown claim confidence: {confidence}")
         with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT * FROM claims WHERE id = ?", (claim_id,)
             ).fetchone()
@@ -414,9 +372,7 @@ class Research:
                 )
             next_status = str(row["status"]) if status is None else status
             next_confidence = (
-                str(row["confidence"])
-                if confidence is None
-                else confidence
+                str(row["confidence"]) if confidence is None else confidence
             )
             conn.execute(
                 """
@@ -442,13 +398,9 @@ class Research:
             ).fetchone()
             return row_to_dict(row=updated) or {}
 
-    def list_claims(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]:
+    def list_claims(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
                 """
                 SELECT * FROM claims
@@ -489,13 +441,9 @@ class Research:
             ),
         )
 
-    def project_experiments(
-        self, *, project_id: str | None
-    ) -> list[ExperimentState]:
+    def project_experiments(self, *, project_id: str | None) -> list[ExperimentState]:
         with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             evaluated = self._experiments.list_states_with_gates(
                 conn=conn, project_id=project_id
             )
@@ -509,9 +457,7 @@ class Research:
     ) -> list[ExperimentSummary]:
         return cast(
             list[ExperimentSummary],
-            self._experiments.list_experiment_summaries(
-                project_id=project_id
-            ),
+            self._experiments.list_experiment_summaries(project_id=project_id),
         )
 
     def transition_experiment(
@@ -581,12 +527,8 @@ class Research:
             verdict=verdict,
         )
 
-    def attempt_started_running_at(
-        self, *, experiment_id: str
-    ) -> str | None:
-        return self._experiments.attempt_started_running_at(
-            experiment_id=experiment_id
-        )
+    def attempt_started_running_at(self, *, experiment_id: str) -> str | None:
+        return self._experiments.attempt_started_running_at(experiment_id=experiment_id)
 
     def assert_experiment_in_project(
         self, *, attachment_id: str, project_id: str
@@ -626,6 +568,14 @@ class Research:
     def list_reflections(self, *, project_id: str) -> dict[str, Any]:
         return self._reflections.list_reflections(project_id=project_id)
 
+    def experiment_consolidations(
+        self, *, project_id: str, experiment_ids: tuple[str, ...]
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self._reflections.experiment_consolidations(
+            project_id=project_id,
+            experiment_ids=experiment_ids,
+        )
+
     def transition_reflection(
         self,
         *,
@@ -639,17 +589,66 @@ class Research:
             transition=transition,
         )
 
-    def reflection_overview(
-        self, *, project_id: str
+    def submit_consolidation(
+        self,
+        *,
+        project_id: str,
+        reflection_id: str,
+        base_sha: str,
+        proposal_sha: str,
+        summary: str,
+        validation: dict[str, Any] | None,
+        decisions: list[dict[str, Any]],
+        producer_session_id: str,
     ) -> dict[str, Any]:
+        return self._reflections.submit_consolidation(
+            project_id=project_id,
+            reflection_id=reflection_id,
+            base_sha=base_sha,
+            proposal_sha=proposal_sha,
+            summary=summary,
+            validation=validation,
+            decisions=decisions,
+            producer_session_id=producer_session_id,
+        )
+
+    def prepare_reflection_advance(
+        self, *, project_id: str, reflection_id: str, runner_id: str
+    ) -> dict[str, Any]:
+        return self._reflections.prepare_advance(
+            project_id=project_id,
+            reflection_id=reflection_id,
+            runner_id=runner_id,
+        )
+
+    def settle_reflection_advance(
+        self,
+        *,
+        project_id: str,
+        advance_id: str,
+        runner_id: str,
+        observed_sha: str,
+        proposal_parents: list[str] | None = None,
+        diffstat: dict[str, Any] | None = None,
+        ancestry: dict[str, bool] | None = None,
+        error: str = "",
+    ) -> dict[str, Any]:
+        return self._reflections.settle_advance(
+            project_id=project_id,
+            advance_id=advance_id,
+            runner_id=runner_id,
+            observed_sha=observed_sha,
+            proposal_parents=proposal_parents,
+            diffstat=diffstat,
+            ancestry=ancestry,
+            error=error,
+        )
+
+    def reflection_overview(self, *, project_id: str) -> dict[str, Any]:
         return self._reflections.overview(project_id=project_id)
 
-    def project_logic_graph_selection(
-        self, *, project_id: str
-    ) -> dict[str, Any]:
-        return self._reflections.project_logic_graph_selection(
-            project_id=project_id
-        )
+    def project_logic_graph_selection(self, *, project_id: str) -> dict[str, Any]:
+        return self._reflections.project_logic_graph_selection(project_id=project_id)
 
     # Reviews --------------------------------------------------------------
 
@@ -680,6 +679,8 @@ class Research:
         declared_agent: str = "",
         caller_session_id: str = "",
         tenant_id: str | None = None,
+        assigned_agent_session_id: str = "",
+        assigned_review_request_id: str = "",
     ) -> dict[str, Any]:
         return self._reviews.start(
             review_request_id=review_request_id,
@@ -687,6 +688,8 @@ class Research:
             declared_agent=declared_agent,
             caller_session_id=caller_session_id,
             tenant_id=tenant_id,
+            assigned_agent_session_id=assigned_agent_session_id,
+            assigned_review_request_id=assigned_review_request_id,
         )
 
     def submit_review(
@@ -736,9 +739,7 @@ class Research:
             project_id=project_id,
         )
 
-    def review_queue(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]:
+    def review_queue(self, *, project_id: str | None = None) -> dict[str, Any]:
         return self._reviews.queue(project_id=project_id)
 
     def open_experiment_reviews(
@@ -751,9 +752,7 @@ class Research:
             project_id=project_id, experiment_id=experiment_id
         )
 
-    def review_snapshot(
-        self, *, snapshot_id: str
-    ) -> dict[str, Any]:
+    def review_snapshot(self, *, snapshot_id: str) -> dict[str, Any]:
         return snapshot_from_id(snapshot_id=snapshot_id)
 
     def review_project_id(
@@ -767,12 +766,22 @@ class Research:
                 "provide exactly one of review_request_id or review_session_id"
             )
         if review_request_id:
-            return self._reviews.request_project_id(
-                review_request_id=review_request_id
-            )
-        return self._reviews.session_project_id(
-            review_session_id=review_session_id
+            return self._reviews.request_project_id(review_request_id=review_request_id)
+        return self._reviews.session_project_id(review_session_id=review_session_id)
+
+    def review_target(
+        self,
+        *,
+        review_request_id: Any = None,
+        review_session_id: Any = None,
+    ) -> tuple[str, str, str] | None:
+        return self._reviews.target_for(
+            review_request_id=review_request_id,
+            review_session_id=review_session_id,
         )
+
+    def review_request_for_session(self, *, review_session_id: Any) -> str | None:
+        return self._reviews.request_id_for_session(review_session_id=review_session_id)
 
     def assert_review_in_project(
         self,
@@ -806,9 +815,7 @@ class Research:
     ) -> ResearchSnapshot:
         """Read all project research once; no caller-selected hydration shape."""
         with self.store.transaction() as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             project = (
                 row_to_dict(
                     row=conn.execute(
@@ -831,13 +838,8 @@ class Research:
             evaluated = self._experiments.list_states_with_gates(
                 conn=conn, project_id=project_id
             )
-            experiments = cast(
-                list[ExperimentState], [state for state, _ in evaluated]
-            )
-            gates = {
-                str(state["id"]): evaluation
-                for state, evaluation in evaluated
-            }
+            experiments = cast(list[ExperimentState], [state for state, _ in evaluated])
+            gates = {str(state["id"]): evaluation for state, evaluation in evaluated}
             open_reflection, open_gate = self._reflection(
                 conn=conn, project_id=project_id, terminal=False
             )
@@ -857,8 +859,7 @@ class Research:
                     if str(row["status"]) in EXPERIMENT_TERMINAL_STATUSES
                 },
                 current_claims={
-                    str(claim["id"]): str(claim["status"])
-                    for claim in claims
+                    str(claim["id"]): str(claim["status"]) for claim in claims
                 },
                 published=published,
                 open_wave=open_reflection,
@@ -883,21 +884,20 @@ class Research:
                 ),
             )
 
-    def project_context_facts(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]:
+    def project_context_facts(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(
-                conn=conn, project_id=project_id
-            )
-            project = row_to_dict(
-                row=conn.execute(
-                    """
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            project = (
+                row_to_dict(
+                    row=conn.execute(
+                        """
                     SELECT id, name, summary FROM projects WHERE id = ?
                     """,
-                    (project_id,),
-                ).fetchone()
-            ) or {}
+                        (project_id,),
+                    ).fetchone()
+                )
+                or {}
+            )
             claims = rows_to_dicts(
                 rows=conn.execute(
                     """
@@ -933,19 +933,15 @@ class Research:
             ).fetchall()
             claims_by_experiment: dict[str, list[str]] = {}
             for link in links:
-                claims_by_experiment.setdefault(
-                    str(link["experiment_id"]), []
-                ).append(str(link["claim_id"]))
+                claims_by_experiment.setdefault(str(link["experiment_id"]), []).append(
+                    str(link["claim_id"])
+                )
             for experiment in experiments:
                 experiment["tested_claim_ids"] = claims_by_experiment.get(
                     str(experiment["id"]), []
                 )
-            reflection_terminal = tuple(
-                sorted(REFLECTION_WORKFLOW.terminal_statuses)
-            )
-            reflection_placeholders = ", ".join(
-                "?" for _ in reflection_terminal
-            )
+            reflection_terminal = tuple(sorted(REFLECTION_WORKFLOW.terminal_statuses))
+            reflection_placeholders = ", ".join("?" for _ in reflection_terminal)
             latest = row_to_dict(
                 row=conn.execute(
                     """
@@ -1011,20 +1007,14 @@ class Research:
                 selected_fields,
             ) in _GRAPH_REFS:
                 typed_refs = tuple(
-                    dict.fromkeys(
-                        ref for ref in refs if ref.startswith(prefix)
-                    )
+                    dict.fromkeys(ref for ref in refs if ref.startswith(prefix))
                 )
                 if not typed_refs:
                     continue
                 fields = ", ".join(("id", *selected_fields))
                 by_id: dict[str, Any] = {}
-                for start in range(
-                    0, len(typed_refs), _GRAPH_REF_BATCH_SIZE
-                ):
-                    batch = typed_refs[
-                        start : start + _GRAPH_REF_BATCH_SIZE
-                    ]
+                for start in range(0, len(typed_refs), _GRAPH_REF_BATCH_SIZE):
+                    batch = typed_refs[start : start + _GRAPH_REF_BATCH_SIZE]
                     placeholders = ", ".join("?" for _ in batch)
                     rows = conn.execute(
                         f"""
@@ -1033,9 +1023,7 @@ class Research:
                         """,
                         (project_id, *batch),
                     ).fetchall()
-                    by_id.update(
-                        (str(row["id"]), row) for row in rows
-                    )
+                    by_id.update((str(row["id"]), row) for row in rows)
                 for ref in typed_refs:
                     row = by_id.get(ref)
                     if row is None:
@@ -1049,13 +1037,9 @@ class Research:
                         "resolved": True,
                         id_key: row["id"],
                     }
-                    record.update(
-                        {field: row[field] for field in selected_fields}
-                    )
+                    record.update({field: row[field] for field in selected_fields})
                     resolved[ref] = record
-            return {
-                ref: resolved[ref] for ref in refs if ref in resolved
-            }
+            return {ref: resolved[ref] for ref in refs if ref in resolved}
 
     # Event ledger reads ---------------------------------------------------
 
@@ -1085,9 +1069,7 @@ class Research:
             else (project_id, *terminal_statuses)
         )
         order = (
-            "published_at DESC, created_seq DESC"
-            if terminal
-            else "created_seq DESC"
+            "published_at DESC, created_seq DESC" if terminal else "created_seq DESC"
         )
         row = conn.execute(
             f"""
@@ -1100,13 +1082,9 @@ class Research:
         ).fetchone()
         if row is None:
             return None, None
-        return self._reflections.get_state_with_gate(
-            reflection_id=row["id"], conn=conn
-        )
+        return self._reflections.get_state_with_gate(reflection_id=row["id"], conn=conn)
 
-    def _literature_signal(
-        self, *, conn: Any, project_id: str
-    ) -> LiteratureSignal:
+    def _literature_signal(self, *, conn: Any, project_id: str) -> LiteratureSignal:
         total = conn.execute(
             "SELECT COUNT(*) AS n FROM papers WHERE project_id = ?",
             (project_id,),
@@ -1216,9 +1194,7 @@ class Research:
             for key in ("id", "name", "summary", "status", "created_at")
             if key in data
         }
-        view["settings"] = parse_project_settings(
-            data.get("settings_json")
-        )
+        view["settings"] = parse_project_settings(data.get("settings_json"))
         return view
 
 

@@ -11,8 +11,10 @@ artifact/feed/storage lifecycles, sandbox lifecycle, or database schema.
 
 ## Main flow
 
-1. `surface.py` builds one `Surface`: Research, Application, Artifacts, Feed,
-   Literature, Object Storage, Sandbox, telemetry, and the tool dispatcher.
+1. `surface.py` builds one `Surface`: Research, Application, Agent Sessions,
+   Artifacts, Feed, Literature, Object Storage, Sandbox, telemetry, and tools.
+   Machine setting `features.sandbox=false` substitutes a fail-closed backend
+   and omits Sandbox tools and HTTP routes; absence keeps Sandbox enabled.
 2. `tools/contracts.py` defines the public MCP input schemas and descriptions.
    `tools/dispatcher.py` binds each manifest entry directly to its owning module,
    validates input, enforces reviewer read-only access, and records the outcome.
@@ -30,6 +32,8 @@ artifact/feed/storage lifecycles, sandbox lifecycle, or database schema.
 - `auth.py`, `identity.py`, `project_keys.py`: caller identity plus project and
   account credential lifecycle. Project-key policy and SQL are intentionally
   together because there is one implementation and rotations must be atomic.
+- `transport/api/agent_sessions.py` and gateway policy: runner control plus
+  MCP-only, experiment-scoped, default-deny authority for local agent workers.
 - `oauth.py`, `oauth_store.py`, and `transport/api/oauth.py`: OAuth policy,
   race-safe persistence, and protocol routes. Persistence stays separate because
   both halves are substantial and transactional behavior must remain explicit.
@@ -54,8 +58,8 @@ artifact/feed/storage lifecycles, sandbox lifecycle, or database schema.
   behavior, and auth scope are compatibility contracts.
 - Token-bearing paths are redacted before telemetry. Upload tokens, run-wait
   signatures, project keys, and OAuth credentials are never logged as plaintext.
-- Optional capabilities are omitted from the tool catalog when disabled rather
-  than advertised as failing operations.
+- Optional capabilities are omitted from their tool and HTTP surfaces when
+  disabled rather than advertised as failing operations.
 - New helper files require real protocol, security, persistence, or presentation
   behavior. Do not add facades, repositories with one implementation, dependency
   carriers, forwarding services, compatibility re-exports, or duplicate DTOs.

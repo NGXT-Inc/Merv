@@ -29,50 +29,38 @@ from ..utils import now_iso
 class Row(Protocol):
     """Mapping-shaped database row shared by the SQLite and Postgres dialects."""
 
-    def __getitem__(self, key: str) -> Any:
-        ...
+    def __getitem__(self, key: str) -> Any: ...
 
-    def keys(self) -> Iterable[str]:
-        ...
+    def keys(self) -> Iterable[str]: ...
 
 
 class ResultCursor(Protocol):
     """Cursor result surface used by record services."""
 
-    def fetchone(self) -> Row | Mapping[str, Any] | None:
-        ...
+    def fetchone(self) -> Row | Mapping[str, Any] | None: ...
 
-    def fetchall(self) -> list[Row | Mapping[str, Any]]:
-        ...
+    def fetchall(self) -> list[Row | Mapping[str, Any]]: ...
 
 
 class Connection(Protocol):
     """Small database connection surface exposed through ``BaseStateStore``."""
 
-    def execute(
-        self, sql: str, parameters: Sequence[Any] = ()
-    ) -> ResultCursor:
-        ...
+    def execute(self, sql: str, parameters: Sequence[Any] = ()) -> ResultCursor: ...
 
-    def __enter__(self) -> Connection:
-        ...
+    def __enter__(self) -> Connection: ...
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def commit(self) -> None:
-        ...
+    def commit(self) -> None: ...
 
-    def rollback(self) -> None:
-        ...
+    def rollback(self) -> None: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 SCHEMA = """
@@ -232,6 +220,59 @@ CREATE TABLE IF NOT EXISTS experiments (
   mlflow_run_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+-- One locally hosted coding-agent process working one experiment. The runner
+-- submits a high-entropy session secret once; only its digest is stored. A
+-- partial unique index installed by migration 41 makes the live-worker rule a
+-- database fact rather than a polling convention.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  target_type TEXT NOT NULL CHECK (target_type IN ('experiment', 'reflection')),
+  target_id TEXT NOT NULL,
+  attempt_index INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'experiment'
+    CHECK (kind IN ('experiment', 'review', 'consolidation')),
+  review_request_id TEXT NOT NULL DEFAULT '',
+  source_sha TEXT NOT NULL DEFAULT '',
+  runner_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  secret_digest TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('offered', 'active', 'released', 'expired')),
+  host_session_ref TEXT NOT NULL DEFAULT '',
+  workspace_ref TEXT NOT NULL DEFAULT '',
+  base_sha TEXT NOT NULL DEFAULT '',
+  head_sha TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  activated_at TEXT,
+  last_activity_at TEXT,
+  lease_expires_at TEXT NOT NULL,
+  hard_deadline_at TEXT NOT NULL,
+  closed_at TEXT,
+  close_reason TEXT NOT NULL DEFAULT '',
+  source_key_id TEXT,
+  source_user_id TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+-- Durable code identity for an experiment across owner and reviewer sessions.
+-- The worktree stays on the runner's machine; the brain stores only Git facts
+-- needed for exact reviews, consolidation handoffs, and truthful UI lineage.
+CREATE TABLE IF NOT EXISTS experiment_workspaces (
+  experiment_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  commit_count INTEGER NOT NULL DEFAULT 0,
+  files_changed INTEGER NOT NULL DEFAULT 0,
+  insertions INTEGER NOT NULL DEFAULT 0,
+  deletions INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(experiment_id) REFERENCES experiments(id),
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
@@ -431,6 +472,70 @@ CREATE TABLE IF NOT EXISTS reflection_experiments (
   PRIMARY KEY(reflection_id, experiment_id),
   FOREIGN KEY(reflection_id) REFERENCES reflections(id),
   FOREIGN KEY(experiment_id) REFERENCES experiments(id)
+);
+
+-- One immutable proposal per consolidation revision. The reflection is already
+-- authoritative when these rows are written; this is code integration history,
+-- never another research-belief workflow.
+CREATE TABLE IF NOT EXISTS consolidation_proposals (
+  id TEXT PRIMARY KEY,
+  reflection_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  base_sha TEXT NOT NULL,
+  proposal_sha TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  created_by_session_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(reflection_id, revision),
+  FOREIGN KEY(reflection_id) REFERENCES reflections(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS consolidation_decisions (
+  proposal_id TEXT NOT NULL,
+  experiment_id TEXT NOT NULL,
+  disposition TEXT NOT NULL CHECK (
+    disposition IN ('used_as_is', 'adapted', 'reviewed_not_used', 'superseded')
+  ),
+  rationale TEXT NOT NULL,
+  -- The experiment workspace head is supplied by Merv, not trusted from the
+  -- consolidating agent. integration_kind is the agent's declared mechanism;
+  -- the runner records the independent ancestry result on the advance receipt.
+  source_sha TEXT NOT NULL DEFAULT '',
+  integration_kind TEXT NOT NULL DEFAULT 'none' CHECK (
+    integration_kind IN (
+      'merge', 'fast_forward', 'cherry_pick', 'rewrite', 'none'
+    )
+  ),
+  superseded_by TEXT NOT NULL DEFAULT '',
+  decided_at TEXT NOT NULL,
+  PRIMARY KEY(proposal_id, experiment_id),
+  FOREIGN KEY(proposal_id) REFERENCES consolidation_proposals(id),
+  FOREIGN KEY(experiment_id) REFERENCES experiments(id)
+);
+
+-- Git and the database cannot commit atomically. Intent is durable first, the
+-- runner performs one compare-and-swap, and settle is idempotently replayed
+-- from the observed central ref after a crash.
+CREATE TABLE IF NOT EXISTS reflection_advances (
+  id TEXT PRIMARY KEY,
+  reflection_id TEXT NOT NULL,
+  proposal_id TEXT NOT NULL UNIQUE,
+  expected_sha TEXT NOT NULL,
+  target_sha TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('intended', 'bound', 'stale', 'failed')),
+  observed_sha TEXT NOT NULL DEFAULT '',
+  runner_id TEXT NOT NULL,
+  proposal_parents_json TEXT NOT NULL DEFAULT '[]',
+  diffstat_json TEXT NOT NULL DEFAULT '{}',
+  ancestry_json TEXT NOT NULL DEFAULT '{}',
+  intended_at TEXT NOT NULL,
+  bound_at TEXT,
+  error TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(reflection_id) REFERENCES reflections(id),
+  FOREIGN KEY(proposal_id) REFERENCES consolidation_proposals(id)
 );
 
 CREATE TABLE IF NOT EXISTS sandboxes (
@@ -1003,6 +1108,41 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # dedupe feature shipping, so there is no historical keyed write a row
     # could describe, and an unkeyed event has no delivery to name.
     (40, "add_tracking_deliveries", ""),
+    # Merv-hosted coding agents (July 2026): one durable session row per
+    # locally launched agent process. The runner supplies the secret and keeps
+    # it in the child environment; the control plane stores only its digest.
+    # Three indexes make retry identity, one-live-worker-per-experiment, and
+    # project status reads explicit database guarantees.
+    (41, "add_agent_sessions", ""),
+    # Reflection-wave code consolidation: generic session targets, durable
+    # experiment branch identity, immutable consolidation proposals/coverage,
+    # and the intent/CAS/settle receipt.
+    (42, "add_consolidation", ""),
+)
+
+# Migration 41 indexes. They cannot live in SCHEMA because an existing store
+# reaches the table only when the migration ladder creates it.
+AGENT_SESSION_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_runner_retry"
+    "  ON agent_sessions(runner_id, idempotency_key)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_one_live_experiment"
+    "  ON agent_sessions(target_type, target_id)"
+    "  WHERE kind = 'experiment' AND status IN ('offered', 'active')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_one_live_consolidation"
+    "  ON agent_sessions(target_type, target_id)"
+    "  WHERE kind = 'consolidation' AND status IN ('offered', 'active')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_one_live_review"
+    "  ON agent_sessions(review_request_id)"
+    "  WHERE kind = 'review' AND status IN ('offered', 'active')",
+    "CREATE INDEX IF NOT EXISTS idx_agent_sessions_project"
+    "  ON agent_sessions(project_id, created_at)",
+)
+
+CONSOLIDATION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_consolidation_proposals_reflection"
+    "  ON consolidation_proposals(reflection_id, revision)",
+    "CREATE INDEX IF NOT EXISTS idx_reflection_advances_reflection"
+    "  ON reflection_advances(reflection_id, intended_at)",
 )
 
 # Migration 40's index. Same rule as 37/38/39's: it lives HERE, never in
@@ -1197,7 +1337,9 @@ class BaseStateStore:
                     (version, name, now_iso()),
                 )
 
-    def _apply_one_migration(self, *, conn: Connection, name: str, statement: str) -> None:
+    def _apply_one_migration(
+        self, *, conn: Connection, name: str, statement: str
+    ) -> None:
         if name == "add_sandbox_tenant_id":
             self._ensure_sandbox_tenant_id(conn=conn)
         elif name == "add_sandbox_heartbeat_columns":
@@ -1274,7 +1416,84 @@ class BaseStateStore:
             self._add_events_target_index(conn=conn)
         elif name == "add_tracking_deliveries":
             self._add_tracking_deliveries(conn=conn)
+        elif name == "add_agent_sessions":
+            self._add_agent_sessions(conn=conn)
+        elif name == "add_consolidation":
+            self._add_consolidation(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_agent_sessions(self, *, conn: Connection) -> None:
+        """Migration 41: coding-agent sessions and their concurrency keys."""
+        if not self._has_table(conn=conn, table="agent_sessions"):
+            conn.execute(_schema_table_ddl(table="agent_sessions"))
+        for statement in AGENT_SESSION_INDEXES:
+            conn.execute(statement)
+
+    def _add_consolidation(self, *, conn: Connection) -> None:
+        """Migration 42: generic coding tasks plus consolidation lineage."""
+        if self._has_table(conn=conn, table="agent_sessions") and not self._has_column(
+            conn=conn, table="agent_sessions", column="target_type"
+        ):
+            conn.execute(
+                _schema_table_ddl(table="agent_sessions", name="agent_sessions_v42")
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_sessions_v42 (
+                  id, project_id, target_type, target_id, attempt_index, kind,
+                  review_request_id, runner_id, platform, idempotency_key,
+                  secret_digest, status, host_session_ref, workspace_ref,
+                  created_at, activated_at, last_activity_at, lease_expires_at,
+                  hard_deadline_at, closed_at, close_reason, source_key_id,
+                  source_user_id
+                )
+                SELECT id, project_id, 'experiment', experiment_id, attempt_index,
+                       kind, review_request_id, runner_id, platform,
+                       idempotency_key, secret_digest, status, host_session_ref,
+                       workspace_ref, created_at, activated_at, last_activity_at,
+                       lease_expires_at, hard_deadline_at, closed_at, close_reason,
+                       source_key_id, source_user_id
+                FROM agent_sessions
+                """
+            )
+            conn.execute("DROP TABLE agent_sessions")
+            conn.execute("ALTER TABLE agent_sessions_v42 RENAME TO agent_sessions")
+        for table in (
+            "experiment_workspaces",
+            "consolidation_proposals",
+            "consolidation_decisions",
+            "reflection_advances",
+        ):
+            if not self._has_table(conn=conn, table=table):
+                conn.execute(_schema_table_ddl(table=table))
+        # Migration 42 was exercised by development databases before the
+        # consolidation receipt learned to distinguish selection from actual
+        # Git ancestry. Keep those databases usable without another migration
+        # number; released databases have not seen 42.
+        for table, column, ddl in (
+            (
+                "consolidation_decisions",
+                "source_sha",
+                "ALTER TABLE consolidation_decisions "
+                "ADD COLUMN source_sha TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "consolidation_decisions",
+                "integration_kind",
+                "ALTER TABLE consolidation_decisions "
+                "ADD COLUMN integration_kind TEXT NOT NULL DEFAULT 'none'",
+            ),
+            (
+                "reflection_advances",
+                "ancestry_json",
+                "ALTER TABLE reflection_advances "
+                "ADD COLUMN ancestry_json TEXT NOT NULL DEFAULT '{}'",
+            ),
+        ):
+            if not self._has_column(conn=conn, table=table, column=column):
+                conn.execute(ddl)
+        for statement in (*AGENT_SESSION_INDEXES, *CONSOLIDATION_INDEXES):
             conn.execute(statement)
 
     def _add_tracking_deliveries(self, *, conn: Connection) -> None:
@@ -1313,7 +1532,9 @@ class BaseStateStore:
         if not self._has_column(
             conn=conn, table="oauth_clients", column="metadata_fingerprint"
         ):
-            conn.execute("ALTER TABLE oauth_clients ADD COLUMN metadata_fingerprint TEXT")
+            conn.execute(
+                "ALTER TABLE oauth_clients ADD COLUMN metadata_fingerprint TEXT"
+            )
         # Seeded from whatever already holds an identity so the backfill is
         # re-runnable: a second pass can never hand out a taken fingerprint.
         claimed = {
@@ -1426,7 +1647,9 @@ class BaseStateStore:
             conn.execute("ALTER TABLE sandboxes ADD COLUMN runs_final_observed_at TEXT")
 
     def _ensure_sandbox_public_key_source(self, *, conn: Connection) -> None:
-        if not self._has_column(conn=conn, table="sandboxes", column="public_key_source"):
+        if not self._has_column(
+            conn=conn, table="sandboxes", column="public_key_source"
+        ):
             conn.execute(
                 "ALTER TABLE sandboxes ADD COLUMN public_key_source TEXT NOT NULL DEFAULT 'managed'"
             )
@@ -1479,12 +1702,16 @@ class BaseStateStore:
             ("synthesis_claim_changes", "reflection_claim_changes"),
             ("synthesis_experiments", "reflection_experiments"),
         ):
-            if not self._has_table(conn=conn, table=new) and self._has_table(conn=conn, table=old):
+            if not self._has_table(conn=conn, table=new) and self._has_table(
+                conn=conn, table=old
+            ):
                 conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
             if self._has_table(conn=conn, table=new) and self._has_column(
                 conn=conn, table=new, column="synthesis_id"
             ):
-                conn.execute(f"ALTER TABLE {new} RENAME COLUMN synthesis_id TO reflection_id")
+                conn.execute(
+                    f"ALTER TABLE {new} RENAME COLUMN synthesis_id TO reflection_id"
+                )
 
     def _unify_synthesis_to_reflection(self, *, conn: Connection) -> None:
         """Retire the synthesis wave vocabulary from persisted state.
@@ -1509,7 +1736,9 @@ class BaseStateStore:
             "WHERE type LIKE ?",
             ("synthesis.%",),
         )
-        conn.execute("UPDATE events SET target_type = 'reflection' WHERE target_type = 'synthesis'")
+        conn.execute(
+            "UPDATE events SET target_type = 'reflection' WHERE target_type = 'synthesis'"
+        )
         conn.execute(
             "UPDATE events SET payload_json = REPLACE(REPLACE(REPLACE(payload_json, "
             "'synthesis_review', 'reflection_review'), "
@@ -1597,14 +1826,16 @@ class BaseStateStore:
             )
             basename = path.rsplit("/", 1)[-1]
             lens_id = (
-                basename.rsplit(".", 1)[0]
-                if canonical == "reflection_lens_doc"
-                else ""
+                basename.rsplit(".", 1)[0] if canonical == "reflection_lens_doc" else ""
             )
             slot = (
-                str(row["project_id"]), str(row["target_type"]),
-                str(row["target_id"]), canonical,
-                int(row["attempt_index"] or 0), lens_id, path,
+                str(row["project_id"]),
+                str(row["target_type"]),
+                str(row["target_id"]),
+                canonical,
+                int(row["attempt_index"] or 0),
+                lens_id,
+                path,
             )
             prepared.append((row, role, canonical, lens_id, slot))
             held = winners.get(slot)
@@ -1630,12 +1861,22 @@ class BaseStateStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', '', ?, ?, ?, ?)
                 """,
                 (
-                    artifact_id, str(row["project_id"]), str(row["target_type"]),
-                    str(row["target_id"]), canonical, int(row["attempt_index"] or 0),
-                    lens_id, path, str(row["title"] or ""),
-                    str(row["content_sha256"] or ""), int(row["size_bytes"] or 0),
-                    str(row["content_type"] or ""), str(row["created_by"] or ""),
-                    created_at, created_at, int(row["created_seq"] or 0),
+                    artifact_id,
+                    str(row["project_id"]),
+                    str(row["target_type"]),
+                    str(row["target_id"]),
+                    canonical,
+                    int(row["attempt_index"] or 0),
+                    lens_id,
+                    path,
+                    str(row["title"] or ""),
+                    str(row["content_sha256"] or ""),
+                    int(row["size_bytes"] or 0),
+                    str(row["content_type"] or ""),
+                    str(row["created_by"] or ""),
+                    created_at,
+                    created_at,
+                    int(row["created_seq"] or 0),
                 ),
             )
             slot_artifact[slot] = artifact_id
@@ -1645,8 +1886,11 @@ class BaseStateStore:
             target_key = (str(row["target_type"]), str(row["target_id"]))
             by_assoc[
                 (
-                    str(row["resource_id"]), str(row["version_id"] or ""),
-                    *target_key, role, int(row["attempt_index"] or 0),
+                    str(row["resource_id"]),
+                    str(row["version_id"] or ""),
+                    *target_key,
+                    role,
+                    int(row["attempt_index"] or 0),
                 )
             ] = (artifact_id, canonical)
             if row["version_id"]:
@@ -1692,7 +1936,9 @@ class BaseStateStore:
         for row in conn.execute(
             "SELECT report_version_id, link_path, sha256, size_bytes FROM report_figures"
         ).fetchall():
-            for artifact_id in artifacts_by_version.get(str(row["report_version_id"]), []):
+            for artifact_id in artifacts_by_version.get(
+                str(row["report_version_id"]), []
+            ):
                 conn.execute(
                     """
                     INSERT INTO artifact_figures
@@ -1701,8 +1947,11 @@ class BaseStateStore:
                     VALUES (?, ?, ?, ?, ?, 'complete', '')
                     """,
                     (
-                        new_id(prefix="fig"), artifact_id, str(row["link_path"]),
-                        str(row["sha256"]), int(row["size_bytes"] or 0),
+                        new_id(prefix="fig"),
+                        artifact_id,
+                        str(row["link_path"]),
+                        str(row["sha256"]),
+                        int(row["size_bytes"] or 0),
                     ),
                 )
 
@@ -1761,8 +2010,12 @@ class BaseStateStore:
                         resource_id, _, version_id = head.partition(":")
                         mapped = by_assoc.get(
                             (
-                                resource_id, version_id, str(row["target_type"]),
-                                str(row["target_id"]), role, int(attempt),
+                                resource_id,
+                                version_id,
+                                str(row["target_type"]),
+                                str(row["target_id"]),
+                                role,
+                                int(attempt),
                             )
                         )
                     except ValueError:
@@ -2126,9 +2379,7 @@ class BaseStateStore:
 
     def clear_user_hf_token(self, *, user_id: str) -> None:
         with self.transaction() as conn:
-            conn.execute(
-                "DELETE FROM user_hf_tokens WHERE user_id = ?", (user_id,)
-            )
+            conn.execute("DELETE FROM user_hf_tokens WHERE user_id = ?", (user_id,))
 
     def user_hf_token(self, *, user_id: str) -> str:
         """Resolve a user's HF token for sandbox provisioning. INTERNAL ONLY —
@@ -2200,8 +2451,12 @@ class BaseStateStore:
                 "|".join(
                     str(row[column] or "")
                     for column in (
-                        "sandbox_uid", "status", "updated_at",
-                        "last_seen_at", "last_command_snapshot_at", "terminated_at",
+                        "sandbox_uid",
+                        "status",
+                        "updated_at",
+                        "last_seen_at",
+                        "last_command_snapshot_at",
+                        "terminated_at",
                     )
                 )
                 for row in rows
@@ -2222,7 +2477,9 @@ class BaseStateStore:
             ).fetchone()
         return int(row["n"]) if row is not None else 0
 
-    def recent_events(self, *, project_id: str | None, limit: int = 100) -> dict[str, Any]:
+    def recent_events(
+        self, *, project_id: str | None, limit: int = 100
+    ) -> dict[str, Any]:
         with closing(self.connect()) as conn:
             project_id = self.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
@@ -2524,7 +2781,11 @@ class StateStore(BaseStateStore):
                 if terminated_at or status in {"terminated", "failed"}:
                     detached_at = (
                         terminated_at
-                        or (row["updated_at"] if "updated_at" in source_columns else None)
+                        or (
+                            row["updated_at"]
+                            if "updated_at" in source_columns
+                            else None
+                        )
                         or attached_at
                     )
                 attachments.append(
@@ -2570,7 +2831,8 @@ class StateStore(BaseStateStore):
             conn.execute("DROP TABLE sandbox_attachments")
         conn.execute(_schema_table_ddl(table="sandboxes", name="sandboxes_migrate"))
         source_columns = {
-            str(row["name"]) for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
         }
         target_columns = [
             str(row["name"])
@@ -2626,7 +2888,8 @@ class StateStore(BaseStateStore):
             conn.execute("DROP TABLE sandbox_attachments")
         conn.execute(_schema_table_ddl(table="sandboxes", name="sandboxes_migrate"))
         source_columns = {
-            str(row["name"]) for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
         }
         target_columns = [
             str(row["name"])
@@ -2676,7 +2939,11 @@ class StateStore(BaseStateStore):
         if self._sandbox_attachment_pk_columns(conn=conn) == []:
             return
         conn.execute("DROP TABLE IF EXISTS sandbox_attachments_migrate")
-        conn.execute(_schema_table_ddl(table="sandbox_attachments", name="sandbox_attachments_migrate"))
+        conn.execute(
+            _schema_table_ddl(
+                table="sandbox_attachments", name="sandbox_attachments_migrate"
+            )
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO sandbox_attachments_migrate (
@@ -2687,7 +2954,9 @@ class StateStore(BaseStateStore):
             """
         )
         conn.execute("DROP TABLE sandbox_attachments")
-        conn.execute("ALTER TABLE sandbox_attachments_migrate RENAME TO sandbox_attachments")
+        conn.execute(
+            "ALTER TABLE sandbox_attachments_migrate RENAME TO sandbox_attachments"
+        )
 
     def _sandbox_attachment_pk_columns(self, *, conn: sqlite3.Connection) -> list[str]:
         rows = conn.execute("PRAGMA table_info(sandbox_attachments)").fetchall()
@@ -2877,7 +3146,5 @@ def row_to_dict(*, row: Row | Mapping[str, Any] | None) -> dict[str, Any] | None
     return {key: row[key] for key in row.keys()}
 
 
-def rows_to_dicts(
-    *, rows: Iterable[Row | Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+def rows_to_dicts(*, rows: Iterable[Row | Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [row_to_dict(row=row) or {} for row in rows]

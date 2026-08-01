@@ -361,6 +361,47 @@ class SandboxBackendBase:
         return None
 
 
+class DisabledSandboxBackend(SandboxBackendBase):
+    """Fail-closed backend used when the Sandbox feature is switched off."""
+
+    capabilities = BackendCapabilities(name="disabled", enforce_expiry=False)
+
+    @staticmethod
+    def _disabled() -> BackendUnavailableError:
+        return BackendUnavailableError("Sandbox is disabled in Merv settings")
+
+    def acquire(
+        self,
+        *,
+        request: SandboxRequest,
+        on_phase: OnPhase | None = None,
+        on_created: OnCreated | None = None,
+    ) -> ProvisionedSandbox:
+        raise self._disabled()
+
+    def is_alive(self, *, sandbox_id: str) -> bool:
+        raise self._disabled()
+
+    def terminate(self, *, sandbox_id: str) -> bool:
+        raise self._disabled()
+
+    def read_transcript(
+        self,
+        *,
+        target: SandboxTarget,
+        tail: int | None = None,
+    ) -> TranscriptTail:
+        raise self._disabled()
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "backend": "disabled",
+            "disabled": True,
+            "error": "Sandbox is disabled in Merv settings",
+        }
+
+
 def qualified_row_sandbox_id(
     *, backend: SandboxBackend, row: Mapping[str, Any]
 ) -> str:

@@ -39,7 +39,11 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from merv.shared.client_config import dual_env_value, resolve_client_control_url
+from merv.shared.client_config import (
+    AGENT_SESSION_KEY_ENV_VAR,
+    dual_env_value,
+    resolve_client_control_url,
+)
 
 
 MCP_KEY_ENV_VAR = "MERV_MCP_KEY"
@@ -809,9 +813,14 @@ def _watch(args: argparse.Namespace) -> str:
         )
     if args.deadline <= 0:
         raise UsageError("--deadline must be positive")
-    key = dual_env_value(MCP_KEY_ENV_VAR)
+    key = dual_env_value(AGENT_SESSION_KEY_ENV_VAR) or dual_env_value(
+        MCP_KEY_ENV_VAR
+    )
     if not key:
-        raise UsageError(f"{MCP_KEY_ENV_VAR} is required to poll sandbox.runs")
+        raise UsageError(
+            f"{AGENT_SESSION_KEY_ENV_VAR} or {MCP_KEY_ENV_VAR} is required "
+            "to poll sandbox.runs"
+        )
     control_url = resolve_client_control_url()
     return watch_keyed(
         sandbox_uid=args.sandbox_uid,

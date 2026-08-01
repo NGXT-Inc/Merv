@@ -24,6 +24,7 @@ OBJECT_STORAGE = "object_storage"
 SANDBOX = "sandbox"
 FEED = "feed"
 MLFLOW = "mlflow"
+AGENT_SESSIONS = "agent_sessions"
 APPLICATION_COMPONENT = "application"
 SURFACE = "surface"
 
@@ -35,6 +36,7 @@ MODULES = (
     SANDBOX,
     FEED,
     MLFLOW,
+    AGENT_SESSIONS,
     APPLICATION_COMPONENT,
     SURFACE,
 )
@@ -50,6 +52,7 @@ PACKAGE_COMPONENTS = {
     "sandbox": SANDBOX,
     "feed": FEED,
     "mlflow": MLFLOW,
+    "agent_sessions": AGENT_SESSIONS,
     "application": APPLICATION_COMPONENT,
     "surface": SURFACE,
 }
@@ -74,6 +77,10 @@ ALLOWED_COMPONENT_EDGES = (
     | {(SANDBOX, dependency) for dependency in (SANDBOX, KERNEL)}
     | {(FEED, dependency) for dependency in (FEED, KERNEL)}
     | {
+        (AGENT_SESSIONS, dependency)
+        for dependency in (AGENT_SESSIONS, RESEARCH_CORE, KERNEL)
+    }
+    | {
         (APPLICATION_COMPONENT, dependency)
         for dependency in (
             APPLICATION_COMPONENT,
@@ -82,6 +89,7 @@ ALLOWED_COMPONENT_EDGES = (
             SANDBOX,
             FEED,
             OBJECT_STORAGE,
+            AGENT_SESSIONS,
             KERNEL,
         )
     }
@@ -126,6 +134,7 @@ PACKAGE_LAYERS = {
     "sandbox/remote": ADAPTER,
     "mlflow": ADAPTER,
     "object_storage": ADAPTER,
+    "agent_sessions": APPLICATION_LAYER,
     "application": APPLICATION_LAYER,
     "surface": DELIVERY,
 }
@@ -225,6 +234,11 @@ TABLE_OWNERS = {
     "feed_authors": FEED,
     "post_reactions": FEED,
     "feed_upload_tokens": FEED,
+    "agent_sessions": AGENT_SESSIONS,
+    "experiment_workspaces": AGENT_SESSIONS,
+    "consolidation_proposals": RESEARCH_CORE,
+    "consolidation_decisions": RESEARCH_CORE,
+    "reflection_advances": RESEARCH_CORE,
 }
 SQL_TABLE_REF = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\b", re.IGNORECASE)
 CREATE_TABLE_REF = re.compile(

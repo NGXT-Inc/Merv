@@ -9,15 +9,22 @@ the composition-wide bag of one-use Application objects.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from merv.shared.storage_guidance import storage_guidance
 
+from ..agent_sessions import AgentSessions
 from ..artifacts import Artifacts
 from ..feed import FeedService
-from ..kernel.utils import ValidationError
+from ..kernel.utils import ValidationError, parse_iso
 from ..object_storage import ObjectStorage
-from ..research_core import Research
+from ..research_core import (
+    EXPERIMENT_TERMINAL_STATUSES,
+    EXPERIMENT_WORKFLOW,
+    REFLECTION_WORKFLOW,
+    Research,
+)
 from ..sandbox import SandboxEngine
 from .experiments.context import ExperimentContextQuery
 from .experiments.create import create_experiment
@@ -32,6 +39,7 @@ from .mlflow import ExperimentTracking, MlflowIntegration
 from .project_context import ProjectContextQuery
 from .queries import LogicGraphQuery
 from .reflections import (
+    consolidation_packet,
     present_agent_reflection_state,
     present_reflection_overview,
 )
@@ -60,6 +68,7 @@ class Application:
         feed: FeedService,
         sandboxes: SandboxEngine,
         objects: ObjectStorage,
+        agent_sessions: AgentSessions,
         tracking: ExperimentTracking | None = None,
     ) -> None:
         self.research = research
@@ -67,6 +76,7 @@ class Application:
         self.feed = feed
         self.sandboxes = sandboxes
         self.objects = objects
+        self.agent_sessions = agent_sessions
         self._mlflow = MlflowIntegration(
             research=research,
             feed=feed,
@@ -107,6 +117,292 @@ class Application:
             project_context=self._project_context,
         )
         self._graphs = LogicGraphQuery(research=research, artifacts=artifacts)
+
+    # Coding-agent execution ----------------------------------------------
+
+    def claim_agent_session(
+        self,
+        *,
+        project_id: str,
+        runner_id: str,
+        platform: str,
+        idempotency_key: str,
+        session_secret: str,
+        source_key_id: str = "",
+        source_user_id: str = "",
+        hard_deadline_seconds: int = 24 * 60 * 60,
+    ) -> dict[str, Any]:
+        """Assign the next experiment, review, or consolidation task."""
+        snapshot = self.research.snapshot(project_id=project_id)
+        active = [
+            experiment
+            for experiment in snapshot.experiments
+            if str(experiment["status"]) not in EXPERIMENT_TERMINAL_STATUSES
+        ]
+        active_by_id = {str(item["id"]): item for item in active}
+        published = snapshot.latest_published_reflection or {}
+        wave_ids = [
+            str(item.get("experiment_id") or "")
+            for item in published.get("materialized_experiments", [])
+        ]
+        wave_order = {
+            experiment_id: index for index, experiment_id in enumerate(wave_ids)
+        }
+        owners = sorted(
+            active,
+            key=lambda item: (
+                0 if str(item["id"]) in wave_order else 1,
+                wave_order.get(str(item["id"]), 0),
+                str(item.get("created_at") or ""),
+                str(item["id"]),
+            ),
+        )
+        workspace_by_experiment = self.agent_sessions.workspaces(
+            project_id=project_id,
+            experiment_ids=active_by_id,
+        )
+        reflection = snapshot.open_reflection or {}
+        now = datetime.now(UTC)
+        requests = [
+            request
+            for request in self.research.review_queue(project_id=project_id)["requests"]
+            if request.get("status") in {"requested", "started"}
+            and (parse_iso(request.get("expires_at")) or now) > now
+            and (
+                (
+                    request.get("target_type") == "experiment"
+                    and str(request.get("target_id") or "") in active_by_id
+                )
+                or (
+                    request.get("target_type") == "reflection"
+                    and str(request.get("target_id") or "")
+                    == str(reflection.get("id") or "")
+                    and reflection.get("status")
+                    in {"reflection_review", "consolidating"}
+                )
+            )
+        ]
+        waiting_for_review = {
+            (str(request["target_type"]), str(request["target_id"]))
+            for request in requests
+        }
+        review_candidates = [
+            {
+                **(
+                    active_by_id[str(request["target_id"])]
+                    if request["target_type"] == "experiment"
+                    else reflection
+                ),
+                "target_type": str(request["target_type"]),
+                "target_id": str(request["target_id"]),
+                "kind": "review",
+                "review_request_id": str(request["id"]),
+                "source_sha": str(
+                    (request.get("target_snapshot") or {}).get("code_sha") or ""
+                ),
+            }
+            for request in reversed(requests)
+        ]
+        consolidation_candidates: list[dict[str, Any]] = []
+        if reflection.get("status") == "consolidating" and (
+            ("reflection", str(reflection["id"])) not in waiting_for_review
+        ):
+            consolidation = reflection.get("consolidation") or {}
+            advance = consolidation.get("advance") or {}
+            review_item = next(
+                (
+                    item
+                    for item in (reflection.get("gate_checklist") or {}).get(
+                        "items", []
+                    )
+                    if item.get("kind") == "review"
+                    and item.get("role") == "consolidation_reviewer"
+                ),
+                {},
+            )
+            if not review_item.get("satisfied") or advance.get("status") in {
+                "stale",
+                "failed",
+            }:
+                proposal = consolidation.get("proposal") or {}
+                consolidation_candidates.append(
+                    {
+                        **reflection,
+                        "target_type": "reflection",
+                        "target_id": str(reflection["id"]),
+                        "kind": "consolidation",
+                        "source_sha": str(
+                            advance.get("observed_sha")
+                            or proposal.get("base_sha")
+                            or ""
+                        ),
+                    }
+                )
+        owner_candidates = [
+            {
+                **experiment,
+                "target_type": "experiment",
+                "target_id": str(experiment["id"]),
+                "kind": "experiment",
+                "source_sha": str(
+                    workspace_by_experiment.get(str(experiment["id"]), {}).get(
+                        "head_sha"
+                    )
+                    or ""
+                ),
+            }
+            for experiment in owners
+            if ("experiment", str(experiment["id"])) not in waiting_for_review
+        ]
+        session = self.agent_sessions.claim(
+            project_id=project_id,
+            candidates=(
+                review_candidates + consolidation_candidates + owner_candidates
+            ),
+            runner_id=runner_id,
+            platform=platform,
+            idempotency_key=idempotency_key,
+            session_secret=session_secret,
+            source_key_id=source_key_id,
+            source_user_id=source_user_id,
+            hard_deadline_seconds=hard_deadline_seconds,
+        )
+        if session is None:
+            return {"session": None, "reason": "no_dispatchable_agent_task"}
+        target_type = str(session["target_type"])
+        target_id = str(session["target_id"])
+        target = (
+            active_by_id.get(target_id)
+            if target_type == "experiment"
+            else reflection if target_type == "reflection" else None
+        )
+        if target is None or session["status"] not in {"offered", "active"}:
+            return {"session": session, "reason": "idempotent_session_closed"}
+        if session["kind"] == "review":
+            request = next(
+                (
+                    item
+                    for item in requests
+                    if item["id"] == session["review_request_id"]
+                ),
+                None,
+            )
+            if request is None:
+                return {"session": session, "reason": "review_request_closed"}
+            workflow = (
+                EXPERIMENT_WORKFLOW
+                if target_type == "experiment"
+                else REFLECTION_WORKFLOW
+            )
+            review = workflow.review(str(request["role"]))
+            skill = str(getattr(review, "skill", "") or "review")
+            session["instruction"] = (
+                f"Independently review Merv {target_type} {target_id} for "
+                f"request {request['id']}. Follow the {skill} "
+                "skill. Begin with review.start using this review_request_id; "
+                "the assigned session credential supplies reviewer authority, "
+                "so pass reviewer_capability='assigned' and "
+                "caller_session_id='assigned' (Merv replaces it with this "
+                "session's verified identity). Submit exactly one verdict with "
+                "review.submit. If this platform has no native MCP support, "
+                "invoke tools with `merv-client call TOOL --arguments JSON`."
+            )
+        elif session["kind"] == "consolidation":
+            session["instruction"] = (
+                f"Consolidate the code for authoritative Merv reflection "
+                f"{target_id} in project {project_id}. Start with "
+                "consolidation.get. Review every experiment in its packet, "
+                "then use this proposal worktree to select, combine, rewrite, "
+                "or omit code as needed. Run appropriate validation, commit "
+                "the coherent proposal, and call consolidation.submit with "
+                "the exact base/proposal SHAs and one reasoned decision for "
+                "every experiment. Each decision must name its actual Git "
+                "integration kind; Merv supplies the experiment branch head "
+                "and the runner verifies ancestry. Then call review.request "
+                "with target_type="
+                "'reflection', this reflection id, and role="
+                "'consolidation_reviewer'; end this host session and do not "
+                "perform the review yourself. The reflection is authoritative "
+                "and cannot be reopened. If this platform has no native MCP "
+                "support, invoke tools with `merv-client call TOOL --arguments JSON`."
+            )
+        else:
+            session["instruction"] = (
+                f"Resume Merv experiment {target_id} "
+                f"({target.get('name') or 'unnamed experiment'}) in project "
+                f"{project_id}. Use workflow.status_and_next for this exact "
+                "experiment and follow the research-workflow instructions until "
+                "the experiment reaches a terminal state. When review is "
+                "required, call review.request, then end this host session; do "
+                "not spawn or perform the review yourself. Merv will dispatch "
+                "the request to a separately authenticated reviewer session. "
+                "If this platform has no native MCP support, invoke tools with "
+                "`merv-client call TOOL --arguments JSON`."
+            )
+        return {"session": session}
+
+    def attach_agent_session(
+        self,
+        *,
+        session_id: str,
+        runner_id: str,
+        host_session_ref: str,
+        workspace_ref: str = "",
+        base_sha: str = "",
+        head_sha: str = "",
+        workspace_stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "session": self.agent_sessions.attach(
+                session_id=session_id,
+                runner_id=runner_id,
+                host_session_ref=host_session_ref,
+                workspace_ref=workspace_ref,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                workspace_stats=workspace_stats,
+            )
+        }
+
+    def agent_session_authority(self, *, session_id: str) -> dict[str, str]:
+        """The immutable parent authority for one runner-owned session."""
+        return self.agent_sessions.authority(session_id=session_id)
+
+    def release_agent_session(
+        self,
+        *,
+        session_id: str,
+        runner_id: str,
+        reason: str,
+        head_sha: str = "",
+        workspace_stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "session": self.agent_sessions.release(
+                session_id=session_id,
+                runner_id=runner_id,
+                reason=reason,
+                head_sha=head_sha,
+                workspace_stats=workspace_stats,
+            )
+        }
+
+    def heartbeat_agent_session(
+        self,
+        *,
+        session_id: str,
+        runner_id: str,
+        head_sha: str = "",
+        workspace_stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "session": self.agent_sessions.heartbeat(
+                session_id=session_id,
+                runner_id=runner_id,
+                head_sha=head_sha,
+                workspace_stats=workspace_stats,
+            )
+        }
 
     # Workflow and context -------------------------------------------------
 
@@ -246,11 +542,33 @@ class Application:
             if ids
             else {}
         )
-        presented = [
-            (rich_experiment_state if rich else slim_experiment_state)(
-                state,
-                storage_objects=objects.get(str(state.get("id") or ""), []),
+        workspaces = (
+            self.agent_sessions.workspaces(
+                project_id=resolved,
+                experiment_ids=ids,
             )
+            if ids and resolved
+            else {}
+        )
+        consolidations = (
+            self.research.experiment_consolidations(
+                project_id=resolved,
+                experiment_ids=ids,
+            )
+            if ids and resolved
+            else {}
+        )
+        presented = [
+            {
+                **(rich_experiment_state if rich else slim_experiment_state)(
+                    state,
+                    storage_objects=objects.get(str(state.get("id") or ""), []),
+                ),
+                "code_workspace": workspaces.get(str(state.get("id") or "")),
+                "consolidation_history": consolidations.get(
+                    str(state.get("id") or ""), []
+                ),
+            }
             for state in states
         ]
         return presented if rich else {"experiments": presented}
@@ -280,6 +598,14 @@ class Application:
                 )[experiment_id],
                 include_legacy_tracking=self._mlflow.enabled,
             )
+            response["code_workspace"] = self.agent_sessions.workspaces(
+                project_id=resolved_project_id,
+                experiment_ids=(experiment_id,),
+            ).get(experiment_id)
+            response["consolidation_history"] = self.research.experiment_consolidations(
+                project_id=resolved_project_id,
+                experiment_ids=(experiment_id,),
+            ).get(experiment_id, [])
             if not self._mlflow.enabled:
                 response.pop("mlflow_run", None)
             else:
@@ -304,6 +630,14 @@ class Application:
             )[experiment_id],
             include_legacy_tracking=self._mlflow.enabled,
         )
+        response["code_workspace"] = self.agent_sessions.workspaces(
+            project_id=resolved_project_id,
+            experiment_ids=(experiment_id,),
+        ).get(experiment_id)
+        response["consolidation_history"] = self.research.experiment_consolidations(
+            project_id=resolved_project_id,
+            experiment_ids=(experiment_id,),
+        ).get(experiment_id, [])
         if review_id:
             body = review_body(state.get("reviews", []), review_id=review_id)
             if body is None:
@@ -375,6 +709,8 @@ class Application:
         reviewer_capability: str,
         declared_agent: str = "",
         caller_session_id: str = "",
+        assigned_agent_session_id: str = "",
+        assigned_review_request_id: str = "",
     ) -> dict[str, Any]:
         return start_review(
             research=self.research,
@@ -385,6 +721,8 @@ class Application:
             reviewer_capability=reviewer_capability,
             declared_agent=declared_agent,
             caller_session_id=caller_session_id,
+            assigned_agent_session_id=assigned_agent_session_id,
+            assigned_review_request_id=assigned_review_request_id,
         )
 
     def review_status(
@@ -466,6 +804,163 @@ class Application:
                 project_id=project_id,
                 reflection_id=reflection_id,
                 transition=transition,
+            ),
+            include_content=False,
+        )
+
+    def consolidation(self, *, project_id: str, reflection_id: str) -> dict[str, Any]:
+        state = self.research.reflection_state(
+            project_id=project_id,
+            reflection_id=reflection_id,
+            include_content=True,
+        )
+        experiment_ids = tuple(
+            str(item.get("id") or "")
+            for item in (state.get("corpus") or {}).get("terminal_experiments", [])
+            if isinstance(item, dict) and item.get("id")
+        )
+        packet = consolidation_packet(
+            state,
+            workspaces=self.agent_sessions.workspaces(
+                project_id=project_id,
+                experiment_ids=experiment_ids,
+            ),
+        )
+        if not packet.get("base_sha"):
+            session = next(
+                (
+                    item
+                    for item in self.agent_sessions.list(project_id=project_id)[
+                        "sessions"
+                    ]
+                    if item.get("target_type") == "reflection"
+                    and item.get("target_id") == reflection_id
+                    and item.get("kind") == "consolidation"
+                    and item.get("status") in {"offered", "active"}
+                ),
+                {},
+            )
+            packet["base_sha"] = str(session.get("base_sha") or "")
+        return packet
+
+    def submit_consolidation(
+        self,
+        *,
+        project_id: str,
+        reflection_id: str,
+        base_sha: str,
+        proposal_sha: str,
+        summary: str,
+        validation: dict[str, Any] | None,
+        decisions: list[dict[str, Any]],
+        producer_session_id: str = "",
+    ) -> dict[str, Any]:
+        state = self.research.reflection_state(
+            project_id=project_id,
+            reflection_id=reflection_id,
+        )
+        experiment_ids = tuple(
+            str(item.get("id") or "")
+            for item in (state.get("corpus") or {}).get("terminal_experiments", [])
+            if isinstance(item, dict) and item.get("id")
+        )
+        workspaces = self.agent_sessions.workspaces(
+            project_id=project_id,
+            experiment_ids=experiment_ids,
+        )
+        decisions = [
+            {
+                **decision,
+                # Experiment workspace lineage is Merv-owned evidence. Never
+                # trust a consolidating agent to tell us which branch head it
+                # reviewed.
+                "source_sha": str(
+                    workspaces.get(str(decision.get("experiment_id") or ""), {}).get(
+                        "head_sha"
+                    )
+                    or ""
+                ),
+            }
+            for decision in decisions
+        ]
+        return present_agent_reflection_state(
+            self.research.submit_consolidation(
+                project_id=project_id,
+                reflection_id=reflection_id,
+                base_sha=base_sha,
+                proposal_sha=proposal_sha,
+                summary=summary,
+                validation=validation,
+                decisions=decisions,
+                producer_session_id=producer_session_id,
+            ),
+            include_content=False,
+        )
+
+    def prepare_consolidation_advance(
+        self, *, project_id: str, reflection_id: str, runner_id: str
+    ) -> dict[str, Any]:
+        return self.research.prepare_reflection_advance(
+            project_id=project_id,
+            reflection_id=reflection_id,
+            runner_id=runner_id,
+        )
+
+    def pending_consolidation_advance(
+        self, *, project_id: str
+    ) -> dict[str, Any] | None:
+        """Return the one reviewed proposal the runner may try to advance."""
+        reflection = self.research.snapshot(project_id=project_id).open_reflection
+        if not reflection or reflection.get("status") != "consolidating":
+            return None
+        state = self.research.reflection_state(
+            project_id=project_id,
+            reflection_id=str(reflection["id"]),
+        )
+        consolidation = state.get("consolidation") or {}
+        proposal = consolidation.get("proposal") or {}
+        advance = consolidation.get("advance") or {}
+        review_passed = any(
+            item.get("kind") == "review"
+            and item.get("role") == "consolidation_reviewer"
+            and item.get("satisfied")
+            for item in (state.get("gate_checklist") or {}).get("items", [])
+        )
+        if (
+            not proposal
+            or not review_passed
+            or advance.get("status") in {"bound", "stale", "failed"}
+        ):
+            return None
+        return {
+            "reflection_id": state["id"],
+            "proposal_id": proposal["id"],
+            "revision": proposal["revision"],
+            "advance_status": advance.get("status") or "ready",
+        }
+
+    def settle_consolidation_advance(
+        self,
+        *,
+        project_id: str,
+        advance_id: str,
+        runner_id: str,
+        observed_sha: str,
+        proposal_parents: list[str] | None = None,
+        diffstat: dict[str, Any] | None = None,
+        ancestry: dict[str, bool] | None = None,
+        error: str = "",
+    ) -> dict[str, Any]:
+        return present_agent_reflection_state(
+            self.research.settle_reflection_advance(
+                project_id=project_id,
+                advance_id=advance_id,
+                runner_id=runner_id,
+                observed_sha=observed_sha,
+                proposal_parents=proposal_parents,
+                diffstat=diffstat,
+                ancestry=ancestry,
+                error=error,
             ),
             include_content=False,
         )

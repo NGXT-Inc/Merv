@@ -77,8 +77,8 @@ provider file contains only behavior it actually supports.
 | `voltage_park` | VM | management SSH | `voltagepark` |
 | `tensordock` | VM | management SSH | — |
 
-The in-memory `fake` driver is also registered for deterministic tests, but is
-not a production provider.
+Tests inject an in-memory fake through the sandbox port; it is intentionally
+absent from the production provider registry.
 
 ## Lambda Labs (`lambda_labs`)
 

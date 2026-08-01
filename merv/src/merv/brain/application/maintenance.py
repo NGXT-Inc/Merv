@@ -26,6 +26,11 @@ class PrunableLedger(Protocol):
 
     def prune(self, *, now: datetime | None = None) -> dict[str, Any]: ...
 
+class SessionMaintenance(Protocol):
+    """Lease sweep owned by the coding-agent session module."""
+
+    def reconcile(self, *, now: datetime | None = None) -> int: ...
+
 
 SKIPPED_PRUNE: dict[str, Any] = {"deleted": 0, "ok": True, "skipped": True}
 
@@ -56,6 +61,7 @@ class CleanupReport:
     oauth_clients_pruned: dict[str, Any] = field(
         default_factory=lambda: dict(SKIPPED_PRUNE)
     )
+    agent_sessions_expired: int = 0
 
     @property
     def ok(self) -> bool:
@@ -83,6 +89,7 @@ class CleanupReport:
             "stale_provisions_reaped": self.stale_provisions_reaped,
             "tool_calls_pruned": dict(self.tool_calls_pruned),
             "oauth_clients_pruned": dict(self.oauth_clients_pruned),
+            "agent_sessions_expired": self.agent_sessions_expired,
         }
 
 
@@ -97,6 +104,7 @@ class CleanupService:
         storage: ExpiringStorage | None = None,
         tool_call_ledger: PrunableLedger | None = None,
         oauth_clients: PrunableLedger | None = None,
+        agent_sessions: SessionMaintenance | None = None,
         stale_provision_deadline_seconds: float = (
             DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
         ),
@@ -106,6 +114,7 @@ class CleanupService:
         self.storage = storage
         self.tool_call_ledger = tool_call_ledger
         self.oauth_clients = oauth_clients
+        self.agent_sessions = agent_sessions
         self.stale_provision_deadline_seconds = float(stale_provision_deadline_seconds)
 
     def run_all(self, *, now: datetime | None = None) -> CleanupReport:
@@ -120,6 +129,7 @@ class CleanupService:
             cleanup_pending=self.retry_cleanup_pending(now=now_dt),
             tool_calls_pruned=self.prune_tool_calls(now=now_dt),
             oauth_clients_pruned=self.prune_oauth_clients(now=now_dt),
+            agent_sessions_expired=self.reconcile_agent_sessions(now=now_dt),
         )
 
     def sweep_orphan_vms(self, *, now: datetime | None = None) -> int:
@@ -167,6 +177,12 @@ class CleanupService:
     def prune_oauth_clients(self, *, now: datetime | None = None) -> dict[str, Any]:
         """Expire OAuth registrations that never authorized anything."""
         return self._prune(ledger=self.oauth_clients, now=now)
+
+    def reconcile_agent_sessions(self, *, now: datetime | None = None) -> int:
+        """Close coding-agent sessions beyond their lease or hard deadline."""
+        if self.agent_sessions is None:
+            return 0
+        return int(self.agent_sessions.reconcile(now=now))
 
     def _prune(
         self, *, ledger: PrunableLedger | None, now: datetime | None

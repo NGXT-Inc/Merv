@@ -74,7 +74,7 @@ against the underlying snapshot.
 ## Choose the verdict and return
 
 - `pass`: the graph is honest, the reflection is critical, and the change spec
-  is safe to materialize.
+  is authoritative enough to hand to the separate code-consolidation phase.
 - `needs_changes` or `fail`: reject with exactly one return path.
 
 Use `return_to: "synthesizing"` when the lens inputs stand but the graph,

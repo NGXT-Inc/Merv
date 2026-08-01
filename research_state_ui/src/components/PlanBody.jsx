@@ -8,8 +8,9 @@ import { isMarkdown } from '../utils/format';
  *
  * The plan is the face of the experiment, so the Summary is shown prominently
  * and unframed, the spine (Objective & hypothesis, Evaluation) stays open as
- * labeled sections, and the recommended sections (Method, Outputs, Risks) plus
- * the Attempt log collapse into <details> so a detailed plan stays scannable.
+ * labeled sections, and the recommended sections (Prior work, Method, Outputs,
+ * Risks) plus the Attempt log collapse into <details> so a detailed plan stays
+ * scannable.
  *
  * Falls back to a plain markdown / file render when the plan doesn't follow the
  * schema (legacy freeform plans, or non-markdown files) — never hides content.

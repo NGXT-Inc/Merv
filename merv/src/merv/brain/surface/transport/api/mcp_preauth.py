@@ -27,13 +27,27 @@ class ProjectScopeAuthorizer(Protocol):
     def key_project_id(self, principal: Any) -> str: ...
 
 
+class AgentSessionAuthorizer(Protocol):
+    def __call__(
+        self, *, name: str, arguments: dict[str, Any], principal: Any
+    ) -> None: ...
+
+
 def build_mcp_preauthorizer(
-    *, authorizer: ProjectScopeAuthorizer, research: Research, hosted: bool
+    *,
+    authorizer: ProjectScopeAuthorizer,
+    research: Research,
+    hosted: bool,
+    authorize_agent_session: AgentSessionAuthorizer | None = None,
 ) -> Preauthorizer:
     """Bind the project authorizer + review resolver into a ScopeAuthorizer."""
 
     def preauthorize(request: Request, name: str, arguments: dict[str, Any]) -> None:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        if authorize_agent_session is not None:
+            authorize_agent_session(
+                name=name, arguments=arguments, principal=principal
+            )
         key_project_id = authorizer.key_project_id(principal)
         authorizer.require_member(
             project_id=key_project_id or None,

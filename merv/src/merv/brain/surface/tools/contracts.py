@@ -397,6 +397,38 @@ class ReflectionTransitionInput(ProjectScopedInput):
     transition: Literal[*REFLECTION_TRANSITION_VALUES]
 
 
+class ConsolidationGetInput(ProjectScopedInput):
+    reflection_id: str
+
+
+class ConsolidationDecisionInput(ContractModel):
+    experiment_id: str
+    disposition: Literal[
+        "used_as_is",
+        "adapted",
+        "reviewed_not_used",
+        "superseded",
+    ]
+    rationale: str
+    integration_kind: Literal[
+        "merge",
+        "fast_forward",
+        "cherry_pick",
+        "rewrite",
+        "none",
+    ]
+    superseded_by: str = ""
+
+
+class ConsolidationSubmitInput(ProjectScopedInput):
+    reflection_id: str
+    base_sha: str
+    proposal_sha: str
+    summary: str
+    validation: dict[str, Any] = Field(default_factory=dict)
+    decisions: list[ConsolidationDecisionInput]
+
+
 class ArtifactSubmitInput(ProjectScopedInput):
     target_type: str = Field(
         description="Workflow target kind the artifact attaches to.",
@@ -1296,10 +1328,32 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             + ", ".join(REFLECTION_WORKFLOW.transition_names)
             + "). See "
             "reflection.get.allowed_transitions for preconditions from the "
-            f"current status. On {_REFLECTION_PUBLISH_TRANSITION}, after the "
-            "reflection reviewer has "
-            "passed, the reviewed change spec applies claim changes and "
-            "creates the approved experiment wave."
+            f"current status. {_REFLECTION_PUBLISH_TRANSITION} is internal: "
+            "after reflection review, begin_consolidation hands code to a "
+            "separate consolidator and reviewer; only the runner's central "
+            "advance may publish and materialize the approved change spec."
+        ),
+    ),
+    "consolidation.get": ToolContract(
+        handler_identity="application.consolidation",
+        input_model=ConsolidationGetInput,
+        description=(
+            "Read the authoritative reflection and slim immutable experiment "
+            "packet for code consolidation: exact experiment branches/base/head "
+            "SHAs, concise result summaries, current proposal coverage, and "
+            "prior consolidation-review feedback."
+        ),
+    ),
+    "consolidation.submit": ToolContract(
+        handler_identity="application.submit_consolidation",
+        input_model=ConsolidationSubmitInput,
+        description=(
+            "Submit one immutable consolidation proposal. The proposal must "
+            "name exact base/proposal SHAs and account for every experiment as "
+            "used as-is, adapted, reviewed but not used, or superseded. This "
+            "records the actual Git integration kind while Merv supplies each "
+            "experiment branch head and the runner independently verifies "
+            "ancestry. It cannot reopen or alter the authoritative reflection."
         ),
     ),
     "litreview.view": ToolContract(
@@ -1658,6 +1712,11 @@ STORAGE_TOOL_NAMES = {
     for name, tool in TOOL_MANIFEST.items()
     if "storage" in tool.feature_requirements
 }
+SANDBOX_TOOL_NAMES = {
+    name
+    for name, tool in TOOL_MANIFEST.items()
+    if tool.handler_identity.startswith("sandboxes.")
+}
 MCP_HIDDEN_TOOL_NAMES = frozenset(
     name for name, tool in TOOL_MANIFEST.items() if tool.visibility == "internal"
 )
@@ -1665,18 +1724,23 @@ LEGACY_TRACKING_TOOL_NAMES = frozenset({"mlflow.context", "mlflow.finalize_run"}
 
 
 def available_tool_names(
-    *, storage_enabled: bool, tracking_enabled: bool = False
+    *,
+    storage_enabled: bool,
+    tracking_enabled: bool = False,
+    sandbox_enabled: bool = True,
 ) -> set[str]:
     """Tool names for the active feature set.
 
-    Storage is optional. When it is not configured, the MCP catalog must omit
-    storage tools entirely rather than advertising a feature that will fail.
+    Optional capabilities are omitted rather than advertised as operations
+    that will fail when called.
     """
     names = set(TOOL_MANIFEST)
     if not storage_enabled:
         names -= STORAGE_TOOL_NAMES
     if not tracking_enabled:
         names -= LEGACY_TRACKING_TOOL_NAMES
+    if not sandbox_enabled:
+        names -= SANDBOX_TOOL_NAMES
     return names
 
 

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError as PydanticValidationError
 
 from ....kernel.env import mlflow_suspended
+from ....agent_sessions import AGENT_SESSION_SECRET_PREFIX, AgentSessions
 from ....kernel.utils import (
     NotFoundError,
     ResearchPluginError,
@@ -20,26 +21,48 @@ from ....kernel.utils import (
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
 from ...auth import UnauthorizedError
 from ...identity import (
-    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key, is_local_principal,
+    AgentSessionScopeError,
+    LOCAL_PRINCIPAL,
+    Principal,
+    ProjectKeyScopeError,
+    is_external_key,
+    is_local_principal,
 )
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.dispatcher import ToolDispatcher
 from ....research_core import Research
 from ....sandbox import SandboxEngine
-from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
-                     bind_request_principal, is_local_origin, ledger_direct_call,
-                     ledger_refusal, ledger_tool_refusal,
-                     open_hosted_operator_denial, operator_denial,
-                     operator_membership_recovery)
+from ..http_policy import (
+    AGENT_CONSOLIDATION_SESSION_TOOLS,
+    AGENT_EXPERIMENT_SESSION_TOOLS,
+    AGENT_REVIEW_SESSION_TOOLS,
+    HOSTED_CONTROL_TOOL_POLICIES,
+    HttpSurfacePolicy,
+)
+from .shared import (
+    CallLedger,
+    GLOBAL_MUTATOR_PREFIXES,
+    RefusalLedger,
+    bind_request_principal,
+    is_local_origin,
+    ledger_direct_call,
+    ledger_refusal,
+    ledger_tool_refusal,
+    open_hosted_operator_denial,
+    operator_denial,
+    operator_membership_recovery,
+)
 from .views import present
 from . import oauth, project_keys
+
+
 @dataclass(frozen=True)
 class RequestAuthenticator:
     """Resolve a request principal without coupling the factory to a verifier."""
 
     surface: HttpSurfacePolicy
     verifier: Any | None = None
+    agent_sessions: AgentSessions | None = None
     # Phase B: OAuth routes are auth-exempt; audience-bound bearers are /mcp-only.
     oauth_enabled: bool = False
     canonical_mcp_resource: str = ""
@@ -51,11 +74,18 @@ class RequestAuthenticator:
         request.state.authenticated = False
         path = request.url.path
         # Token-bearer routes carry their own credential (INV-12), /wait/ too.
-        exempt = ("/api/artifacts/u/", "/api/artifacts/f/", "/api/feed/u/",
-                  "/api/storage/u/", "/wait/")
-        if (path in ("/health", "/api/meta", "/internal/auth/mlflow")
-                or path.startswith(exempt)
-                or oauth.public_request(request, enabled=self.oauth_enabled)):
+        exempt = (
+            "/api/artifacts/u/",
+            "/api/artifacts/f/",
+            "/api/feed/u/",
+            "/api/storage/u/",
+            "/wait/",
+        )
+        if (
+            path in ("/health", "/api/meta", "/internal/auth/mlflow")
+            or path.startswith(exempt)
+            or oauth.public_request(request, enabled=self.oauth_enabled)
+        ):
             return None
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
         if (
@@ -64,26 +94,114 @@ class RequestAuthenticator:
             and is_below_floor(client_version=client_version, floor=MIN_PROXY_VERSION)
         ):
             return JSONResponse(
-                {"detail": f"client version {client_version} is below the minimum "
-                 f"supported {MIN_PROXY_VERSION}; upgrade the merv client "
-                 "(pip install -U merv) and reconnect",
-                 "error_code": "client_too_old",
-                 "min_version": MIN_PROXY_VERSION,
-                 "client_version": client_version},
+                {
+                    "detail": f"client version {client_version} is below the minimum "
+                    f"supported {MIN_PROXY_VERSION}; upgrade the merv client "
+                    "(pip install -U merv) and reconnect",
+                    "error_code": "client_too_old",
+                    "min_version": MIN_PROXY_VERSION,
+                    "client_version": client_version,
+                },
                 status_code=426,
+            )
+        authorization = request.headers.get("Authorization")
+        token = (
+            authorization[len("Bearer ") :].strip()
+            if authorization and authorization.startswith("Bearer ")
+            else ""
+        )
+        if token.startswith(AGENT_SESSION_SECRET_PREFIX):
+            record = (
+                None
+                if self.agent_sessions is None
+                else self.agent_sessions.authenticate(session_secret=token)
+            )
+            if record is None:
+                return oauth.bearer_denial(
+                    request,
+                    message="unknown, expired, or released agent session",
+                    enabled=self.oauth_enabled,
+                    session_denial=None,
+                )
+            source_key_id = str(record.get("source_key_id") or "")
+            source_key = None
+            if source_key_id:
+                key_control = getattr(self.verifier, "project_keys", None)
+                source_key = (
+                    None
+                    if key_control is None
+                    else key_control.active_record(key_id=source_key_id)
+                )
+                source_user_id = str(record.get("source_user_id") or "")
+                source_valid = (
+                    source_key is not None
+                    and source_key.owner_user_id == source_user_id
+                    and source_key.tenant_id == str(record["tenant_id"])
+                    and (
+                        source_key.grant_scope != "project"
+                        or source_key.project_id == str(record["project_id"])
+                    )
+                )
+                if not source_valid:
+                    self.agent_sessions.invalidate(
+                        session_id=str(record["id"]),
+                        reason="source_authority_revoked",
+                    )
+                    return oauth.bearer_denial(
+                        request,
+                        message="unknown, expired, or released agent session",
+                        enabled=self.oauth_enabled,
+                        session_denial=None,
+                    )
+            principal = Principal(
+                tenant_id=str(record["tenant_id"]),
+                client_id=f"agent-session:{record['id']}",
+                user_id=str(record.get("source_user_id") or ""),
+                key_project_id=str(record["project_id"]),
+                agent_session_id=str(record["id"]),
+                agent_experiment_id=(
+                    str(record["target_id"])
+                    if str(record["target_type"]) == "experiment"
+                    else ""
+                ),
+                agent_target_type=str(record["target_type"]),
+                agent_target_id=str(record["target_id"]),
+                agent_session_kind=str(record["kind"]),
+                agent_review_request_id=str(record["review_request_id"] or ""),
+                source_key_id=source_key_id or None,
+                key_sandbox_seconds_ceiling=(
+                    None if source_key is None else source_key.sandbox_seconds_ceiling
+                ),
+                key_blob_bytes_ceiling=(
+                    None if source_key is None else source_key.blob_bytes_ceiling
+                ),
+            )
+            request.state.principal = principal
+            request.state.authenticated = True
+            return oauth.credential_audience_denial(
+                request=request,
+                principal=principal,
+                canonical_mcp_resource=self.canonical_mcp_resource,
             )
         if self.verifier is None:
             return None
         try:
-            principal = self.verifier.verify_bearer(request.headers.get("Authorization"))
+            principal = self.verifier.verify_bearer(authorization)
         except UnauthorizedError as exc:
-            return oauth.bearer_denial(request, message=exc.message,
-                                       enabled=self.oauth_enabled, session_denial=None)
+            return oauth.bearer_denial(
+                request,
+                message=exc.message,
+                enabled=self.oauth_enabled,
+                session_denial=None,
+            )
         request.state.principal = principal
         request.state.authenticated = True
         # INV-7: audience-bound bearers are valid ONLY on the canonical /mcp path.
-        return oauth.credential_audience_denial(request=request, principal=principal,
-                                                canonical_mcp_resource=self.canonical_mcp_resource)
+        return oauth.credential_audience_denial(
+            request=request,
+            principal=principal,
+            canonical_mcp_resource=self.canonical_mcp_resource,
+        )
 
 
 @dataclass(frozen=True)
@@ -117,7 +235,10 @@ class ProjectAuthorizer:
         if key_project_id and project_id and project_id != key_project_id:
             raise ProjectKeyScopeError(
                 "project API key cannot access a different project",
-                details={"key_project_id": key_project_id, "requested_project_id": project_id},
+                details={
+                    "key_project_id": key_project_id,
+                    "requested_project_id": project_id,
+                },
             )
 
     def require_member(self, *, project_id: str | None, principal: Any) -> None:
@@ -134,14 +255,26 @@ class ProjectAuthorizer:
 
     def http_denial(self, request: Request) -> JSONResponse | None:
         path = request.url.path
+        if getattr(request.state.principal, "agent_session_id", None) and not (
+            path == "/mcp" or path.startswith("/mcp/")
+        ):
+            return JSONResponse(
+                {
+                    "detail": "agent session credentials are valid only on the MCP endpoint",
+                    "error_code": "agent_session_scope_forbidden",
+                },
+                status_code=403,
+            )
         # Credential SHAPE, not binding: an account key has no
         # key_project_id, so a binding test fails open here (INV-11).
         if is_external_key(request.state.principal) and path.startswith(
             self._operator_diagnostic_prefixes
         ):
             return JSONResponse(
-                {"detail": "project API keys cannot access operator diagnostics",
-                 "error_code": "project_scope_forbidden"},
+                {
+                    "detail": "project API keys cannot access operator diagnostics",
+                    "error_code": "project_scope_forbidden",
+                },
                 status_code=403,
             )
         if path.startswith(GLOBAL_MUTATOR_PREFIXES):
@@ -153,12 +286,16 @@ class ProjectAuthorizer:
             project_id = request.query_params.get("project_id") or ""
             if not project_id:
                 return JSONResponse(
-                    {"detail": "project_id is required on this endpoint when authenticated",
-                     "error_code": "validation_error"},
+                    {
+                        "detail": "project_id is required on this endpoint when authenticated",
+                        "error_code": "validation_error",
+                    },
                     status_code=400,
                 )
         try:
-            self.require_key_scope(project_id=project_id, principal=request.state.principal)
+            self.require_key_scope(
+                project_id=project_id, principal=request.state.principal
+            )
         except ProjectKeyScopeError as exc:
             return JSONResponse(
                 {"detail": exc.message, "error_code": exc.error_code, **exc.details},
@@ -188,6 +325,7 @@ class ToolInvocationGateway:
     surface: HttpSurfacePolicy
     projects: ProjectAuthorizer
     ledger: CallLedger | None = None
+    agent_sessions: AgentSessions | None = None
     # Per-composition: the SAME key this app's /wait route verifies with, so
     # two apps over one backend each sign only what their own route accepts.
     wait_secret: bytes | None = None
@@ -208,18 +346,38 @@ class ToolInvocationGateway:
         scope = str(arguments.get("project_id") or project_scope or "")
         try:
             plan = self._preflight(
-                name=name, arguments=arguments, context=dict(context or {}),
-                project_scope=project_scope, activity_source=activity_source,
-                principal=principal, base_url=base_url)
+                name=name,
+                arguments=arguments,
+                context=dict(context or {}),
+                project_scope=project_scope,
+                activity_source=activity_source,
+                principal=principal,
+                base_url=base_url,
+            )
         except ResearchPluginError as exc:
             # Only PRE-dispatch refusals reach here — repo_root, membership, the
             # key project-create block. Legacy /mcp/call earns these too, and
             # without this line the caller's refusal would leave no evidence.
-            ledger_tool_refusal(self.ledger, tool=name, source=activity_source,
-                                project_id=scope, exc=exc)
+            ledger_tool_refusal(
+                self.ledger,
+                tool=name,
+                source=activity_source,
+                project_id=scope,
+                exc=exc,
+            )
             raise
-        return self._dispatch(name=name, arguments=arguments, plan=plan,
-                              activity_source=activity_source, project_id=scope)
+        result = self._dispatch(
+            name=name,
+            arguments=arguments,
+            plan=plan,
+            activity_source=activity_source,
+            project_id=scope,
+        )
+        if self.agent_sessions is not None and getattr(
+            principal, "agent_session_id", None
+        ):
+            self.agent_sessions.reconcile()
+        return result
 
     def _preflight(
         self,
@@ -248,24 +406,46 @@ class ToolInvocationGateway:
             raise ValidationError(
                 "repo_root context is not supported; send project_id explicitly "
                 "or authenticate with a project-bound MCP key",
-                details={"field": "context.repo_root",
-                         "reason": "repo_root_not_supported"},
+                details={
+                    "field": "context.repo_root",
+                    "reason": "repo_root_not_supported",
+                },
             )
         user_id = self.projects.user_id(principal)
         key_project_id = self.projects.key_project_id(principal)
-        self.projects.require_member(project_id=key_project_id or None, principal=principal)
+        self.authorize_agent_session(
+            name=name, arguments=arguments, principal=principal
+        )
+        self.projects.require_member(
+            project_id=key_project_id or None, principal=principal
+        )
         for scope in (arguments.get("project_id"), project_scope):
             self.projects.require_member(project_id=scope, principal=principal)
-        if is_external_key(principal) and name == "project" and arguments.get("action") == "create":
+        if (
+            is_external_key(principal)
+            and name == "project"
+            and arguments.get("action") == "create"
+        ):
             # Shape, not binding: account keys are machine credentials too.
-            raise ProjectKeyScopeError("project API keys cannot create projects",
-                                       details={"key_project_id": key_project_id})
+            raise ProjectKeyScopeError(
+                "project API keys cannot create projects",
+                details={"key_project_id": key_project_id},
+            )
         internal_kwargs = None
         if user_id and name in ("project", "project.list"):
             internal_kwargs = {"user_id": user_id}
-            if key_project_id:  # list -> scope to bound project; project -> pass through
-                internal_kwargs["project_id" if name == "project.list" else "key_project_id"] = key_project_id
-        if base_url and name in ("artifact.submit", "feed.post", "storage.submit", "sandbox.runs"):
+            if (
+                key_project_id
+            ):  # list -> scope to bound project; project -> pass through
+                internal_kwargs[
+                    "project_id" if name == "project.list" else "key_project_id"
+                ] = key_project_id
+        if base_url and name in (
+            "artifact.submit",
+            "feed.post",
+            "storage.submit",
+            "sandbox.runs",
+        ):
             # Each renders an absolute URL against the caller-reachable base: an
             # upload token-curl one-liner, or a run's signed wait capability.
             internal_kwargs = {"base_url": base_url}
@@ -275,8 +455,54 @@ class ToolInvocationGateway:
             internal_kwargs = {
                 "provisioning_user_id": user_id,
                 "provisioning_key_id": str(
-                    getattr(principal, "key_id", "") or ""
+                    getattr(principal, "key_id", "")
+                    or getattr(principal, "source_key_id", "")
+                    or ""
                 ),
+            }
+            agent_experiment_id = str(
+                getattr(principal, "agent_experiment_id", "") or ""
+            )
+            if agent_experiment_id:
+                internal_kwargs["experiment_id"] = agent_experiment_id
+        elif getattr(principal, "agent_experiment_id", None) and name in {
+            "sandbox.attach",
+            "sandbox.extend",
+            "sandbox.get",
+            "sandbox.pull_outputs",
+            "sandbox.release",
+            "sandbox.runs",
+            "sandbox.terminal",
+        }:
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "experiment_id": str(principal.agent_experiment_id),
+            }
+        agent_session_id = str(getattr(principal, "agent_session_id", "") or "")
+        agent_experiment_id = str(getattr(principal, "agent_experiment_id", "") or "")
+        if agent_session_id and name == "review.request":
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "producer_session_id": agent_session_id,
+            }
+        if agent_session_id and name == "consolidation.submit":
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "producer_session_id": agent_session_id,
+            }
+        if agent_session_id and name == "review.start":
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "caller_session_id": agent_session_id,
+                "assigned_agent_session_id": agent_session_id,
+                "assigned_review_request_id": str(
+                    getattr(principal, "agent_review_request_id", "") or ""
+                ),
+            }
+        if agent_experiment_id and name in ("storage.submit", "storage.put_object"):
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "producing_experiment_id": agent_experiment_id,
             }
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
@@ -316,6 +542,121 @@ class ToolInvocationGateway:
             )
         return contract, policy, internal_kwargs, call_kwargs
 
+    def authorize_agent_session(
+        self, *, name: str, arguments: dict[str, Any], principal: Any | None
+    ) -> None:
+        session_id = str(getattr(principal, "agent_session_id", "") or "")
+        if not session_id:
+            return
+        target_type = str(getattr(principal, "agent_target_type", "") or "")
+        target_id = str(getattr(principal, "agent_target_id", "") or "")
+        experiment_id = target_id if target_type == "experiment" else ""
+        kind = str(getattr(principal, "agent_session_kind", "") or "experiment")
+        allowed = (
+            AGENT_REVIEW_SESSION_TOOLS
+            if kind == "review"
+            else (
+                AGENT_CONSOLIDATION_SESSION_TOOLS
+                if kind == "consolidation"
+                else AGENT_EXPERIMENT_SESSION_TOOLS
+            )
+        )
+        if name not in allowed:
+            raise AgentSessionScopeError(
+                f"agent session cannot call {name}",
+                details={
+                    "tool": name,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                },
+            )
+        requested = str(arguments.get("experiment_id") or "")
+        if requested and requested != experiment_id:
+            raise AgentSessionScopeError(
+                "agent session cannot act on another experiment",
+                details={
+                    "session_experiment_id": experiment_id,
+                    "requested_experiment_id": requested,
+                },
+            )
+        requested_reflection = str(arguments.get("reflection_id") or "")
+        if requested_reflection and (
+            target_type != "reflection" or requested_reflection != target_id
+        ):
+            raise AgentSessionScopeError(
+                "agent session cannot act on another reflection",
+                details={
+                    "session_reflection_id": (
+                        target_id if target_type == "reflection" else ""
+                    ),
+                    "requested_reflection_id": requested_reflection,
+                },
+            )
+        if (
+            name.startswith("sandbox.")
+            and name
+            not in {
+                "sandbox.health",
+                "sandbox.options",
+                "sandbox.request",
+                "sandbox.attach",
+            }
+            and not requested
+        ):
+            raise AgentSessionScopeError(
+                "agent session sandbox calls must identify their experiment",
+                details={"experiment_id": experiment_id, "tool": name},
+            )
+        requested_target_type = str(arguments.get("target_type") or "")
+        requested_target_id = str(arguments.get("target_id") or "")
+        if name in {"artifact.submit", "review.request", "review.status"} and (
+            requested_target_type != target_type or requested_target_id != target_id
+        ):
+            raise AgentSessionScopeError(
+                f"{name} must target the assigned {target_type}",
+                details={"target_type": target_type, "target_id": target_id},
+            )
+        assigned_request_id = str(
+            getattr(principal, "agent_review_request_id", "") or ""
+        )
+        if name == "review.start" and (
+            kind != "review"
+            or str(arguments.get("review_request_id") or "") != assigned_request_id
+        ):
+            raise AgentSessionScopeError(
+                "review worker is bound to a different review request",
+                details={"review_request_id": assigned_request_id},
+            )
+        if name == "review.submit" and (
+            kind != "review"
+            or self.research.review_request_for_session(
+                review_session_id=arguments.get("review_session_id")
+            )
+            != assigned_request_id
+        ):
+            raise AgentSessionScopeError(
+                "review worker is bound to a different review request",
+                details={"review_request_id": assigned_request_id},
+            )
+        if name in {"review.start", "review.submit"}:
+            target = self.research.review_target(
+                review_request_id=(
+                    arguments.get("review_request_id")
+                    if name == "review.start"
+                    else None
+                ),
+                review_session_id=(
+                    arguments.get("review_session_id")
+                    if name == "review.submit"
+                    else None
+                ),
+            )
+            if target is not None and target[1:] != (target_type, target_id):
+                raise AgentSessionScopeError(
+                    f"{name} review target is outside the assigned {target_type}",
+                    details={"target_type": target_type, "target_id": target_id},
+                )
+
     def _dispatch(
         self,
         *,
@@ -340,12 +681,20 @@ class ToolInvocationGateway:
                     "invalid tool arguments",
                     details={"tool": name, "errors": exc.errors()},
                 )
-                ledger_tool_refusal(self.ledger, tool=name, source=activity_source,
-                                    project_id=project_id, exc=refusal)
+                ledger_tool_refusal(
+                    self.ledger,
+                    tool=name,
+                    source=activity_source,
+                    project_id=project_id,
+                    exc=refusal,
+                )
                 raise refusal from exc
             return ledger_direct_call(
-                self.ledger, tool=name, source=activity_source,
-                project_id=project_id, arguments=arguments,
+                self.ledger,
+                tool=name,
+                source=activity_source,
+                project_id=project_id,
+                arguments=arguments,
                 run=lambda: self.sandboxes.get(
                     experiment_id=request.experiment_id,
                     project_id=request.project_id,
@@ -362,8 +711,11 @@ class ToolInvocationGateway:
         )
 
     def call_mcp(
-        self, name: str, arguments: dict[str, Any],
-        context: dict[str, Any], request: Request,
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: dict[str, Any],
+        request: Request,
     ) -> dict[str, Any]:
         return self.call(
             name=name,
@@ -394,13 +746,19 @@ class ToolInvocationGateway:
         )
 
     def authorize_project(self, request: Request, project_id: str) -> None:
-        self.projects.require_member(project_id=project_id,
-            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL))
+        self.projects.require_member(
+            project_id=project_id,
+            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
+        )
 
 
 def install_request_middleware(
-    http: FastAPI, *, authenticator: RequestAuthenticator,
-    authorizer: ProjectAuthorizer, ledger: RefusalLedger | None = None) -> None:
+    http: FastAPI,
+    *,
+    authenticator: RequestAuthenticator,
+    authorizer: ProjectAuthorizer,
+    ledger: RefusalLedger | None = None,
+) -> None:
     # Hosted WITHOUT a verifier: nobody authenticates, so an undenied caller is
     # an anonymous remote one, not this machine's trusted operator.
     open_mode = authenticator.surface.hosted_control and authenticator.verifier is None
@@ -415,8 +773,10 @@ def install_request_middleware(
             and not is_local_origin(origin)
         ):
             return JSONResponse(
-                {"detail": "cross-origin requests to the local HTTP server are not allowed",
-                 "error_code": "forbidden_origin"},
+                {
+                    "detail": "cross-origin requests to the local HTTP server are not allowed",
+                    "error_code": "forbidden_origin",
+                },
                 status_code=403,
             )
         return await call_next(request)
@@ -455,21 +815,32 @@ def install_auth_routes(
         )
 
     if tracking_enabled:
+
         @http.get("/internal/auth/mlflow")
         def mlflow_gate(request: Request) -> Response:
             if mlflow_suspended():
                 return JSONResponse(
-                    {"detail": "MLflow is temporarily suspended",
-                     "error_code": "mlflow_suspended"}, status_code=403)
+                    {
+                        "detail": "MLflow is temporarily suspended",
+                        "error_code": "mlflow_suspended",
+                    },
+                    status_code=403,
+                )
             try:
                 principal = verifier.verify_basic_or_bearer(
                     request.headers.get("Authorization")
                 )
             except UnauthorizedError:
-                return Response(status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'})
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'},
+                )
             if getattr(principal, "key_id", None):
                 return JSONResponse(
-                    {"detail": "project API keys are not valid for the MLflow audience",
-                     "error_code": "credential_audience_forbidden"}, status_code=403)
+                    {
+                        "detail": "project API keys are not valid for the MLflow audience",
+                        "error_code": "credential_audience_forbidden",
+                    },
+                    status_code=403,
+                )
             return Response(status_code=204)

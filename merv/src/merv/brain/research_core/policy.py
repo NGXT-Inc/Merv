@@ -52,15 +52,11 @@ CLAIM_STATUSES = frozenset(
 )
 CLAIM_CONFIDENCES = frozenset({"low", "medium", "high"})
 
-EXPERIMENT_ACTIVE_PROCESS_STATUSES = frozenset(
-    {"provisioning", "running"}
-)
+EXPERIMENT_ACTIVE_PROCESS_STATUSES = frozenset({"provisioning", "running"})
 
 SYNOPSIS_MIN_LEN = 40
 SYNOPSIS_MAX_LEN = 420
-_ENTITY_ID_RE = re.compile(
-    r"\b(exp|claim|res|rev|rver|syn|lit|paper)_[A-Za-z0-9]"
-)
+_ENTITY_ID_RE = re.compile(r"\b(exp|claim|res|rev|rver|syn|lit|paper)_[A-Za-z0-9]")
 
 MAX_EXPERIMENT_NAME_LEN = 48
 MIN_EXPERIMENT_NAME_LEN = 3
@@ -122,12 +118,8 @@ def reflection_signal_state(
         for claim_id, status in sorted(current_claims.items())
         if published is not None and snapshot_claims.get(claim_id) != status
     ]
-    contradicted_flip = any(
-        change["to"] == "contradicted" for change in claims_changed
-    )
-    create_blocked = (
-        len(new_terminal) >= REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
-    )
+    contradicted_flip = any(change["to"] == "contradicted" for change in claims_changed)
+    create_blocked = len(new_terminal) >= REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
     has_new_material = (
         len(new_terminal) >= REFLECTION_IDLE_RECOMMEND_NEW_TERMINAL_THRESHOLD
         or contradicted_flip
@@ -185,13 +177,7 @@ def reflection_create_block_message(
 
 
 JSONValue: TypeAlias = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
+    str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 )
 GateItem: TypeAlias = dict[str, JSONValue]
 EvaluationStatus = Literal[
@@ -241,19 +227,11 @@ class GateEvaluation:
 
     @property
     def transition(self) -> str | None:
-        return (
-            None
-            if self.state is None
-            else self.state.forward.name
-        )
+        return None if self.state is None else self.state.forward.name
 
     @property
     def leads_to(self) -> str | None:
-        return (
-            None
-            if self.state is None
-            else self.state.forward.to_status
-        )
+        return None if self.state is None else self.state.forward.to_status
 
     @property
     def terminal(self) -> bool:
@@ -284,18 +262,10 @@ class GateEvaluation:
 
     @property
     def ready(self) -> bool:
-        return (
-            self.terminal
-            if self.transition is None
-            else self.blocker is None
-        )
+        return self.terminal if self.transition is None else self.blocker is None
 
     def checklist(self) -> dict[str, JSONValue]:
-        items = [
-            dict(item)
-            for gate in self.requirements
-            for item in gate.items
-        ]
+        items = [dict(item) for gate in self.requirements for item in gate.items]
         if self.review is not None:
             items.extend(dict(item) for item in self.review.items)
         return {
@@ -321,9 +291,7 @@ class GateEvaluation:
             None,
         )
         if selected is None:
-            options = ", ".join(
-                item["transition"] for item in self.legal_transitions
-            )
+            options = ", ".join(item["transition"] for item in self.legal_transitions)
             raise WorkflowError(
                 f"transition {transition!r} is not allowed from "
                 f"{self.status!r}; allowed from here: {options}"
@@ -348,19 +316,9 @@ def evaluate_artifact_requirement(
     status: EvaluationStatus = (
         "missing"
         if not present
-        else "invalid"
-        if problems
-        else "valid"
-        if requirement.validator
-        else "present"
+        else "invalid" if problems else "valid" if requirement.validator else "present"
     )
-    error = (
-        requirement.error
-        if not present
-        else problems[0]
-        if problems
-        else ""
-    )
+    error = requirement.error if not present else problems[0] if problems else ""
     item: GateItem = {
         "id": f"artifact:{requirement.role}",
         "kind": "artifact",
@@ -376,9 +334,7 @@ def evaluate_artifact_requirement(
     if artifact_fields is not None:
         item.update(artifact_fields)
     if not present:
-        item["missing"] = (
-            requirement.missing or f"{requirement.role} artifact"
-        )
+        item["missing"] = requirement.missing or f"{requirement.role} artifact"
     if problems:
         item["problems"] = list(problems)
     return RequirementEvaluation(
@@ -387,9 +343,7 @@ def evaluate_artifact_requirement(
         blocker_code=(
             requirement.gate or f"{requirement.role}_missing"
             if not present
-            else f"{requirement.role}_invalid"
-            if problems
-            else ""
+            else f"{requirement.role}_invalid" if problems else ""
         ),
         enforcement_error=error,
         problems=problems,
@@ -404,9 +358,7 @@ def evaluate_review_gate(
     target: dict[str, Any],
     review: ReviewGate,
 ) -> RequirementEvaluation:
-    snapshot_id = review_snapshot_id(
-        target_type=target_type, target=target
-    )
+    snapshot_id = review_snapshot_id(target_type=target_type, target=target)
     passes = conn.execute(
         """
         SELECT s.independence FROM reviews r
@@ -423,14 +375,13 @@ def evaluate_review_gate(
         ),
     ).fetchall()
     verified = any(
-        str(row["independence"]) == "verified_agent_review"
-        for row in passes
+        str(row["independence"]) == "verified_agent_review" for row in passes
     )
     strict = bool(
         passes
-        and project_settings(
-            conn=conn, project_id=str(target["project_id"])
-        ).get("require_verified_reviews")
+        and project_settings(conn=conn, project_id=str(target["project_id"])).get(
+            "require_verified_reviews"
+        )
     )
     passed = bool(passes) and (verified or not strict)
     row = conn.execute(
@@ -453,10 +404,7 @@ def evaluate_review_gate(
     review_status = "pending"
     if passed:
         review_status = "passed"
-    elif (
-        request is not None
-        and request.get("status") in {"requested", "started"}
-    ):
+    elif request is not None and request.get("status") in {"requested", "started"}:
         review_status = str(request["status"])
     blocked_reason = (
         f"a {review.role} review passed but its independence is only attested "
@@ -476,11 +424,7 @@ def evaluate_review_gate(
         "satisfied": bool(passed),
         "status": review_status,
         "gate": str(target["status"]),
-        "action": (
-            review.pass_action
-            if passed
-            else f"launch_{review.action_name}er"
-        ),
+        "action": (review.pass_action if passed else f"launch_{review.action_name}er"),
         "skill": review.skill,
     }
     if blocked_reason:
@@ -557,6 +501,7 @@ def validate_experiment_name(name: str) -> str:
         )
     return name
 
+
 def parse_project_settings(raw: Any) -> dict[str, Any]:
     try:
         settings = json.loads(str(raw or "{}"))
@@ -579,15 +524,18 @@ def review_snapshot_id(*, target_type: str, target: dict[str, Any]) -> str:
         f"{artifact.get('attempt_index', 0)}"
         for artifact in target.get("current_attempt_artifacts", [])
     ]
-    return "|".join(
-        [
-            target_type,
-            target["id"],
-            target["status"],
-            str(target["attempt_index"]),
-            ",".join(sorted(artifact_tokens)),
-        ]
-    )
+    parts = [
+        target_type,
+        target["id"],
+        target["status"],
+        str(target["attempt_index"]),
+        ",".join(sorted(artifact_tokens)),
+    ]
+    snapshot_token = str(target.get("snapshot_token") or "")
+    code_sha = str(target.get("code_sha") or "")
+    if snapshot_token or code_sha:
+        parts.extend((snapshot_token, code_sha))
+    return "|".join(parts)
 
 
 def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
@@ -598,7 +546,7 @@ def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
             "target_id": target_id,
             "artifacts": [],
         }
-    parts = snapshot_id.split("|", 4)
+    parts = snapshot_id.split("|", 6)
     artifacts = []
     for token in (parts[4].split(",") if len(parts) > 4 and parts[4] else []):
         try:
@@ -619,6 +567,8 @@ def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
         "status": parts[2] if len(parts) > 2 else "",
         "attempt_index": _int_or_zero(parts[3]) if len(parts) > 3 else 0,
         "artifacts": artifacts,
+        "snapshot_token": parts[5] if len(parts) > 5 else "",
+        "code_sha": parts[6] if len(parts) > 6 else "",
     }
 
 
@@ -648,15 +598,24 @@ def revision_context_for_review_return(
         pieces.append(notes)
     if finding_text:
         pieces.append(f"Findings: {finding_text}")
-    pieces.append(
-        "Consider revising the project graph, reflection doc, and/or change "
-        "spec where this review changes the project's story; the 16-node "
-        "graph budget still applies"
-        if target_type == "reflection"
-        else "Consider updating the experiment's logic graph (role 'graph') "
-        "if this review changes the experiment's story; the 16-node graph "
-        "budget still applies"
-    )
+    if role == "consolidation_reviewer":
+        pieces.append(
+            "Revise only the code proposal, validation, or per-experiment "
+            "integration decisions. The approved reflection is authoritative "
+            "and cannot be reopened here"
+        )
+    elif target_type == "reflection":
+        pieces.append(
+            "Consider revising the project graph, reflection doc, and/or "
+            "change spec where this review changes the project's story; the "
+            "16-node graph budget still applies"
+        )
+    else:
+        pieces.append(
+            "Consider updating the experiment's logic graph (role 'graph') "
+            "if this review changes the experiment's story; the 16-node graph "
+            "budget still applies"
+        )
     return " | ".join(pieces)
 
 

@@ -251,6 +251,7 @@ class CleanupSweepTest(unittest.TestCase):
             "stale_provisions_reaped": 0,
             "tool_calls_pruned": skipped,
             "oauth_clients_pruned": skipped,
+            "agent_sessions_expired": 0,
         })
 
     # ---- tool-call ledger retention ----

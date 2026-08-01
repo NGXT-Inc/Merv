@@ -1,19 +1,19 @@
 # Client Support
 
-The plugin targets seven agentic clients from one canonical content tree.
+The plugin targets eight agentic clients from one canonical content tree.
 Everything heavy — state, gates, capability-based reviews, sandbox
 provisioning — lives in the client-neutral brain service (localhost
 `merv-http`, or the hosted brain). Every client — local Claude Code, cloud
-Codex, Cursor, Gemini CLI, OpenCode, OpenHands, and Replit Agent — connects
-directly to the brain's `POST /mcp` endpoint. Bundled clients authenticate with
-a project-scoped key sent as `Authorization: Bearer <key>` from
-`MERV_MCP_KEY`; browser-configured clients may instead use the hosted OAuth
-flow or a pasted key. A key is scoped to one project or to the owner's whole
-account. Agents start with `project(action="list")`; a project-scoped key may
-also use `project(action="current")`. They pass the selected id explicitly, and
-the gateway rejects ids outside the credential's scope. Agents never send a
-checkout root. Each client gets a thin adapter on top of the same `bin/`,
-`skills/`, and `agents/` content:
+Codex, Cursor, Gemini CLI, OpenCode, Hermes Agent, OpenHands, and Replit Agent
+— connects directly to the brain's `POST /mcp` endpoint. Bundled clients
+authenticate with a project-scoped key sent as `Authorization: Bearer <key>`
+from `MERV_MCP_KEY`; browser-configured clients may instead use the hosted
+OAuth flow or a pasted key. A key is scoped to one project or to the owner's
+whole account. Agents start with `project(action="list")`; a project-scoped
+key may also use `project(action="current")`. They pass the selected id
+explicitly, and the gateway rejects ids outside the credential's scope. Agents
+never send a checkout root. Each client gets a thin adapter on top of the same
+`bin/`, `skills/`, and `agents/` content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
 |---|---|---|---|---|
@@ -22,6 +22,7 @@ checkout root. Each client gets a thin adapter on top of the same `bin/`,
 | Cursor | `.cursor-plugin/plugin.json` + `mcp.json` | http server → `<base>/mcp` (same header) | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
 | Gemini CLI | `gemini-extension.json` + `GEMINI.md` | http server → `<base>/mcp` (same header) | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
 | OpenCode | `clients/opencode/` (installer + agents + config example) | `opencode.json` `mcp` block → `<base>/mcp` (same header) | symlinked into `~/.config/opencode/skills/` | symlinked into `~/.config/opencode/agents/` |
+| Hermes Agent | `clients/hermes/` (installer + guide) | `config.yaml` `mcp_servers` entry → `<base>/mcp` (bearer header or OAuth) | `skills.external_dirs`, or POSIX installer symlinks | `delegate_task` with the handoff prompt |
 | OpenHands | `AGENTS.md` + `clients/openhands/README.md` | local `config.toml` / CLI, or Cloud **Settings → MCP** | root `AGENTS.md`; optional repo skill directories at `.agents/skills/<name>/SKILL.md` | none; second session/agent or inline |
 | Replit Agent | `clients/replit/README.md` | account **MCP Servers** settings → `<base>/mcp` | no Merv skills installed by the connection | none; second session/agent or inline |
 
@@ -51,11 +52,12 @@ Shared invariants across all clients:
   rely on the machine's `curl`, OpenSSH client, and `rsync`.
 - Skills follow the cross-tool Agent Skills layout (`skills/<name>/SKILL.md`
   with `name` + `description` frontmatter), which Claude Code, Codex, Cursor,
-  Gemini CLI, and OpenCode all read natively. OpenHands loads repository skill
-  directories at `.agents/skills/<name>/SKILL.md` as on-demand AgentSkills
-  (keyword activation needs explicit `triggers` frontmatter, which Merv's
-  canonical skills do not carry); copy the relevant skill directories into that
-  layout when needed. Replit's account connection does not install Merv skills.
+  Gemini CLI, OpenCode, and Hermes Agent all read natively. OpenHands loads
+  repository skill directories at `.agents/skills/<name>/SKILL.md` as on-demand
+  AgentSkills (keyword activation needs explicit `triggers` frontmatter, which
+  Merv's canonical skills do not carry); copy the relevant skill directories
+  into that layout when needed. Replit's account connection does not install
+  Merv skills.
 - Shared agent files in `agents/` keep frontmatter to the common subset
   (`name`, `description`) so Claude Code, Cursor, and Gemini CLI can all load
   them. OpenCode needs `mode`/`permission` frontmatter, so it has its own thin
@@ -124,6 +126,9 @@ recipes — documentation only, nothing in core depends on them:
   `background_terminal_max_timeout` when holds outlast the default), or use a
   background terminal plus an empty `write_stdin` poll, which unblocks the
   instant the process exits.
+- **Hermes Agent**: start the watcher with the background terminal and
+  completion notification enabled. Its exit wakes the agent; then read
+  `sandbox.runs` for authoritative status and receipts.
 - **Kilo**: `background_process` with `ready.pattern` `^MERV_RUNS_WAIT `
   (block-until-sentinel).
 - **No-shell surfaces** (Claude Desktop and similar MCP-only clients): no
@@ -218,6 +223,9 @@ agent is spawned with that prompt:
   delegates automatically, or the user forces it with `@experiment-design-review`.
 - **OpenCode**: the main agent delegates via the task tool to the installed
   subagent (or the user @-mentions it, e.g. `@experiment-design-review`).
+- **Hermes Agent**: pass `reviewer_handoff.spawn_prompt` unchanged to a fresh
+  `delegate_task` child. Reflection lenses use `delegate_task(tasks=[...])`;
+  the default concurrency of three runs five lenses in two waves.
 - **OpenHands**: no reviewer-subagent auto-discovery; start a second session or
   agent with the matching review skill and handoff prompt, or follow it inline.
 - **Replit Agent**: no reviewer-subagent auto-discovery; start a second session
@@ -371,6 +379,38 @@ Notes:
   `verified_agent_review` status.
 - OpenCode also reads `.claude/skills/` and `CLAUDE.md` as compatibility
   fallbacks, so repos already set up for Claude Code degrade gracefully.
+
+## Use with Hermes Agent
+
+Hermes reads the standard Merv skill tree and connects to remote Streamable
+HTTP MCP servers from `config.yaml`. Prefer a read-only `skills.external_dirs`
+entry pointing at Merv's canonical `skills/` directory. On POSIX systems, the
+bundled installer can instead link those skills into the normal Hermes
+location; it also prints both supported MCP authentication forms:
+
+```bash
+./clients/hermes/install.sh
+```
+
+For bearer auth, export `MERV_MCP_KEY` and use a `mcp_servers.merv` entry whose
+header is `Authorization: "Bearer ${MERV_MCP_KEY}"`. For native OAuth, set
+`auth: oauth` instead and run `hermes mcp login merv`. Hermes prefixes MCP tool
+names, so `workflow.status_and_next` appears as
+`mcp_merv_workflow_status_and_next`.
+
+Hermes' `delegate_task` provides the separate child context needed by review
+gates and the five-lens reflection wave. Its scripted `hermes -z` mode is also
+available through the Merv agent runner:
+
+```bash
+merv-client agent hermes --enable --command hermes
+```
+
+Hermes currently has no per-run MCP configuration flag. Runner-owned sessions
+therefore use the session-scoped `merv-client call` bridge named in their
+instruction; normal interactive Hermes sessions still use native MCP. See
+[`clients/hermes/README.md`](../clients/hermes/README.md) for the full config,
+review handoff, watcher, and runner details.
 
 ## Use with OpenHands
 

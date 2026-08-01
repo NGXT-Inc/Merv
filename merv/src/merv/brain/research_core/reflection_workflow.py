@@ -7,6 +7,7 @@ from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_R
 
 from .workflow_schema import (
     ArtifactNeed,
+    RecordNeed,
     ReviewGate,
     ReviewReturn,
     State,
@@ -82,10 +83,21 @@ RETURN_TO_SYNTHESIZING = ReviewReturn(
         "spec) and resubmit"
     ),
 )
-
-REFLECTION_RETURN_ERROR = (
-    "return_to must be 'reflecting' or 'synthesizing' for reflection reviews"
+RETURN_TO_CONSOLIDATING = ReviewReturn(
+    to_status="consolidating",
+    attempt="same",
+    event_type="reflection.consolidation_returned",
+    choose_when=(
+        "The proposed code or its validation needs revision. The reviewed "
+        "reflection remains authoritative."
+    ),
+    revision=(
+        "Returned to consolidation: revise only the code proposal and submit "
+        "it for another independent consolidation review"
+    ),
 )
+
+REFLECTION_RETURN_ERROR = "return_to must match the active reflection review gate"
 
 
 REFLECTION_WORKFLOW = Workflow(
@@ -206,9 +218,9 @@ REFLECTION_WORKFLOW = Workflow(
                     "valid JSON DAG of at most 16 nodes), a concise reflection "
                     "document (role 'reflection_doc'), AND a machine-actionable "
                     "change spec (role 'change_spec') must be submitted to this "
-                    "reflection wave for the current attempt; after approval, "
-                    "publish applies the claim changes and creates the next "
-                    "experiment wave"
+                    "reflection wave for the current attempt; after reflection "
+                    "approval, separate code consolidation and review must "
+                    "finish before publication applies the change spec"
                 ),
                 gate="reflection_review_required",
                 action=(
@@ -227,11 +239,11 @@ REFLECTION_WORKFLOW = Workflow(
             name="reflection_review",
             review=ReviewGate(
                 role="reflection_reviewer",
-                error="reflection review must pass before publish",
+                error="reflection review must pass before code consolidation",
                 blocker_code="reflection_review_required",
                 label="Reflection review passed",
                 skill="project-reflection-review",
-                pass_action="publish_reflection",
+                pass_action="begin_consolidation",
                 returns=(RETURN_TO_REFLECTING, RETURN_TO_SYNTHESIZING),
                 return_choice_required=True,
                 return_required_error=(
@@ -243,11 +255,75 @@ REFLECTION_WORKFLOW = Workflow(
                 ),
             ),
             forward=Transition(
+                name="begin_consolidation",
+                to_status="consolidating",
+                requires_prose="a passing reflection_reviewer review",
+                action="begin_consolidation",
+                tools=("reflection.transition",),
+            ),
+        ),
+        State(
+            name="consolidating",
+            requirements=(
+                RecordNeed(
+                    name="consolidation_proposal",
+                    error=(
+                        "the consolidation agent must submit one proposal that "
+                        "accounts for every experiment in the reflection corpus"
+                    ),
+                    gate="consolidation_proposal_required",
+                    action="submit_consolidation_proposal",
+                    tools=("consolidation.submit",),
+                    label="Every experiment reviewed for consolidation",
+                    missing="a complete consolidation proposal",
+                ),
+                RecordNeed(
+                    name="central_advance",
+                    error=(
+                        "the Merv runner must bind the reviewed proposal to the "
+                        "central Git ref before the reflection can publish"
+                    ),
+                    gate="central_advance_required",
+                    action="wait_for_central_advance",
+                    tools=(),
+                    label="Reviewed proposal bound to central",
+                    missing="the runner's central-advance receipt",
+                ),
+            ),
+            review=ReviewGate(
+                role="consolidation_reviewer",
+                error="consolidation review must pass before central can advance",
+                blocker_code="consolidation_review_required",
+                label="Consolidation code review passed",
+                skill="consolidation-review",
+                pass_action="advance_central",
+                returns=(RETURN_TO_CONSOLIDATING,),
+                return_choice_required=True,
+                return_required_error=(
+                    "consolidation-review rejections must set return_to: "
+                    "'consolidating'; the authoritative reflection cannot be "
+                    "reopened from code consolidation"
+                ),
+                forbidden_returns=(
+                    (
+                        "reflecting",
+                        "consolidation cannot reopen the authoritative reflection",
+                    ),
+                    (
+                        "synthesizing",
+                        "consolidation cannot reopen the authoritative reflection",
+                    ),
+                ),
+            ),
+            forward=Transition(
                 name="publish",
                 to_status="published",
-                requires_prose="a passing reflection_reviewer review",
+                requires_prose=(
+                    "a passing consolidation review and a durable runner receipt "
+                    "binding the exact proposal SHA to central"
+                ),
                 action="publish_reflection",
-                tools=("reflection.transition",),
+                tools=(),
                 effects=("materialize_change_spec", "pin_project_graph"),
             ),
         ),

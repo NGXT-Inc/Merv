@@ -4,7 +4,8 @@ description: >-
   Run a Merv project-reflection wave across completed experiments: create the
   five-lens roster, fan out independent lens agents, reconcile their findings
   into the project graph, reflection document, and change spec, coordinate
-  independent review, and publish. Use when the user requests reflection or
+  independent review, and hand approved research to code consolidation. Use
+  when the user requests reflection or
   workflow.status_and_next reports stale project knowledge or a reflection
   gate.
 ---
@@ -18,7 +19,7 @@ let each lens agent author and submit its own reflection.
 ## Follow the reflection state machine
 
 ```text
-create → reflecting → synthesizing → reflection review → published
+create → reflecting → synthesizing → reflection review → consolidating
             ↑              ↑                 │
             └──────────────┴─────────────────┘
 ```
@@ -114,12 +115,16 @@ it off and do not supersede a valid request merely because review has started.
 
 After review:
 
-- On `pass`, publish through `reflection.transition`. Publication pins the
-  graph, applies approved claim changes, and creates the approved experiments.
+- On `pass`, call the `begin_consolidation` reflection transition and stop.
+  Merv dispatches a separate consolidator, then a separate
+  `consolidation-review` agent. Only after that review passes does the runner
+  advance the Merv-owned central Git ref and publish. Do not consolidate code,
+  review the consolidation, or call `publish` from this reflection session.
 - On return to `synthesizing`, revise only the rejected synthesis artifacts,
   resubmit them, and request a new review.
 - On return to `reflecting`, launch all five lens agents again for the new
   attempt, addressing the review's criticism.
 
-Call `workflow.status_and_next` after publication and orient future work from
-the newly created experiment records.
+The reflection is authoritative once its review passes. Consolidation may
+select, adapt, supersede, or omit experiment code, but it cannot return to this
+wave or revise its graph, reflection document, or change spec.

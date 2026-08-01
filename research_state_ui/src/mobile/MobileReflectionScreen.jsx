@@ -7,6 +7,7 @@ import ReviewCard from '../components/ReviewCard';
 import GraphOutline from './GraphOutline';
 import { normalizeLogic, makeLogicDetail } from './graphModel';
 import { TERMINAL_WAVE, reflectionsByLens, secondaryDocs, resolveReflectionDoc } from '../components/reflection/waveModel';
+import ConsolidationLedger from '../components/reflection/ConsolidationLedger';
 
 const GraphCanvasOverlay = lazy(() => import('./GraphCanvasOverlay'));
 
@@ -27,6 +28,7 @@ const WAVE_DOT = {
   published: 'var(--supports)',
   abandoned: 'var(--faint)',
   reflection_review: 'var(--qualifies)',
+  consolidating: 'var(--qualifies)',
 };
 
 function shortDate(iso) {
@@ -183,6 +185,18 @@ export default function MobileReflectionScreen() {
               />
             ))}
           </div>
+        </section>
+      )}
+
+      {/* 4 — what happened to the code after the authoritative reflection */}
+      {wave && (
+        <section className="section">
+          <ConsolidationLedger
+            key={`cons-${selectedId}`}
+            projectId={projectId}
+            reflectionId={wave.id}
+            waveStatus={wave.status}
+          />
         </section>
       )}
 

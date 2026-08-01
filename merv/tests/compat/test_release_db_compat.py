@@ -152,13 +152,28 @@ class ReleaseDatabaseCompatibilityTest(unittest.TestCase):
             self.assertEqual(release_schema_before, EXPECTED_SCHEMA_SHA256)
 
             store = StateStore(db_path=release_db)
-            self.assertEqual(_schema_sha256(release_db), release_schema_before)
-            self.assertEqual(_data_snapshot(release_db), data_before)
+            migrated_data = _data_snapshot(release_db)
+            for table, rows in data_before.items():
+                if table != "schema_migrations":
+                    self.assertEqual(migrated_data[table], rows)
+            self.assertEqual(migrated_data["agent_sessions"], [])
+            for table in (
+                "experiment_workspaces",
+                "consolidation_proposals",
+                "consolidation_decisions",
+                "reflection_advances",
+            ):
+                self.assertEqual(migrated_data[table], [])
+            self.assertIn(
+                42,
+                [int(row[0]) for row in migrated_data["schema_migrations"]],
+            )
             install_feed_schema(store)
             composed_schema = _schema_sha256(release_db)
             composed_data = _data_snapshot(release_db)
             for table, rows in data_before.items():
-                self.assertEqual(composed_data[table], rows)
+                if table != "schema_migrations":
+                    self.assertEqual(composed_data[table], rows)
 
             reopened = StateStore(db_path=release_db)
             install_feed_schema(reopened)
@@ -263,7 +278,7 @@ class ReleaseDatabaseCompatibilityTest(unittest.TestCase):
                 latest_migration = conn.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(latest_migration, 40)
+                self.assertEqual(latest_migration, 42)
             finally:
                 conn.close()
 

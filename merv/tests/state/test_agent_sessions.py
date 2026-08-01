@@ -1,0 +1,427 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from merv.brain.agent_sessions import AgentSessions
+from merv.brain.kernel.secret_tokens import hash_secret
+from merv.brain.kernel.state import StateStore
+from merv.brain.kernel.utils import PermissionDeniedError, ValidationError, now_iso
+
+
+class AgentSessionsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = StateStore(db_path=Path(self.temp.name) / "state.sqlite")
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                INSERT INTO projects (id, name, created_at)
+                VALUES ('proj_1', 'Project', ?)
+                """,
+                (now_iso(),),
+            )
+            tx.execute(
+                """
+                INSERT INTO experiments (
+                  id, project_id, name, intent, status, attempt_index,
+                  created_at, updated_at
+                )
+                VALUES ('exp_1', 'proj_1', 'Experiment', 'Test it',
+                        'planned', 1, ?, ?)
+                """,
+                (now_iso(), now_iso()),
+            )
+        self.sessions = AgentSessions(
+            store=self.store,
+            terminal_experiment_statuses={"complete", "inconclusive", "failed"},
+        )
+        self.candidate = {
+            "id": "exp_1",
+            "status": "planned",
+            "attempt_index": 1,
+            "kind": "experiment",
+        }
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    @staticmethod
+    def secret(suffix: str) -> str:
+        return "mas_" + suffix * 43
+
+    def claim(self, *, runner: str = "runner", key: str = "retry"):
+        return self.sessions.claim(
+            project_id="proj_1",
+            candidates=[self.candidate],
+            runner_id=runner,
+            platform="codex",
+            idempotency_key=key,
+            session_secret=self.secret(runner[0]),
+        )
+
+    def test_claim_is_idempotent_and_one_live_owner_is_database_enforced(self) -> None:
+        first = self.claim()
+        repeated = self.claim()
+        blocked = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[self.candidate],
+            runner_id="other",
+            platform="claude",
+            idempotency_key="other-retry",
+            session_secret=self.secret("z"),
+        )
+
+        self.assertEqual(repeated["id"], first["id"])
+        self.assertIsNone(blocked)
+        with self.assertRaises(PermissionDeniedError):
+            self.sessions.claim(
+                project_id="proj_1",
+                candidates=[self.candidate],
+                runner_id="runner",
+                platform="codex",
+                idempotency_key="retry",
+                session_secret=self.secret("x"),
+            )
+
+    def test_concurrent_claims_start_only_one_owner(self) -> None:
+        def attempt(index: int):
+            return self.sessions.claim(
+                project_id="proj_1",
+                candidates=[self.candidate],
+                runner_id=f"runner-{index}",
+                platform="codex",
+                idempotency_key=f"retry-{index}",
+                session_secret=self.secret(str(index + 1)),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, range(2)))
+        self.assertEqual(sum(result is not None for result in results), 1)
+
+    def test_first_use_activates_and_attempt_change_revokes(self) -> None:
+        session = self.claim()
+        authenticated = self.sessions.authenticate(session_secret=self.secret("r"))
+        self.assertEqual(authenticated["status"], "active")
+        self.assertEqual(authenticated["attempt_index"], 1)
+
+        with self.store.transaction() as tx:
+            tx.execute("UPDATE experiments SET attempt_index = 2 WHERE id = 'exp_1'")
+        self.assertIsNone(self.sessions.authenticate(session_secret=self.secret("r")))
+        closed = self.sessions.list(project_id="proj_1")["sessions"][0]
+        self.assertEqual(closed["status"], "expired")
+        self.assertEqual(closed["close_reason"], "experiment_attempt_changed")
+        self.assertEqual(closed["id"], session["id"])
+
+    def test_independent_reviewer_can_coexist_with_experiment_owner(self) -> None:
+        owner = self.claim()
+        self.sessions.authenticate(session_secret=self.secret("r"))
+        self.sessions.attach(
+            session_id=owner["id"],
+            runner_id="runner",
+            host_session_ref="pid:1:birth",
+            workspace_ref="merv/experiments/proj_1/exp_1",
+            base_sha="1" * 40,
+            head_sha="2" * 40,
+        )
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                INSERT INTO review_requests (
+                  id, project_id, target_type, target_id, role, reason,
+                  capability_hash, status, target_snapshot_id,
+                  producer_session_id, expires_at, created_at, created_seq
+                )
+                VALUES (
+                  'rr_1', 'proj_1', 'experiment', 'exp_1',
+                  'design_reviewer', '', ?, 'requested', 'snapshot',
+                  ?, '2999-01-01T00:00:00Z', ?, 1
+                )
+                """,
+                (hash_secret("rp_capability"), owner["id"], now_iso()),
+            )
+        reviewer = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[
+                {
+                    **self.candidate,
+                    "kind": "review",
+                    "review_request_id": "rr_1",
+                }
+            ],
+            runner_id="review-runner",
+            platform="claude",
+            idempotency_key="review-retry",
+            session_secret=self.secret("v"),
+        )
+        self.sessions.authenticate(session_secret=self.secret("v"))
+        self.sessions.attach(
+            session_id=reviewer["id"],
+            runner_id="review-runner",
+            host_session_ref="pid:2:birth",
+            workspace_ref="merv/reviews/rr_1",
+            base_sha="3" * 40,
+            head_sha="4" * 40,
+        )
+
+        self.assertEqual(reviewer["kind"], "review")
+        self.assertEqual(reviewer["review_request_id"], "rr_1")
+        workspace = self.sessions.workspaces(
+            project_id="proj_1", experiment_ids=("exp_1",)
+        )["exp_1"]
+        self.assertEqual(
+            (workspace["branch"], workspace["base_sha"], workspace["head_sha"]),
+            (
+                "merv/experiments/proj_1/exp_1",
+                "1" * 40,
+                "2" * 40,
+            ),
+        )
+        self.assertEqual(
+            {
+                item["kind"]
+                for item in self.sessions.list(project_id="proj_1")["sessions"]
+            },
+            {"experiment", "review"},
+        )
+        with self.store.transaction() as tx:
+            tx.execute(
+                "UPDATE review_requests SET status = 'started' WHERE id = 'rr_1'"
+            )
+        self.sessions.release(
+            session_id=reviewer["id"],
+            runner_id="review-runner",
+            reason="reviewer_process_stopped",
+            head_sha="5" * 40,
+        )
+        replacement = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[
+                {
+                    **self.candidate,
+                    "kind": "review",
+                    "review_request_id": "rr_1",
+                }
+            ],
+            runner_id="replacement-reviewer",
+            platform="codex",
+            idempotency_key="replacement-review",
+            session_secret=self.secret("w"),
+        )
+        self.assertEqual(replacement["review_request_id"], "rr_1")
+
+    def test_failed_review_backoff_does_not_delay_a_new_review_request(self) -> None:
+        with self.store.transaction() as tx:
+            for index in (1, 2):
+                tx.execute(
+                    """
+                    INSERT INTO review_requests (
+                      id, project_id, target_type, target_id, role, reason,
+                      capability_hash, status, target_snapshot_id,
+                      producer_session_id, expires_at, created_at, created_seq
+                    )
+                    VALUES (
+                      ?, 'proj_1', 'experiment', 'exp_1',
+                      'design_reviewer', '', ?, 'requested', 'snapshot',
+                      'producer', '2999-01-01T00:00:00Z', ?, ?
+                    )
+                    """,
+                    (
+                        f"rr_{index}",
+                        hash_secret(f"rp_capability_{index}"),
+                        now_iso(),
+                        index,
+                    ),
+                )
+        failed = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[
+                {
+                    **self.candidate,
+                    "kind": "review",
+                    "review_request_id": "rr_1",
+                }
+            ],
+            runner_id="failed-reviewer",
+            platform="codex",
+            idempotency_key="failed-review",
+            session_secret=self.secret("f"),
+        )
+        self.sessions.release(
+            session_id=failed["id"],
+            runner_id="failed-reviewer",
+            reason="host_process_stopped",
+        )
+
+        replacement = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[
+                {
+                    **self.candidate,
+                    "kind": "review",
+                    "review_request_id": "rr_2",
+                }
+            ],
+            runner_id="new-reviewer",
+            platform="codex",
+            idempotency_key="new-review",
+            session_secret=self.secret("n"),
+        )
+
+        self.assertEqual(replacement["review_request_id"], "rr_2")
+
+    def test_attach_is_one_time_and_heartbeat_keeps_the_same_host(self) -> None:
+        session = self.claim()
+        attached = self.sessions.attach(
+            session_id=session["id"],
+            runner_id="runner",
+            host_session_ref="pid:1:birth",
+            workspace_ref="merv/proj_1/exp_1/ags_1",
+        )
+        repeated = self.sessions.attach(
+            session_id=session["id"],
+            runner_id="runner",
+            host_session_ref="pid:1:birth",
+            workspace_ref="merv/proj_1/exp_1/ags_1",
+        )
+        self.sessions.authenticate(session_secret=self.secret("r"))
+        self.sessions.heartbeat(session_id=session["id"], runner_id="runner")
+
+        self.assertEqual(attached["host_session_ref"], "pid:1:birth")
+        self.assertEqual(repeated["host_session_ref"], "pid:1:birth")
+        self.assertEqual(repeated["workspace_ref"], "merv/proj_1/exp_1/ags_1")
+
+    def test_heartbeat_rejects_an_offer_until_the_agent_authenticates(self) -> None:
+        session = self.claim()
+
+        with self.assertRaisesRegex(ValidationError, "offered, not active"):
+            self.sessions.heartbeat(
+                session_id=session["id"],
+                runner_id="runner",
+            )
+
+        current = self.sessions.list(project_id="proj_1")["sessions"][0]
+        self.assertEqual(current["status"], "offered")
+
+    def test_heartbeat_expires_a_due_session_before_renewing_it(self) -> None:
+        session = self.claim()
+        self.sessions.authenticate(session_secret=self.secret("r"))
+        with self.store.transaction() as tx:
+            tx.execute(
+                """
+                UPDATE agent_sessions
+                SET lease_expires_at = '2000-01-01T00:00:00Z'
+                WHERE id = ?
+                """,
+                (session["id"],),
+            )
+
+        with self.assertRaisesRegex(ValidationError, "expired, not live"):
+            self.sessions.heartbeat(
+                session_id=session["id"],
+                runner_id="runner",
+            )
+
+        current = self.sessions.list(project_id="proj_1")["sessions"][0]
+        self.assertEqual(current["status"], "expired")
+        self.assertEqual(current["close_reason"], "lease_expired")
+
+    def test_failed_launch_backoff_skips_only_the_same_platform_task(self) -> None:
+        reasons = (
+            "workspace_failed",
+            "launch_failed",
+            "host_process_crash_loop",
+        )
+        with self.store.transaction() as tx:
+            for index in range(len(reasons)):
+                for label in ("bad", "later"):
+                    tx.execute(
+                        """
+                        INSERT INTO experiments (
+                          id, project_id, name, intent, status, attempt_index,
+                          created_at, updated_at
+                        )
+                        VALUES (?, 'proj_1', ?, 'Test dispatch recovery',
+                                'planned', 1, ?, ?)
+                        """,
+                        (
+                            f"exp_{label}_{index}",
+                            f"{label.title()} {index}",
+                            now_iso(),
+                            now_iso(),
+                        ),
+                    )
+
+        for index, reason in enumerate(reasons):
+            with self.subTest(reason=reason):
+                bad = {
+                    **self.candidate,
+                    "id": f"exp_bad_{index}",
+                }
+                later = {
+                    **self.candidate,
+                    "id": f"exp_later_{index}",
+                }
+                failed = self.sessions.claim(
+                    project_id="proj_1",
+                    candidates=[bad],
+                    runner_id=f"failed-{index}",
+                    platform="codex",
+                    idempotency_key=f"failed-{index}",
+                    session_secret=self.secret(f"f{index}"),
+                )
+                self.sessions.release(
+                    session_id=failed["id"],
+                    runner_id=f"failed-{index}",
+                    reason=reason,
+                )
+
+                fallback = self.sessions.claim(
+                    project_id="proj_1",
+                    candidates=[bad, later],
+                    runner_id=f"fallback-{index}",
+                    platform="codex",
+                    idempotency_key=f"fallback-{index}",
+                    session_secret=self.secret(f"b{index}"),
+                )
+                self.assertEqual(fallback["target_id"], later["id"])
+                self.sessions.release(
+                    session_id=fallback["id"],
+                    runner_id=f"fallback-{index}",
+                )
+
+                other_platform = self.sessions.claim(
+                    project_id="proj_1",
+                    candidates=[bad],
+                    runner_id=f"other-{index}",
+                    platform="claude",
+                    idempotency_key=f"other-{index}",
+                    session_secret=self.secret(f"o{index}"),
+                )
+                self.assertEqual(other_platform["target_id"], bad["id"])
+                self.sessions.release(
+                    session_id=other_platform["id"],
+                    runner_id=f"other-{index}",
+                )
+
+    def test_normal_agent_exit_can_resume_the_same_experiment_immediately(self) -> None:
+        first = self.claim()
+        self.sessions.release(
+            session_id=first["id"],
+            runner_id="runner",
+            reason="host_process_stopped",
+        )
+
+        resumed = self.sessions.claim(
+            project_id="proj_1",
+            candidates=[self.candidate],
+            runner_id="replacement",
+            platform="codex",
+            idempotency_key="replacement",
+            session_secret=self.secret("q"),
+        )
+
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed["target_id"], "exp_1")

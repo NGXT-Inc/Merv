@@ -45,7 +45,7 @@ is also blocked when project-level reflection has become mandatory.
 ## Reflection workflow
 
 ```text
-reflecting -> synthesizing -> reflection_review -> published
+reflecting -> synthesizing -> reflection_review -> consolidating -> published
     ^               ^                |
     |               +----------------+  return_to=synthesizing
     +--------------------------------+  return_to=reflecting
@@ -63,9 +63,12 @@ One reflection wave may be open per project. Its gates are:
 4. **Reflection review** — a passing independent review pinned to that exact
    synthesis.
 
-Publishing is atomic: it records the graph version, applies approved claim
-changes, creates the approved experiment wave, records the event, and marks the
-reflection published. Rejected or abandoned waves change no project beliefs.
+Passing reflection review makes the research decision authoritative and enters
+code consolidation. One immutable proposal must account for every experiment;
+a separate `consolidation_reviewer` checks it. The runner then
+compare-and-swaps the exact proposal into Merv's central Git ref. Publishing is
+atomic only after that receipt: it records the graph version, applies approved
+claim changes, creates the approved experiment wave, and records the event.
 
 A rejection to `synthesizing` retains the lens work. A rejection to
 `reflecting` advances the attempt and repeats the fan-out.
@@ -89,8 +92,8 @@ project reflection signal alongside it.
 
 ## Review boundary
 
-The three workflow roles are `design_reviewer`, `experiment_reviewer`, and
-`reflection_reviewer`.
+The four workflow roles are `design_reviewer`, `experiment_reviewer`,
+`reflection_reviewer`, and `consolidation_reviewer`.
 
 1. The producer calls `review.request`.
 2. Research Core pins the target snapshot and returns a short-lived capability

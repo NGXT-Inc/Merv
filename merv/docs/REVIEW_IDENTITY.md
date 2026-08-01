@@ -22,10 +22,11 @@ is workflow-level rather than cryptographic identity.
    review.request(project_id, target_type, target_id, role, reason?, producer_session_id?)
    ```
 
-3. For `design_reviewer`, `experiment_reviewer`, and `reflection_reviewer`, the
-   brain validates that the role matches the active gate. `human` and
-   `automated_check` are gate-exempt. The brain pins the target snapshot, hashes
-   a newly minted capability, and stores only that hash.
+3. For `design_reviewer`, `experiment_reviewer`, `reflection_reviewer`, and
+   `consolidation_reviewer`, the brain validates that the role matches the
+   active gate. `human` and `automated_check` are gate-exempt. The brain pins
+   the target snapshot, hashes a newly minted capability, and stores only that
+   hash.
 4. The response returns the plaintext capability once, together with
    `reviewer_handoff.spawn_prompt` containing the correct reviewer skill and
    target context.

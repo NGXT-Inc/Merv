@@ -39,6 +39,7 @@ from merv.brain.object_storage.blobs import LocalDirBlobStore
 from merv.brain.sandbox.keys import MountedMgmtKeyStore
 from merv.brain.kernel.utils import ValidationError
 from merv.brain.kernel.version import CLIENT_VERSION_HEADER
+from merv.shared.client_config import CLIENT_CONFIG_ENV_VAR
 
 
 def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:
@@ -64,6 +65,35 @@ def _open_control_env(root: Path) -> dict[str, str]:
 
 
 class SurfaceTest(unittest.TestCase):
+    def test_machine_setting_disables_sandbox_surface_and_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = root / "client.json"
+            settings.write_text(
+                '{"features": {"sandbox": false}}', encoding="utf-8"
+            )
+            backend = FakeSandboxBackend()
+            app = build_control_app(
+                repo_root=root,
+                env={
+                    **_mounted_mgmt_key_env(root),
+                    CLIENT_CONFIG_ENV_VAR: str(settings),
+                },
+                execution_backend=backend,
+            )
+            self.addCleanup(app.shutdown)
+
+            self.assertFalse(app.sandbox_enabled)
+            self.assertEqual(app.sandboxes.health(details=True)["backend"], "disabled")
+            self.assertFalse(
+                any(
+                    tool["name"].startswith("sandbox.")
+                    for tool in app.tools.list_tools()
+                )
+            )
+            client = TestClient(create_fastapi_app(app=app))
+            self.assertEqual(client.get("/api/sandboxes/health").status_code, 404)
+
     def test_surface_records_scoped_activity_without_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

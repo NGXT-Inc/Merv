@@ -6,6 +6,7 @@ import ArtifactContentView from './ArtifactContentView';
 import FSMStrip, { REFLECTION_STAGES, REFLECTION_GATES, REFLECTION_TERMINAL } from './FSMStrip';
 import WaveSelector from './reflection/WaveSelector';
 import LensReflectionCard from './reflection/LensReflectionCard';
+import ConsolidationLedger from './reflection/ConsolidationLedger';
 import { TERMINAL_WAVE, reflectionsByLens, secondaryDocs, resolveReflectionDoc } from './reflection/waveModel';
 
 /**
@@ -212,6 +213,16 @@ export default function ProjectReflectionPanel({ projectId }) {
             ))}
           </div>
         </div>
+      )}
+
+      {/* 4 — what happened to the code after the authoritative reflection */}
+      {wave && (
+        <ConsolidationLedger
+          key={`cons-${selectedId}`}
+          projectId={projectId}
+          reflectionId={wave.id}
+          waveStatus={wave.status}
+        />
       )}
 
       {/* secondary, quiet: change spec + other docs, then the review */}

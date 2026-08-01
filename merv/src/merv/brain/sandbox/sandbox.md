@@ -30,7 +30,8 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
 ## File map
 
 - `__init__.py`: public imports; `core.py`: application-facing operations and
-  wiring; `models.py`: protocol, request/target values, statuses, and fences.
+  wiring; `models.py`: protocol, request/target values, statuses, fences, and
+  the fail-closed backend used when composition disables Sandbox.
 - `storage.py`: scoped SQL, attachments, generations, events, and
   compare-and-set transitions.
 - `provisioning.py`: asynchronous acquire/cancel recovery; `lifecycle.py`:

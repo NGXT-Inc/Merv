@@ -199,6 +199,11 @@ export const api = {
   revokeProjectKey: (pid, keyId) =>
     request(`/api/projects/${encodeURIComponent(pid)}/keys/${encodeURIComponent(keyId)}/revoke`, { method: 'POST' }),
 
+  // Coding-agent sessions. Machine-local platform settings stay in
+  // ~/.merv/client.json; this read shows only agents that have claimed work.
+  listAgentSessions: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/agent-sessions`),
+
   // Claims
   createClaim: (pid, { statement, scope, confidence }) =>
     request(`/api/projects/${encodeURIComponent(pid)}/claims`, {
@@ -241,6 +246,11 @@ export const api = {
   // One wave, fully hydrated (deep-link / single-wave refresh).
   getReflection: (pid, synId, signal) =>
     request(`/api/projects/${encodeURIComponent(pid)}/reflections/${encodeURIComponent(synId)}`, { signal }),
+  // One wave's consolidation packet: per-experiment dispositions, independent
+  // review, and the runner's central-advance receipt with verified ancestry.
+  // Fetched lazily for the selected wave only — not part of the poll above.
+  getReflectionConsolidation: (pid, synId, signal) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/reflections/${encodeURIComponent(synId)}/consolidation`, { signal }),
   // The living project logic graph (same payload shape as the experiment one).
   getProjectLogicGraph: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/reflections/current/graph`),

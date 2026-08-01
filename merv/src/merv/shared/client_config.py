@@ -13,6 +13,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from .machine_dirs import resolve_machine_state_dir
 
@@ -79,6 +80,7 @@ def _warn(text: str) -> None:
 
 CLIENT_CONFIG_ENV_VAR = "MERV_CLIENT_CONFIG"
 CONTROL_URL_ENV_VAR = "MERV_CONTROL_URL"
+AGENT_SESSION_KEY_ENV_VAR = "MERV_AGENT_SESSION_KEY"
 # Brain URL defaults: unconfigured machines dial the hosted brain; local
 # deployments opt in via `merv-client configure` or the env var.
 HOSTED_CONTROL_URL = "https://experiments.rapidreview.io"
@@ -110,14 +112,15 @@ def resolve_client_control_url(
             **(env if env is not None else os.environ),
             CLIENT_CONFIG_ENV_VAR: str(config_path),
         }
+    configured = read_client_config(config_env).get("control_url")
     return (
         dual_env_value(CONTROL_URL_ENV_VAR, env)
-        or read_client_config(config_env).get("control_url")
+        or (configured if isinstance(configured, str) else "")
         or HOSTED_CONTROL_URL
     ).rstrip("/")
 
 
-def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     path = resolve_client_config_path(env)
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -125,4 +128,4 @@ def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {str(key): str(value) for key, value in parsed.items() if value is not None}
+    return {str(key): value for key, value in parsed.items() if value is not None}

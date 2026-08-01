@@ -23,6 +23,19 @@ class ArtifactNeed:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordNeed:
+    """One durable non-artifact fact required to leave a state."""
+
+    name: str
+    error: str
+    gate: str
+    action: str
+    tools: tuple[str, ...]
+    label: str = ""
+    missing: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewReturn:
     """A legal destination after a rejected review."""
 
@@ -79,7 +92,7 @@ class State:
 
     name: str
     forward: Transition
-    requirements: tuple[ArtifactNeed, ...] = ()
+    requirements: tuple[ArtifactNeed | RecordNeed, ...] = ()
     review: ReviewGate | None = None
     extras: tuple[Transition, ...] = ()
 
@@ -121,11 +134,12 @@ class Workflow:
 
     @property
     def transitions(self) -> tuple[Transition, ...]:
-        return tuple(
-            transition
-            for state in self.states
-            for transition in state.transitions
-        ) + self.global_exits
+        return (
+            tuple(
+                transition for state in self.states for transition in state.transitions
+            )
+            + self.global_exits
+        )
 
     @property
     def transition_names(self) -> tuple[str, ...]:
@@ -154,7 +168,7 @@ class Workflow:
                 requirement
                 for state in self.states
                 for requirement in state.requirements
-                if requirement.role == role
+                if isinstance(requirement, ArtifactNeed) and requirement.role == role
             ),
             None,
         )
@@ -209,11 +223,7 @@ class Workflow:
                 None,
             )
         return next(
-            (
-                route
-                for route in self.review_returns
-                if route.to_status == to_status
-            ),
+            (route for route in self.review_returns if route.to_status == to_status),
             None,
         )
 
@@ -228,6 +238,7 @@ class Workflow:
     @property
     def review_return_statuses(self) -> tuple[str, ...]:
         return tuple(route.to_status for route in self.review_returns)
+
 
 PASS_RETURN_TO_ERROR = (
     "return_to only applies when the verdict is needs_changes or fail"
@@ -316,10 +327,7 @@ def validate_workflow(workflow: Workflow) -> None:
             raise ValueError(f"{review.role!r} uses an undeclared review return")
         if review.return_choice_required and not review.return_required_error:
             raise ValueError(f"{review.role!r} needs a return-choice error")
-    review_roles = [
-        review.role
-        for review in reviews
-    ]
+    review_roles = [review.role for review in reviews]
     if len(review_roles) != len(set(review_roles)):
         raise ValueError(f"{workflow.target_type} has duplicate review roles")
     unused_routes = [
@@ -335,6 +343,7 @@ def validate_workflow(workflow: Workflow) -> None:
 
 __all__ = [
     "ArtifactNeed",
+    "RecordNeed",
     "ReviewGate",
     "ReviewReturn",
     "State",

@@ -102,8 +102,87 @@ def present_reflection_overview(overview: Record) -> Record:
     return result
 
 
+def consolidation_packet(
+    state: Record,
+    *,
+    workspaces: dict[str, Record],
+) -> Record:
+    """The compact, immutable handoff a code consolidator actually needs."""
+    authoritative_roles = {"project_graph", "reflection_doc", "change_spec"}
+    approved = [
+        {
+            key: value
+            for key, value in artifact.items()
+            if key in {"id", "artifact_id", "role", "path", "content", "tldr"}
+        }
+        for artifact in state.get("current_attempt_artifacts", [])
+        if artifact.get("role") in authoritative_roles
+    ]
+    experiments = []
+    for experiment in (state.get("corpus") or {}).get("terminal_experiments", []):
+        if not isinstance(experiment, dict) or not experiment.get("id"):
+            continue
+        experiment_id = str(experiment["id"])
+        artifacts = [
+            {
+                **{
+                    key: value
+                    for key, value in artifact.items()
+                    if key in {"artifact_id", "id", "role", "path", "tldr"}
+                },
+                **(
+                    {
+                        "tldr": content_tldr(
+                            artifact.get("content"),
+                            role=str(artifact.get("role") or ""),
+                            path=str(artifact.get("path") or ""),
+                        )
+                    }
+                    if "content" in artifact
+                    else {}
+                ),
+            }
+            for artifact in experiment.get("artifacts", [])
+            if isinstance(artifact, dict)
+        ]
+        experiments.append(
+            {
+                "id": experiment_id,
+                "name": experiment.get("name", ""),
+                "status": experiment.get("status", ""),
+                "attempt_index": experiment.get("attempt_index", 0),
+                "artifacts": artifacts,
+                "workspace": workspaces.get(experiment_id),
+            }
+        )
+    proposal = (state.get("consolidation") or {}).get("proposal") or {}
+    advance = (state.get("consolidation") or {}).get("advance") or {}
+    return {
+        "reflection": {
+            "id": state.get("id"),
+            "title": state.get("title", ""),
+            "status": state.get("status"),
+            "attempt_index": state.get("attempt_index"),
+            "created_at": state.get("created_at"),
+            "published_at": state.get("published_at"),
+            "reviews": slim_review_rows(state.get("reviews", [])),
+            "reviewed_artifacts": approved,
+        },
+        "base_sha": (
+            advance.get("observed_sha")
+            if advance.get("status") == "stale"
+            else proposal.get("base_sha")
+        )
+        or "",
+        "experiments": experiments,
+        "consolidation": state.get("consolidation") or {},
+        "revision_context": state.get("revision_context", ""),
+    }
+
+
 __all__ = [
     "present_agent_reflection_state",
+    "consolidation_packet",
     "present_reflection_overview",
     "present_reflection_state",
 ]

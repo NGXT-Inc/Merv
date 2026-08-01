@@ -20,10 +20,15 @@ from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
 
 from ..application import Application
 from ..application.maintenance import CleanupService
+from ..agent_sessions import AgentSessions
 from ..artifacts import Artifacts
 from ..feed import FeedService
 from ..literature import Literature
-from ..research_core import Research, ResearchTargets
+from ..research_core import (
+    EXPERIMENT_TERMINAL_STATUSES,
+    Research,
+    ResearchTargets,
+)
 from .config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
@@ -40,6 +45,7 @@ from .config import (
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
     resolve_oauth_resource_uri,
+    sandbox_feature_enabled,
     resolve_storage_max_upload_bytes,
     resolve_ui_base_url,
 )
@@ -52,7 +58,7 @@ from ..kernel.state import BaseStateStore
 from ..kernel.state.tool_call_ledger import ToolCallLedger
 from ..kernel.utils import ValidationError
 from ..object_storage import ObjectStorage
-from ..sandbox import SandboxBackend, SandboxEngine
+from ..sandbox import DisabledSandboxBackend, SandboxBackend, SandboxEngine
 from ..sandbox.adapters import build_sandbox_backend
 from ..sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
 from .artifacts import ArtifactTools
@@ -81,12 +87,14 @@ class Surface:
         execution_backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
         mlflow_tracking: Any | None = None,
+        sandbox_enabled: bool = True,
         force_expiry_reaper: bool = False,
         structured_logging: bool = False,
     ) -> None:
         self._store = store
         self._blobs = blobs
         self._tracking = mlflow_tracking
+        self.sandbox_enabled = sandbox_enabled
         self.storage = storage if storage.enabled else None
         self.activity = ControlActivitySink()
         self.tool_calls = ControlToolCallSink()
@@ -106,6 +114,10 @@ class Surface:
             web_preview=NetworkWebPreview(),
         )
         self.literature = Literature(store=store, unfurl=AllowlistedPaperPreview())
+        self.agent_sessions = AgentSessions(
+            store=store,
+            terminal_experiment_statuses=EXPERIMENT_TERMINAL_STATUSES,
+        )
         self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
         self.sandboxes = SandboxEngine(
             store=store,
@@ -116,13 +128,15 @@ class Surface:
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=self.research.assert_experiment_in_project,
         )
-        self.sandboxes.start()
+        if sandbox_enabled:
+            self.sandboxes.start()
         self.application = Application(
             research=self.research,
             sandboxes=self.sandboxes,
             objects=storage,
             artifacts=self.artifacts,
             feed=self.feed,
+            agent_sessions=self.agent_sessions,
             tracking=mlflow_tracking,
         )
         self.user_settings = UserHfTokenSettings(store=store)
@@ -130,6 +144,7 @@ class Surface:
         tool_names = available_tool_names(
             storage_enabled=storage.enabled,
             tracking_enabled=mlflow_tracking is not None,
+            sandbox_enabled=sandbox_enabled,
         )
         tool_owners = {
             "application": self.application,
@@ -243,9 +258,15 @@ def build_control_app(
         )
     elif storage is None:
         storage = ObjectStorage(store=store, provider=None)
-    if execution_backend is None:
+    sandbox_enabled = sandbox_feature_enabled(env)
+    if not sandbox_enabled:
+        execution_backend = DisabledSandboxBackend()
+    elif execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
-    _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
+    if sandbox_enabled:
+        _validate_sandbox_backend_requirement(
+            execution_backend=execution_backend, env=env
+        )
     app = Surface(
         store=store,
         blobs=blobs,
@@ -260,6 +281,7 @@ def build_control_app(
             )
         ),
         mlflow_tracking=mlflow_tracking,
+        sandbox_enabled=sandbox_enabled,
         # The brain holds provider lifecycle responsibility, so this composition
         # forces the expiry reaper on in both deployment presets.
         force_expiry_reaper=True,
@@ -295,6 +317,7 @@ def build_control_server(
         storage=app.storage,
         tool_call_ledger=app.tool_ledger,
         oauth_clients=oauth_repository,
+        agent_sessions=app.agent_sessions,
     )
     project_keys = ProjectKeys(store=app._store)
     # The fail-closed/open decision (SEC-02) is NOT taken here: it lives in
@@ -369,6 +392,7 @@ def build_local_server(
         blobs=app._blobs,
         storage=app.storage,
         tool_call_ledger=app.tool_ledger,
+        agent_sessions=app.agent_sessions,
     )
     fastapi_app = create_fastapi_app(
         app=app,
@@ -494,6 +518,8 @@ def _resume_active_sandboxes(*, app: Surface) -> None:
     about rows that may have expired while the control plane was down.
     Best-effort — a reconcile failure must not block startup or the reaper.
     """
+    if not app.sandbox_enabled:
+        return
     with suppress(Exception):  # startup must not hinge on recovery
         had_running = app.sandboxes.has_running_rows()
         app.sandboxes.reconcile_running_rows()

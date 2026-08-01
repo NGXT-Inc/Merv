@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate agents/<name>.md bodies from their canonical reviewer skills.
 
-The three reviewer instruction sets are authored once in
+The reviewer instruction sets are authored once in
 skills/<name>/SKILL.md; the shared agents/<name>.md files (loaded by Claude
 Code, Cursor, and Gemini CLI) keep their own frontmatter but carry the same
 body verbatim. Run this after editing a reviewer skill; the surface test
@@ -21,6 +21,7 @@ REVIEWER_NAMES = (
     "experiment-design-review",
     "experiment-attempt-review",
     "project-reflection-review",
+    "consolidation-review",
 )
 
 GENERATED_MARKER = (

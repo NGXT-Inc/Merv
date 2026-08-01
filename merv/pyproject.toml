@@ -33,6 +33,7 @@ control = ["modal>=1.4,<2", "psycopg[binary]>=3.1,<4", "boto3>=1.34,<2", "PyJWT>
 merv-http = "merv.brain.surface.transport.http_server:main"
 merv-control = "merv.brain.surface.transport.http_server:control_main"
 merv-client = "merv.client.cli:main"
+merv-agent-runner = "merv.client.agent_runner:main"
 
 [tool.pytest.ini_options]
 # The shipped packages live under src/ (src-layout); tests import them from

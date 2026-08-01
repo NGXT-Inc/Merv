@@ -130,8 +130,8 @@ root selects adapters and wires the modular monolith:
 - submitted-byte blob store: local directory or S3-compatible bucket;
 - optional heavy-object store: S3-compatible storage;
 - sandbox backend: Lambda Labs by default; Thunder Compute, Modal, Hyperstack,
-  DigitalOcean, Verda (DataCrunch), Voltage Park, TensorDock, or the fake
-  backend used in tests. `MERV_EXECUTION_BACKENDS` (comma-separated)
+  DigitalOcean, Verda (DataCrunch), Voltage Park, or TensorDock.
+  `MERV_EXECUTION_BACKENDS` (comma-separated)
   runs several at once behind one multiplexer that routes per-request by
   provider and prefixes sandbox ids with their owner (see
   [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md)). A lazy driver registry is the
@@ -200,11 +200,13 @@ Reflection transitions are declared in
 `src/merv/brain/research_core/reflection_workflow.py`:
 
 ```text
-reflecting -> synthesizing -> reflection_review -> published
+reflecting -> synthesizing -> reflection_review -> consolidating -> published
 ```
 
-Rejections return to `synthesizing` when the five lens documents still stand
-or to `reflecting` when the fan-out must be repeated.
+Reflection-review rejections return to `synthesizing` when the five lens
+documents stand or to `reflecting` when fan-out must repeat. After reflection
+approval, consolidation review can return only to `consolidating`; it never
+reopens the authoritative reflection.
 
 All meaning-changing actions use typed MCP or HTTP operations. Editing a local
 file does not mutate research state. A file becomes evidence only after

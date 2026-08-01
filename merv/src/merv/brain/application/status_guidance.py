@@ -402,43 +402,30 @@ class StatusGuidancePolicy:
         transition = evaluation.transition
         if transition is None:
             return self._next(gate="terminal", action="none", allowed=[])
-        if evaluation.review is not None:
+        current = self._advisory_requirement(evaluation.requirements)
+        if current is not None and current.role == "consolidation_proposal":
+            return self._reflection_requirement_next(
+                reflection=reflection,
+                status=status,
+                requirement=current,
+            )
+        if evaluation.review is not None and not evaluation.review.satisfied:
             return self._review_next(
                 target_type="reflection",
                 target=reflection,
                 gate=evaluation.review,
             )
-        current = self._advisory_requirement(evaluation.requirements)
         if current is not None:
-            guidance = REFLECTION_WORKFLOW.requirement(current.role)
-            if guidance is None:
-                raise RuntimeError(
-                    f"reflection workflow has no requirement {current.role!r}"
-                )
-            return self._next(
-                gate=current.blocker_code,
-                action=(
-                    guidance.action
-                    if current.status == "missing"
-                    else f"fix_{current.role}_artifact"
-                ),
-                allowed=list(guidance.tools),
-                missing=(
-                    self._missing_items(current)
-                    if current.status == "missing"
-                    else list(current.problems)
-                    or (
-                        [current.explanation]
-                        if status == REFLECTION_WORKFLOW.initial
-                        else []
-                    )
-                ),
-                artifact_guidance=(
-                    self._reflection_artifact_guidance()
-                    if status == REFLECTION_WORKFLOW.initial
-                    else self._synthesizing_artifact_guidance(key=guidance.artifact_key)
-                ),
-                revision=reflection.get("revision_context", ""),
+            return self._reflection_requirement_next(
+                reflection=reflection,
+                status=status,
+                requirement=current,
+            )
+        if evaluation.review is not None:
+            return self._review_next(
+                target_type="reflection",
+                target=reflection,
+                gate=evaluation.review,
             )
         ready = REFLECTION_WORKFLOW.transition(transition)
         if ready is None:
@@ -447,6 +434,55 @@ class StatusGuidancePolicy:
             gate=ready.gate,
             action=ready.action,
             allowed=list(ready.tools),
+            revision=reflection.get("revision_context", ""),
+        )
+
+    def _reflection_requirement_next(
+        self,
+        *,
+        reflection: dict[str, Any],
+        status: str,
+        requirement: RequirementEvaluation,
+    ) -> dict[str, Any]:
+        guidance = next(
+            (
+                item
+                for state in REFLECTION_WORKFLOW.states
+                for item in state.requirements
+                if getattr(item, "role", getattr(item, "name", None))
+                == requirement.role
+            ),
+            None,
+        )
+        if guidance is None:
+            raise RuntimeError(
+                f"reflection workflow has no requirement {requirement.role!r}"
+            )
+        return self._next(
+            gate=requirement.blocker_code,
+            action=(
+                guidance.action
+                if requirement.status == "missing"
+                else f"fix_{requirement.role}_artifact"
+            ),
+            allowed=list(guidance.tools),
+            missing=(
+                self._missing_items(requirement)
+                if requirement.status == "missing"
+                else list(requirement.problems)
+                or (
+                    [requirement.explanation]
+                    if status == REFLECTION_WORKFLOW.initial
+                    else []
+                )
+            ),
+            artifact_guidance=(
+                self._reflection_artifact_guidance()
+                if status == REFLECTION_WORKFLOW.initial
+                else self._synthesizing_artifact_guidance(
+                    key=getattr(guidance, "artifact_key", "")
+                )
+            ),
             revision=reflection.get("revision_context", ""),
         )
 
@@ -550,7 +586,8 @@ class StatusGuidancePolicy:
                 "guidance": (
                     "Write the change spec as JSON: claim_changes plus a "
                     "create_experiments decision with 1-3 planned experiment "
-                    "specs — names, intents, tested claim refs, and (for a "
+                    "specs — names, intents, optional tested claim refs when "
+                    "an experiment tests a tracked claim, and (for a "
                     "multi-experiment wave) a parallelism note each. Publish "
                     "will apply this only after the reflection reviewer passes "
                     "it. Then submit the file to this reflection wave with "

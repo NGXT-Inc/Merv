@@ -167,6 +167,7 @@ and honors `If-None-Match` (304).
 ```http
 GET /api/projects/{project_id}/reflections
 GET /api/projects/{project_id}/reflections/{reflection_id}
+GET /api/projects/{project_id}/reflections/{reflection_id}/consolidation
 GET /api/projects/{project_id}/reflections/current/graph
 GET /api/projects/{project_id}/reflections/{reflection_id}/graph
 ```
@@ -179,6 +180,9 @@ reflection staleness signal. A wave includes its five-lens roster, corpus,
 attempt-scoped artifacts, reviews, lens coverage, gate checklist, graph diff,
 and allowed transitions. Per-wave graph reads use the artifact pinned by that
 wave, so historical graphs remain faithful after the living graph changes.
+The consolidation read adds every experiment's persistent branch/base/head,
+immutable disposition and rationale, independent review, and central-advance
+receipt—including runner-verified ancestry for truthful Git lineage.
 
 ## Artifacts
 
@@ -219,8 +223,8 @@ POST /api/projects/{project_id}/reviews/submit
 ```
 
 Roles are `design_reviewer`, `experiment_reviewer`, `reflection_reviewer`,
-`human`, and `automated_check`; verdicts are `pass`, `needs_changes`, and
-`fail`.
+`consolidation_reviewer`, `human`, and `automated_check`; verdicts are `pass`,
+`needs_changes`, and `fail`.
 
 A fresh review request returns the plaintext `reviewer_capability` and a ready
 `reviewer_handoff.spawn_prompt`. The server stores only its hash, so the token

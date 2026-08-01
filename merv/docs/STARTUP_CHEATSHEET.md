@@ -39,13 +39,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-For safe local development without cloud provisioning:
-
-```bash
-export MERV_EXECUTION_BACKEND=fake
-```
-
-For a real backend, leave the default `lambda_labs` selection or set
+Starting the brain does not provision a sandbox. For a real sandbox backend,
+leave the default `lambda_labs` selection or set
 `MERV_EXECUTION_BACKEND` to `thunder_compute` or `modal`, then provide
 the corresponding credentials to the brain process. Caller SSH private keys
 remain on the client side.

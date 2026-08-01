@@ -99,14 +99,63 @@ matching `url` (or edit the `url` in the snippet directly):
 
 ## The `merv-client` CLI
 
-The onboarding CLI has exactly two subcommands:
+The onboarding CLI configures the connection and optional local agent
+platforms:
 
 ```bash
 CLI=~/Merv/merv/bin/merv-client
 $CLI configure   # write machine config (e.g. which brain to target)
 $CLI env         # print the .mcp.json http snippet for this machine
+$CLI agent codex --enable --command codex --parallelism 2
+$CLI agent claude --enable --command claude --model opus
+$CLI agent hermes --enable --command hermes
+$CLI agents      # print the configured local platforms
+$CLI workspace --repository /path/to/repo --strategy git_worktree
 ```
 
 The older `login`, `link`, `links`, `route`, and `unlink` subcommands are gone:
 a project-scoped key now carries both authentication and the project binding, so
 there is nothing to log in to, link, or unlink.
+
+Agent-platform settings live beside `control_url` in the private
+`~/.merv/client.json`. Commands are stored as argv arrays and are never run
+through a shell. To let Merv fill a reviewed experiment wave with separate
+local sessions:
+
+```bash
+~/Merv/merv/bin/merv-agent-runner --project proj_123
+```
+
+Native non-interactive process adapters cover Codex, Claude Code, Gemini CLI,
+Cursor Agent, OpenCode, Aider, GitHub Copilot CLI, Qwen Code, and Hermes Agent.
+A named platform using the `command` adapter can launch another coding agent as
+long as it reads the Merv instruction from standard input. The runner removes
+its own Merv credentials before launch; each child receives only
+`MERV_AGENT_SESSION_KEY`. Codex and Claude Code receive an isolated MCP
+configuration for that credential. Hermes and the other agents use
+`merv-client call TOOL --arguments JSON`; this bridge reads the same key from
+the environment and calls Merv's MCP-shaped endpoint without a shell.
+
+The runner requires Git worktrees. It initializes a Merv-owned bare repository
+and central ref, gives each experiment a persistent branch under
+`~/.merv/worktrees`, and reuses that branch across agent sessions. Consolidation
+has its own persistent worktree; detached reviewer worktrees are temporary.
+The user's checkout is never the central ref, and the private bare clone has no
+remote, so Merv never pushes to the user's repository. Worktrees prevent Git
+collisions; same-user agents can still read one another's files, so use
+containers, VMs, or separate OS identities for hostile-agent containment.
+
+To let the hosted Settings page edit the same local file, start the runner's
+loopback-only control without dispatching:
+
+```bash
+~/Merv/merv/bin/merv-agent-runner --settings-only
+```
+
+It prints a generated pairing token, stored owner-only outside `client.json`.
+The browser keeps that token in memory and sends it to
+`http://127.0.0.1:8791`. The control accepts only paired settings reads/writes
+and redacted status; it intentionally has no HTTP start/stop operation because
+the settings contain executable argv. Actual agent launch remains the explicit
+`merv-agent-runner --project ...` command. Treat the pairing token as
+local-administrator authority and paste it only into a trusted Merv UI origin.

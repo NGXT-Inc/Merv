@@ -183,7 +183,7 @@ External tools and target types use **reflection**. Persisted ids keep the
 `syn_` prefix. The statuses are:
 
 ```text
-reflecting -> synthesizing -> reflection_review -> published
+reflecting -> synthesizing -> reflection_review -> consolidating -> published
 ```
 
 `abandoned` is terminal. One wave may be open per project.
@@ -195,8 +195,12 @@ reflecting -> synthesizing -> reflection_review -> published
   `Summary` section, which supplies its TLDR in macro reflection views.
 - `submit_reflection_artifacts` requires a valid `project_graph`, concise
   `reflection_doc`, and materializable `change_spec`.
-- `publish` requires a passing `reflection_reviewer` review, then applies claim
-  changes and creates one to three planned experiments from the reviewed spec.
+- `begin_consolidation` requires a passing `reflection_reviewer` review.
+- `consolidation.submit` records one immutable proposal with a reasoned decision
+  for every experiment and its declared Git integration kind.
+- `publish` is internal: it requires a passing `consolidation_reviewer` review
+  and the runner's central-ref receipt, then applies claim changes and creates
+  the reviewed experiment wave.
 
 A rejection returns to `synthesizing` when the lens documents stand, or to
 `reflecting` with a new attempt when the fan-out must be repeated.
@@ -204,8 +208,8 @@ A rejection returns to `synthesizing` when the lens documents stand, or to
 ## Review sessions
 
 Supported reviewer roles are `design_reviewer`, `experiment_reviewer`,
-`reflection_reviewer`, `human`, and `automated_check`. The three workflow gates
-use their matching reviewer roles.
+`reflection_reviewer`, `consolidation_reviewer`, `human`, and
+`automated_check`. The four workflow gates use their matching reviewer roles.
 
 The current protocol is:
 

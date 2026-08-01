@@ -79,6 +79,8 @@ def start_review(
     reviewer_capability: str,
     declared_agent: str = "",
     caller_session_id: str = "",
+    assigned_agent_session_id: str = "",
+    assigned_review_request_id: str = "",
 ) -> dict[str, Any]:
     """Start a pinned review, then attach bounded orientation for its target."""
     result = dict(
@@ -87,6 +89,8 @@ def start_review(
             reviewer_capability=reviewer_capability,
             declared_agent=declared_agent,
             caller_session_id=caller_session_id,
+            assigned_agent_session_id=assigned_agent_session_id,
+            assigned_review_request_id=assigned_review_request_id,
         )
     )
     project_id = str(result.get("project_id") or "")

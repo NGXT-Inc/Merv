@@ -88,8 +88,12 @@ class ClientBundleTest(unittest.TestCase):
             "gemini-extension.json",
             "GEMINI.md",
             "AGENTS.md",
+            "bin/merv-agent-runner",
             "bin/merv-client",
             "bin/merv-runs-wait",
+            "clients/hermes/README.md",
+            "clients/hermes/install.sh",
+            "src/merv/client/agent_runner.py",
             "src/merv/client/cli.py",
             "src/merv/client/runs_wait.py",
             # Codex manifest's composerIcon must resolve inside the bundle.
@@ -153,6 +157,9 @@ class ClientBundleTest(unittest.TestCase):
             build_client_bundle.build(out)
             self.assertTrue((out / "assets" / "icon.svg").is_file())
             self.assertTrue((out / "skills").is_dir() and (out / "agents").is_dir())
+            self.assertTrue(
+                os.access(out / "clients" / "hermes" / "install.sh", os.X_OK)
+            )
             leaked = [
                 p for p in out.rglob("*")
                 if p.is_file() and ("brain" in p.parts or "tests" in p.parts)
@@ -171,6 +178,53 @@ class ClientBundleTest(unittest.TestCase):
             snippet = json.loads(result.stdout)
             self.assertEqual(
                 snippet["mcpServers"]["merv"]["type"], "http", result.stdout
+            )
+
+    def test_hermes_installer_is_idempotent_and_refuses_real_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "plugin"
+            build_client_bundle.build(out)
+            installer = out / "clients" / "hermes" / "install.sh"
+
+            hermes_home = root / "hermes-home"
+            env = {
+                "HERMES_HOME": str(hermes_home),
+                "HOME": str(root / "unused-home"),
+                "PATH": os.environ.get("PATH", ""),
+            }
+            for _ in range(2):
+                result = subprocess.run(
+                    [str(installer)],
+                    cwd=out,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            workflow_link = hermes_home / "skills" / "research-workflow"
+            self.assertTrue(workflow_link.is_symlink())
+            self.assertTrue((workflow_link / "SKILL.md").is_file())
+
+            conflict_home = root / "conflict-home"
+            conflict = conflict_home / "skills" / "research-workflow"
+            conflict.mkdir(parents=True)
+            conflict_env = {**env, "HERMES_HOME": str(conflict_home)}
+            result = subprocess.run(
+                [str(installer)],
+                cwd=out,
+                env=conflict_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Refusing to replace", result.stderr)
+            self.assertEqual(
+                list((conflict_home / "skills").iterdir()),
+                [conflict],
+                "preflight failure must not leave a partial skill install",
             )
 
     def test_the_run_watcher_ships_runnable(self) -> None:

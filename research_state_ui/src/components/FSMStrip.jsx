@@ -30,9 +30,10 @@ export const REFLECTION_STAGES = [
   { id: 'reflecting',       label: 'Reflecting' },
   { id: 'synthesizing',     label: 'Synthesizing' },
   { id: 'reflection_review', label: 'Refl. review' },
+  { id: 'consolidating',    label: 'Consolidating' },
   { id: 'published',        label: 'Published' },
 ];
-export const REFLECTION_GATES = new Set(['reflection_review']);
+export const REFLECTION_GATES = new Set(['reflection_review', 'consolidating']);
 export const REFLECTION_TERMINAL = new Set(['published', 'abandoned']);
 
 export default function FSMStrip({

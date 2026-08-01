@@ -1,13 +1,13 @@
 # Merv
 
 Merv gives agentic coding clients (Claude Code, Codex, Cursor, Gemini CLI,
-OpenCode, OpenHands, Replit Agent) a shared state machine for machine learning
-research: claims, experiments, submitted artifacts, review gates, reflection
-waves, and sandboxed execution. A brain running locally or as a hosted service
-owns durable research state; every agent client connects directly to the brain's
-`POST /mcp` HTTP endpoint, authenticated by a project-scoped key. The brain never receives the checkout root or reads
-it directly; gated documents are explicitly uploaded as size-capped
-artifacts.
+OpenCode, Hermes Agent, OpenHands, Replit Agent) a shared state machine for
+machine learning research: claims, experiments, submitted artifacts, review
+gates, reflection waves, and sandboxed execution. A brain running locally or
+as a hosted service owns durable research state; every agent client connects
+directly to the brain's `POST /mcp` HTTP endpoint, authenticated by a
+project-scoped key. The brain never receives the checkout root or reads it
+directly; gated documents are explicitly uploaded as size-capped artifacts.
 
 ## Get started
 
@@ -41,6 +41,25 @@ it into a committed file. That key binds a single immutable project; the brain
 scopes every call to it, with no per-folder linking or terminal setup. Details:
 [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md).
 
+### Hermes Agent
+
+Add this to `~/.hermes/config.yaml`, export `MERV_MCP_KEY`, then start `hermes`:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/Merv/merv/skills
+mcp_servers:
+  merv:
+    url: https://experiments.rapidreview.io/mcp
+    headers:
+      Authorization: "Bearer ${MERV_MCP_KEY}"
+```
+
+For OAuth, replace `headers` with `auth: oauth`, then run
+`hermes mcp login merv`. See [docs/CLIENTS.md](docs/CLIENTS.md#use-with-hermes-agent)
+for runner and reviewer setup.
+
 ## How work moves
 
 Experiments move forward through two review gates; a rejected review sends the
@@ -58,10 +77,51 @@ Reflections distill what the project has learned, behind one gate of their own:
 
 ```mermaid
 flowchart LR
-    reflecting --> synthesizing --> reflection_review --> published
+    reflecting --> synthesizing --> reflection_review --> consolidating --> published
     reflection_review -. revise lenses .-> reflecting
     reflection_review -. revise synthesis .-> synthesizing
+    consolidating -. revise code only .-> consolidating
 ```
+
+Merv can dispatch a reviewed experiment wave into separate local coding-agent
+sessions. Configure any number of named platforms in the private machine file
+`~/.merv/client.json`. Native process adapters cover Codex, Claude Code, Gemini
+CLI, Cursor Agent, OpenCode, Aider, GitHub Copilot CLI, Qwen Code, and Hermes
+Agent. The `command` adapter covers any other executable that accepts its
+instruction on stdin:
+
+```bash
+bin/merv-client agent codex --enable --command codex --parallelism 2
+bin/merv-client agent claude --enable --command claude --model opus
+bin/merv-client agent hermes --enable --command hermes
+bin/merv-client workspace --repository "$PWD" --strategy git_worktree
+bin/merv-agent-runner --project proj_123
+```
+
+Codex and Claude Code receive only Merv's session-scoped MCP server. Other
+platforms invoke the same scoped tools through
+`merv-client call TOOL --arguments JSON`; the session key remains in the
+environment and is never placed on the command line.
+
+The runner holds the ordinary project/account key. Each child gets a separate,
+short-lived session key only through `MERV_AGENT_SESSION_KEY`; the key never
+appears in the child prompt, argv, settings, or logs. Merv owns assignment,
+leases, and recovery while each platform supplies only the local process.
+The runner initializes a Merv-owned bare repository and central ref, then keeps
+one persistent branch/worktree per experiment. Reflection approval dispatches a
+separate consolidator and code reviewer; the runner alone advances central
+after review. Temporary reviewer worktrees are removed, while experiment and
+consolidation worktrees remain recoverable. The private bare clone has no
+remotes and never pushes into the user's repository. Worktrees isolate Git
+changes, not same-user filesystem access; use an OS sandbox for hostile agents.
+
+The web Settings page can save this same machine file through the optional
+runner control at `http://127.0.0.1:8791`. Start it without dispatching via
+`bin/merv-agent-runner --settings-only` and paste the printed pairing token
+into Settings. Only paired GET/PUT settings and status are exposed; starting
+or stopping executable commands remains a local CLI operation. The pairing
+token can edit executable agent commands, so treat it as local-administrator
+authority and paste it only into a trusted Merv UI origin.
 
 Agent-authored evidence is kept in regular repo files. The brain records their
 relative paths and versions and pins selected submitted bytes for gates and

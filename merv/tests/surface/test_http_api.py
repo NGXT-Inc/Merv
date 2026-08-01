@@ -10,6 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain, upload_token
+from tests.research_core.scenarios import complete_no_code_consolidation
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.research_core.experiment_workflow import RETURN_TO_PLANNED
 from merv.brain.surface.transport.api import create_fastapi_app
@@ -1805,9 +1806,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "synopsis": "The reflection wave honestly represents the project's logic state.",
             },
         )
-        self.app.call_tool(
-            "reflection.transition",
-            {"project_id": pid, "reflection_id": syn_id, "transition": "publish"},
+        complete_no_code_consolidation(
+            app=self.app,
+            project_id=pid,
+            reflection_id=syn_id,
         )
 
         detail = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}")

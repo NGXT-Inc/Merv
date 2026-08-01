@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useProjectStore } from '../store/useProjectStore';
 import { api } from '../api';
 import { isAuthEnabled } from '../auth';
+import AgentPlatforms from '../components/AgentPlatforms';
 
 // Compact absolute stamp for the ledger ("Jul 23 · 6:03 PM"). Null-safe.
 function fmtWhen(iso) {
@@ -21,7 +22,7 @@ function keyState(k) {
 }
 
 /**
- * Project settings — MCP keys.
+ * Project settings — local coding-agent setup and MCP keys.
  *
  * Mint, list, and revoke the `mk_` keys that connect an MCP client (Claude,
  * Codex, …) to Merv. A key is scoped either to this one project or to every
@@ -110,11 +111,25 @@ export default function Settings() {
       <div className="page-header">
         <div className="page-head-row">
           <div>
-            <h1 className="page-title">MCP keys</h1>
+            <h1 className="page-title">Settings</h1>
             <p className="page-summary page-summary--lead">
-              A key connects an MCP client to Merv. It is bearer-equivalent to
-              everything it is scoped to — anyone holding it can act as you
-              there, so treat it like a password.
+              Connect local coding agents to this project and manage the keys
+              that let agent clients reach Merv.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <AgentPlatforms projectId={projectId} />
+
+      <section className="settings-section" aria-labelledby="mcp-keys-title">
+        <div className="settings-section-head">
+          <div>
+            <div className="eyebrow">Access</div>
+            <h2 id="mcp-keys-title" className="settings-title">MCP keys</h2>
+            <p className="settings-summary">
+              A key connects an MCP client to Merv. Anyone holding it can act
+              within its scope, so treat it like a password.
             </p>
           </div>
           {hosted && (
@@ -137,7 +152,6 @@ export default function Settings() {
             </div>
           )}
         </div>
-      </div>
 
       {!hosted && (
         <div className="empty-state empty-state--compact">
@@ -226,6 +240,7 @@ export default function Settings() {
           )}
         </div>
       )}
+      </section>
     </div>
   );
 }

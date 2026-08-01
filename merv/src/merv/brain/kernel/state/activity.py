@@ -29,6 +29,7 @@ LEDGER_LABEL_MAX_CHARS = 120
 SENSITIVE_KEYS = {
     "reviewer_capability",
     "capability",
+    "session_secret",
     "MLFLOW_TRACKING_PASSWORD",
 }
 LEGACY_MACHINE_LOCAL_KEYS = {"repo_root", "local_sync_dir", "local_experiment_dir"}
@@ -84,7 +85,7 @@ _CREDENTIAL_FIELD_RE = re.compile(
 # The cost is that an ordinary `rp_run`-shaped label redacts too; a lost
 # telemetry label is far cheaper than a persisted key.
 _MINTED_PREFIX_RE = re.compile(
-    r"\b(?:rr_sk_|mk_|mac_|mrt_|rp_|hf_|ghp_|sk-)[A-Za-z0-9_-]*"
+    r"\b(?:rr_sk_|mk_|mas_|mac_|mrt_|rp_|hf_|ghp_|sk-)[A-Za-z0-9_-]*"
 )
 # Generic shapes carry no prefix to key on, so structure and length are the
 # only signal separating a token from a word: a JWT's three base64url segments.

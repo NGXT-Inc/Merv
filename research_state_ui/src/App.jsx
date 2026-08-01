@@ -199,6 +199,7 @@ export default function App() {
             <Route path="reviews" element={<MobileReviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<SandboxCardList />} />
+            <Route path="settings" element={<Settings />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
           </Route>

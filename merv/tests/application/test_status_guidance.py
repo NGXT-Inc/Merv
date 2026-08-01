@@ -10,6 +10,7 @@ from merv.brain.research_core import (
     REFLECTION_WORKFLOW,
 )
 from merv.brain.research_core.policy import GateEvaluation, RequirementEvaluation
+from merv.brain.research_core.workflow_schema import ArtifactNeed, RecordNeed
 
 
 def _requirement(
@@ -51,10 +52,21 @@ class StatusGuidanceContractTest(unittest.TestCase):
         for workflow in (EXPERIMENT_WORKFLOW, REFLECTION_WORKFLOW):
             for state in workflow.states:
                 for requirement in state.requirements:
-                    self.assertTrue(requirement.action, requirement.role)
-                    self.assertTrue(requirement.tools, requirement.role)
+                    label = (
+                        requirement.role
+                        if isinstance(requirement, ArtifactNeed)
+                        else requirement.name
+                    )
+                    self.assertTrue(requirement.action, label)
+                    if isinstance(requirement, ArtifactNeed):
+                        self.assertTrue(requirement.tools, label)
+                    else:
+                        self.assertIsInstance(requirement, RecordNeed)
+                        self.assertTrue(requirement.label, label)
+                        self.assertTrue(requirement.missing, label)
                 self.assertTrue(state.forward.action, state.forward.name)
-                self.assertTrue(state.forward.tools, state.forward.name)
+                if not state.forward.tools:
+                    self.assertEqual(state.forward.name, "publish")
                 if state.review is not None:
                     self.assertTrue(state.review.skill, state.review.role)
                     self.assertTrue(state.review.pass_action, state.review.role)
@@ -180,6 +192,78 @@ class StatusGuidanceContractTest(unittest.TestCase):
             result["workflow"]["missing_evidence"],
             ["amplify reflection", "avoid reflection"],
         )
+
+    def test_consolidation_guidance_follows_proposal_review_then_advance(self) -> None:
+        reflection = {"id": "ref_1", "status": "consolidating"}
+        proposal = _requirement(
+            "consolidation_proposal",
+            "missing",
+            "consolidation_proposal_required",
+            items=({"status": "missing", "missing": "complete proposal"},),
+        )
+        advance = _requirement(
+            "central_advance",
+            "missing",
+            "central_advance_required",
+            items=({"status": "missing", "missing": "advance receipt"},),
+        )
+        review = _requirement(
+            "consolidation_reviewer",
+            "missing",
+            "consolidation_review_required",
+            items=({"status": "missing"},),
+        )
+
+        needs_proposal = self.policy._reflection_workflow_for(
+            reflection=reflection,
+            evaluation=_evaluation(
+                subject="reflection wave",
+                status="consolidating",
+                requirements=(proposal, advance),
+                review=review,
+            ),
+        )
+        self.assertEqual(
+            needs_proposal["next_action"], "submit_consolidation_proposal"
+        )
+
+        valid_proposal = _requirement(
+            "consolidation_proposal",
+            "valid",
+            "",
+        )
+        needs_review = self.policy._reflection_workflow_for(
+            reflection=reflection,
+            evaluation=_evaluation(
+                subject="reflection wave",
+                status="consolidating",
+                requirements=(valid_proposal, advance),
+                review=review,
+            ),
+        )
+        self.assertEqual(
+            needs_review["next_action"], "launch_consolidation_reviewer"
+        )
+
+        passed_review = RequirementEvaluation(
+            "consolidation_reviewer",
+            "passed",
+            "",
+            "",
+            (),
+            ({"status": "passed"},),
+        )
+        needs_advance = self.policy._reflection_workflow_for(
+            reflection=reflection,
+            evaluation=_evaluation(
+                subject="reflection wave",
+                status="consolidating",
+                requirements=(valid_proposal, advance),
+                review=passed_review,
+            ),
+        )
+        self.assertEqual(needs_advance["next_action"], "wait_for_central_advance")
+        self.assertEqual(needs_advance["allowed_actions"], [])
 
     def test_idle_reflection_hint_preserves_existing_wording(self) -> None:
         result = self.policy.project_reflection(

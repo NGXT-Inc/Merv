@@ -29,8 +29,9 @@ Adding another stateful public object requires an architectural reason.
 - `research.py`: public root; project and claim writes, workflow delegation,
   canonical project snapshots, project context, membership and event facts,
   graph refs.
-- `experiments.py`: experiment state machine, gate evaluation, artifact sealing,
-  attempt handling, MLflow run state, and idempotent tracking-delivery ledger.
+- `experiments.py`: shared experiment-creation invariants, experiment state
+  machine, gate evaluation, artifact sealing, attempt handling, MLflow run
+  state, and idempotent tracking-delivery ledger.
 - `reflections.py`: reflection state machine, corpus snapshots, lens coverage,
   graph comparison, change-spec validation/materialization, drift signal.
 - `reviews.py`: review requests, one-time capabilities, isolated sessions,
@@ -65,17 +66,18 @@ key proves that a delivery committed and prevents duplicate external runs.
 ## Reflection and review lifecycle
 
 A reflection moves `reflecting -> synthesizing -> reflection_review ->
-published`. Gates require the lens roster, project graph, reflection document,
-change spec, and passing review. Publishing applies the reviewed claim and
-experiment changes, pins the graph version, records the event, and changes state
-in one transaction. Returning to `reflecting` increments the attempt; returning
-to `synthesizing` retains the accepted lens work.
+consolidating -> published`. Reflection review makes its research artifacts
+authoritative. A separate consolidator covers every experiment, a separate
+reviewer approves the exact code proposal, and the runner binds it to the
+Merv-owned central Git ref. Only then does publication atomically materialize
+the change spec and pin the graph. Code review can return only to consolidation;
+it can never reopen reflection.
 
 A review capability is random, expiring, returned once, and stored only as a
 hash. A new request supersedes older open requests for the same gate. Review
-start enforces tenant scope, capability validity, producer/reviewer separation,
-and an unchanged target snapshot. Submission rechecks that exact snapshot before
-the verdict can route a workflow.
+start enforces tenant scope, producer/reviewer separation, an unchanged target
+snapshot, and either the one-time capability or an exact assigned reviewer
+session. Submission rechecks that snapshot before a verdict can route a workflow.
 
 ## Read model and invariants
 
@@ -88,8 +90,9 @@ All writes resolve a project through `BaseStateStore`; target lookups include
 project ownership. Events commit with their state mutations. Review snapshots
 are byte-stable identities of the target state and submitted evidence. Artifact
 sealing uses the caller's Research transaction. Reflection publication is the
-only path that materializes its reviewed change spec. Compatibility reads may
-hydrate older rows, but new writes follow the current invariants.
+only path that materializes its reviewed change spec, and its experiments pass
+through the same creation invariants as direct experiments. Compatibility reads
+may hydrate older rows, but new writes follow the current invariants.
 
 ## Maintenance rule
 

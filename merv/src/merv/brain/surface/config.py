@@ -71,6 +71,25 @@ REQUIRE_SANDBOX_BACKEND_ENV_VAR = "MERV_REQUIRE_SANDBOX_BACKEND"
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 
 
+def sandbox_feature_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this Merv instance exposes and runs its Sandbox capability.
+
+    This is deliberately a machine setting, not an evaluation-mode branch.
+    An external evaluator can point ``MERV_CLIENT_CONFIG`` at an isolated
+    settings file containing ``{"features": {"sandbox": false}}``; ordinary
+    installations keep the feature enabled when the setting is absent.
+    """
+    features = read_client_config(env).get("features", {})
+    if features is None:
+        return True
+    if not isinstance(features, dict):
+        raise ValidationError("features must be an object")
+    enabled = features.get("sandbox", True)
+    if not isinstance(enabled, bool):
+        raise ValidationError("features.sandbox must be true or false")
+    return enabled
+
+
 class Mode(str, Enum):
     """Brain deployment preset. ``local`` is the default."""
 
@@ -105,7 +124,8 @@ def resolve_control_url(env: Mapping[str, str] | None = None) -> str | None:
     """The configured brain URL (hosted or localhost), or None."""
     raw = env_value(CONTROL_URL_ENV_VAR, env=env) or ""
     if not raw:
-        raw = read_client_config(env).get("control_url", "")
+        configured = read_client_config(env).get("control_url", "")
+        raw = configured if isinstance(configured, str) else ""
     return raw.rstrip("/") or None
 
 

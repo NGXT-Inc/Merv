@@ -25,6 +25,11 @@ spans them. Research remains the public owner of its event ledger reads.
   compact agent documents or the richer UI overview.
 - Dashboard, cost, timeline, graph, and figure-fact reads join facts without
   exposing module internals to Surface.
+- Agent-session claims prioritize independent reviews, reviewed-reflection code
+  consolidation, then experiments from the latest published wave and other
+  active experiments. Owners request review and exit; Merv dispatches a
+  separately authenticated reviewer. After consolidation review, the runner
+  advances central before Application permits reflection publication.
 
 ## Files
 
@@ -50,6 +55,8 @@ spans them. Research remains the public owner of its event ledger reads.
 - Artifacts owns evidence validation, immutable sealing, and blob-backed files.
 - Sandbox, Feed, and Object Storage are called through their concrete package
   roots; Application defines no mirror facades or forwarding ports.
+- Agent Sessions owns worker identity and leases; Application only derives the
+  dispatchable candidate order from authoritative Research snapshots.
 - MLflow is optional. All adapter calls, tracking DTOs, degraded warnings,
   idempotent post-commit run handling, and overview reads live in `mlflow.py`.
 - The committed event returned by Research drives post-commit effects. A caller

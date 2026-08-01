@@ -159,6 +159,12 @@ tool operations call the owning `ObjectStorage` root directly.
 These are dependency changes, not service extraction: everything still runs in
 one brain process and shares the existing transaction/event ledger.
 
+Agent Sessions is a small application component: it owns durable worker
+identity, leases, and experiment/review exclusivity. Cross-component candidate
+selection remains in Application; Research remains authoritative for workflow
+state; Surface owns runner transport and the MCP-only default-deny session
+policy; the machine-local runner owns process and worktree adapters.
+
 ## Synchronous reaction model
 
 The composition root owns one in-process reaction registry. Application use

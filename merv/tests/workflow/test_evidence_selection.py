@@ -20,6 +20,7 @@ from merv.brain.research_core.evidence import (
     historical_latest_artifacts,
     sealed_submission_artifacts,
 )
+from tests.research_core.scenarios import complete_no_code_consolidation
 from tests.support.brain import TestBrain
 
 # All five lens documents share ONE path: the slot is (role, lens_id, path),
@@ -323,7 +324,11 @@ class ReflectionEvidenceTest(unittest.TestCase):
         published = self._create_wave(title="Published wave")
         self._drive_to_review(syn_id=published, graph=VALID_PROJECT_GRAPH, suffix="c")
         self._review(syn_id=published, verdict="pass")
-        self._transition(syn_id=published, transition="publish")
+        complete_no_code_consolidation(
+            app=self.app,
+            project_id=self.project_id,
+            reflection_id=published,
+        )
 
         # A new wave's graph is rejected back to the fan-out, which bumps the
         # attempt: nothing in the open attempt is a project graph any more.

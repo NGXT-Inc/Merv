@@ -40,4 +40,13 @@ def build_router(*, application: Application) -> APIRouter:
             project_id=project_id, reflection_id=reflection_id
         )
 
+    @api_router.get(
+        "/api/projects/{project_id}/reflections/{reflection_id}/consolidation"
+    )
+    def get_consolidation(project_id: str, reflection_id: str) -> dict[str, Any]:
+        return application.consolidation(
+            project_id=project_id,
+            reflection_id=reflection_id,
+        )
+
     return api_router

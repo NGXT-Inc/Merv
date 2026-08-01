@@ -44,9 +44,7 @@ VALID_GRAPH = json.dumps(
             {"id": "objective", "kind": "objective", "label": "Beat baseline"},
             {"id": "result", "kind": "outcome", "label": "Accuracy reached 0.72"},
         ],
-        "edges": [
-            {"from": "objective", "to": "result", "label": "confirmed by"}
-        ],
+        "edges": [{"from": "objective", "to": "result", "label": "confirmed by"}],
     }
 )
 
@@ -62,9 +60,7 @@ VALID_PROJECT_GRAPH = json.dumps(
                 "label": "Does it transfer?",
             },
         ],
-        "edges": [
-            {"from": "lesson", "to": "question", "label": "raises"}
-        ],
+        "edges": [{"from": "lesson", "to": "question", "label": "raises"}],
     }
 )
 
@@ -130,6 +126,83 @@ REVIEW_SYNOPSIS = (
 )
 
 
+def complete_no_code_consolidation(
+    *, app: TestBrain, project_id: str, reflection_id: str
+) -> dict[str, Any]:
+    """Publish a reviewed reflection through the real no-code consolidation gate."""
+
+    def call(tool: str, **arguments: Any) -> dict[str, Any]:
+        return app.call_tool(tool, arguments)
+
+    call(
+        "reflection.transition",
+        project_id=project_id,
+        reflection_id=reflection_id,
+        transition="begin_consolidation",
+    )
+    packet = app.application.consolidation(
+        project_id=project_id,
+        reflection_id=reflection_id,
+    )
+    app.application.submit_consolidation(
+        project_id=project_id,
+        reflection_id=reflection_id,
+        base_sha="1" * 40,
+        proposal_sha="2" * 40,
+        summary="The reviewed research changes no tracked source files.",
+        validation={"tests": "not_applicable"},
+        decisions=[
+            {
+                "experiment_id": experiment["id"],
+                "disposition": "reviewed_not_used",
+                "rationale": "This experiment produced no promotable source change.",
+                "integration_kind": "none",
+            }
+            for experiment in packet["experiments"]
+        ],
+        producer_session_id="consolidator",
+    )
+    request = call(
+        "review.request",
+        project_id=project_id,
+        target_type="reflection",
+        target_id=reflection_id,
+        role="consolidation_reviewer",
+        producer_session_id="consolidator",
+    )
+    session = call(
+        "review.start",
+        review_request_id=request["review_request_id"],
+        reviewer_capability=request["reviewer_capability"],
+        caller_session_id="independent-consolidation-reviewer",
+    )
+    call(
+        "review.submit",
+        review_session_id=session["review_session_id"],
+        verdict="pass",
+        synopsis=REVIEW_SYNOPSIS,
+    )
+    advance = app.application.prepare_consolidation_advance(
+        project_id=project_id,
+        reflection_id=reflection_id,
+        runner_id="runner",
+    )
+    return app.application.settle_consolidation_advance(
+        project_id=project_id,
+        advance_id=advance["id"],
+        runner_id="runner",
+        observed_sha="2" * 40,
+        proposal_parents=["1" * 40],
+        diffstat={
+            "commit_count": 0,
+            "files_changed": 0,
+            "insertions": 0,
+            "deletions": 0,
+        },
+        ancestry={},
+    )
+
+
 class ResearchCase(unittest.TestCase):
     app: TestBrain
     project_id: str
@@ -183,7 +256,9 @@ class ResearchCase(unittest.TestCase):
             )["id"]
         )
 
-    def transition_experiment(self, experiment_id: str, transition: str) -> dict[str, Any]:
+    def transition_experiment(
+        self, experiment_id: str, transition: str
+    ) -> dict[str, Any]:
         return self.call(
             "experiment.transition",
             project_id=self.project_id,
@@ -191,7 +266,9 @@ class ResearchCase(unittest.TestCase):
             transition=transition,
         )
 
-    def pass_review(self, *, target_type: str, target_id: str, role: str) -> dict[str, Any]:
+    def pass_review(
+        self, *, target_type: str, target_id: str, role: str
+    ) -> dict[str, Any]:
         return self.review(
             target_type=target_type,
             target_id=target_id,
@@ -331,3 +408,11 @@ class ResearchCase(unittest.TestCase):
             transition="submit_reflection_artifacts",
         )
         return reflection_id
+
+    def consolidate_and_publish(self, reflection_id: str) -> dict[str, Any]:
+        """Complete the post-reflection code gate with a no-code proposal."""
+        return complete_no_code_consolidation(
+            app=self.app,
+            project_id=self.project_id,
+            reflection_id=reflection_id,
+        )
