@@ -278,7 +278,7 @@ class ReleaseDatabaseCompatibilityTest(unittest.TestCase):
                 latest_migration = conn.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(latest_migration, 42)
+                self.assertEqual(latest_migration, 43)
             finally:
                 conn.close()
 

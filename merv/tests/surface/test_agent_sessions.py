@@ -42,6 +42,11 @@ class AgentSessionSurfaceTest(unittest.TestCase):
         self.project_id = self.brain.call_tool(
             "project", {"action": "create", "name": "Agent sessions"}
         )["id"]
+        # Dispatch is opt-in per project; these tests exercise the enabled path.
+        self.brain.call_tool(
+            "project.update",
+            {"project_id": self.project_id, "agent_dispatch": True},
+        )
         self.experiment_id = self.brain.call_tool(
             "experiment.create",
             {
@@ -684,3 +689,106 @@ class AgentSessionSurfaceTest(unittest.TestCase):
         )["consolidation_history"]
         self.assertEqual(history[-1]["disposition"], "reviewed_not_used")
         self.assertEqual(history[-1]["integration_outcome"], "not_applied")
+
+
+class AgentDispatchSwitchTest(unittest.TestCase):
+    """The per-project switch gates claims; halting is a separate stop."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.brain = TestBrain(
+            repo_root=root,
+            db_path=root / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
+        )
+        self.client = TestClient(self.brain.fastapi_app, raise_server_exceptions=False)
+        self.project_id = self.brain.call_tool(
+            "project", {"action": "create", "name": "Dispatch switch"}
+        )["id"]
+        self.brain.call_tool(
+            "experiment.create",
+            {
+                "project_id": self.project_id,
+                "name": "dispatchable",
+                "intent": "Exercise the per-project dispatch switch.",
+            },
+        )
+
+    def tearDown(self) -> None:
+        self.brain.shutdown()
+        self.temp.cleanup()
+
+    def set_dispatch(self, enabled: bool) -> dict:
+        return self.brain.call_tool(
+            "project.update",
+            {"project_id": self.project_id, "agent_dispatch": enabled},
+        )
+
+    def claim(self, *, runner_id: str = "runner-a") -> dict:
+        response = self.client.post(
+            "/api/agent-sessions/claim",
+            json={
+                "project_id": self.project_id,
+                "platform": "codex",
+                "runner_id": runner_id,
+                "idempotency_key": f"key-{runner_id}",
+                "session_secret": "mas_" + secrets.token_urlsafe(32),
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def live_sessions(self) -> list[dict]:
+        response = self.client.get(f"/api/projects/{self.project_id}/agent-sessions")
+        self.assertEqual(response.status_code, 200, response.text)
+        return [
+            session
+            for session in response.json()["sessions"]
+            if session["status"] in {"offered", "active"}
+        ]
+
+    def test_dispatch_is_off_until_the_project_turns_it_on(self) -> None:
+        result = self.claim()
+        self.assertIsNone(result["session"])
+        self.assertEqual(result["reason"], "agent_dispatch_disabled")
+
+        self.assertIs(self.set_dispatch(True)["settings"]["agent_dispatch"], True)
+        self.assertIsNotNone(self.claim()["session"])
+
+    def test_turning_dispatch_off_stops_new_claims_only(self) -> None:
+        self.set_dispatch(True)
+        self.assertIsNotNone(self.claim(runner_id="runner-a")["session"])
+
+        self.set_dispatch(False)
+        # The running session is untouched; only the next claim is refused.
+        self.assertEqual(len(self.live_sessions()), 1)
+        self.assertEqual(
+            self.claim(runner_id="runner-b")["reason"],
+            "agent_dispatch_disabled",
+        )
+
+    def test_halt_closes_live_sessions(self) -> None:
+        self.set_dispatch(True)
+        session = self.claim()["session"]
+        self.assertIsNotNone(session)
+
+        response = self.client.post(
+            f"/api/projects/{self.project_id}/agent-sessions/halt"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["halted"], 1)
+        self.assertEqual(self.live_sessions(), [])
+        closed = next(
+            item
+            for item in response.json()["sessions"]
+            if item["id"] == session["id"]
+        )
+        self.assertEqual(closed["close_reason"], "dispatch_halted")
+
+    def test_halting_an_idle_project_is_a_no_op(self) -> None:
+        response = self.client.post(
+            f"/api/projects/{self.project_id}/agent-sessions/halt"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["halted"], 0)

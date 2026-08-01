@@ -65,10 +65,22 @@ class SandboxScheduler:
             self.reaper_thread.join(timeout=2.0)
 
     def _daemon_enabled(self) -> bool:
+        # The sweep is also the fleet's sampler, so it runs even in a
+        # configuration where nothing would ever be reaped.
         return (
             self._reaper_enabled()
             or self._idle_reap_threshold() > 0
+            or self._sampling_enabled()
         )
+
+    def _sampling_enabled(self) -> bool:
+        """Whether the control plane samples running boxes for observability.
+
+        Opt-out, not opt-in: the recorded usage series is what lets the fleet
+        view show every box at once. Turning this off means the Sandboxes rows
+        lose their utilization gauges and keep only command state.
+        """
+        return env_bool("MERV_SANDBOX_ACTIVITY_SAMPLING", default=True)
 
     def _reaper_enabled(self) -> bool:
         if not self.force_expiry_reaper and not env_bool(

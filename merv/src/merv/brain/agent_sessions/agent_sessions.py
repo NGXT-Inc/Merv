@@ -473,6 +473,26 @@ class AgentSessions:
                 tx=tx, now=current
             )
 
+    def halt(self, *, project_id: str, reason: str = "dispatch_halted") -> int:
+        """Close every live session in a project so runners stop their children.
+
+        Runners already terminate a child whose session has left ``offered`` or
+        ``active``, so closing the rows here is the whole stop signal.
+        """
+        now = datetime.now(UTC)
+        with self.store.transaction() as tx:
+            self.store.require_project_id(conn=tx, project_id=project_id)
+            rows = tx.execute(
+                """
+                SELECT id FROM agent_sessions
+                WHERE project_id = ? AND status IN ('offered', 'active')
+                """,
+                (project_id,),
+            ).fetchall()
+            for row in rows:
+                self._close(tx=tx, row=row, now=now, reason=reason[:200])
+            return len(rows)
+
     def invalidate(self, *, session_id: str, reason: str) -> None:
         """Close a credential when Surface detects lost parent authority."""
         now = datetime.now(UTC)

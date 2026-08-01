@@ -418,6 +418,49 @@ html[data-surface="mobile"] .mconfirm-warn {
 }
 html[data-surface="mobile"] .mconfirm-actions { display: flex; gap: 8px; }
 
+/* Card liveness block — what the box is running, how hard, trending which way.
+   Same rules as the desktop row (utils/fleet.js), stacked for a narrow column. */
+html[data-surface="mobile"] .msbx-live {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--text-xs);
+}
+html[data-surface="mobile"] .msbx-live-head {
+  display: flex; align-items: baseline; gap: 8px;
+}
+html[data-surface="mobile"] .msbx-live-state { font-weight: 600; }
+html[data-surface="mobile"] .msbx-live-detail {
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+html[data-surface="mobile"] .msbx-live-cmd {
+  margin-top: 3px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+html[data-surface="mobile"] .msbx-live-gauges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 10px;
+  margin-top: 9px;
+}
+html[data-surface="mobile"] .msbx-live-trend {
+  grid-column: 1 / -1; height: 20px; line-height: 0;
+}
+html[data-surface="mobile"] .msbx-gauge-head {
+  display: flex; justify-content: space-between; gap: 4px;
+  font-size: 10px; color: var(--muted); margin-bottom: 3px;
+}
+html[data-surface="mobile"] .msbx-gauge-track {
+  height: 3px; border-radius: 2px; background: var(--line); overflow: hidden;
+}
+html[data-surface="mobile"] .msbx-gauge-fill { height: 3px; border-radius: 2px; background: currentColor; }
+
+html[data-surface="mobile"] .msbx-live--work { color: var(--supports); }
+html[data-surface="mobile"] .msbx-live--fail { color: var(--refutes); }
+html[data-surface="mobile"] .msbx-live--idle { color: var(--qualifies); }
+html[data-surface="mobile"] .msbx-live--quiet { color: var(--muted); }
+
 /* Expanded sandbox drawer inside a card (hosts SandboxTerminal). */
 html[data-surface="mobile"] .mcard-drawer {
   margin-top: 12px;

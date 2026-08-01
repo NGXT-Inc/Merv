@@ -64,6 +64,9 @@ _EXPERIMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 ACTIVE_EXPERIMENT_CAP = 7
 
+# projects.settings_json key gating automatic local coding-agent dispatch.
+AGENT_DISPATCH_SETTING = "agent_dispatch"
+
 
 def active_experiment_cap_reached_message(*, active_count: int) -> str:
     return (
@@ -517,6 +520,17 @@ def project_settings(*, conn: Any, project_id: str) -> dict[str, Any]:
     return parse_project_settings(row["settings_json"]) if row else {}
 
 
+def agent_dispatch_enabled(project: Mapping[str, Any]) -> bool:
+    """Whether this project may hand work to local coding-agent runners.
+
+    Off by default: dispatch starts processes on a contributor's machine, so a
+    project opts in rather than inheriting automation from a runner someone
+    happened to leave running.
+    """
+    settings = parse_project_settings(project.get("settings_json"))
+    return bool(settings.get(AGENT_DISPATCH_SETTING, False))
+
+
 def review_snapshot_id(*, target_type: str, target: dict[str, Any]) -> str:
     """Byte-stable identity of the exact state and artifacts under review."""
     artifact_tokens = [
@@ -621,6 +635,7 @@ def revision_context_for_review_return(
 
 __all__ = [
     "ACTIVE_EXPERIMENT_CAP",
+    "AGENT_DISPATCH_SETTING",
     "CLAIM_CONFIDENCES",
     "CLAIM_STATUSES",
     "EXPERIMENT_ACTIVE_PROCESS_STATUSES",
@@ -635,6 +650,7 @@ __all__ = [
     "SYNOPSIS_MAX_LEN",
     "active_experiment_cap_reached_message",
     "active_experiment_cap_would_exceed_message",
+    "agent_dispatch_enabled",
     "covered_terminal_ids",
     "is_review_gate_exempt",
     "evaluate_artifact_requirement",

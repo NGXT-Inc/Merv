@@ -1107,6 +1107,7 @@ class AgentSessionsClient:
         self.control_url = _safe_control_url(control_url)
         self.runner_key = runner_key
         self.timeout = timeout
+        self.last_claim_reason = ""
         self._opener = urllib.request.build_opener(_NoRedirect())
 
     def claim(
@@ -1130,7 +1131,9 @@ class AgentSessionsClient:
             allow_empty=True,
         )
         if result is None or result.get("session") is None:
+            self.last_claim_reason = str((result or {}).get("reason") or "")
             return None
+        self.last_claim_reason = ""
         session = result.get("session")
         if not isinstance(session, dict):
             raise RunnerError("malformed claim response: session must be an object")
@@ -1359,6 +1362,7 @@ class AgentRunner:
             raise RunnerError("runner secret is missing or too short")
         self.runner_secret = runner_secret
         self.environment = environment if environment is not None else os.environ
+        self._idle_reason = ""
 
     def reconcile(self) -> None:
         remote = {
@@ -1616,7 +1620,9 @@ class AgentRunner:
         )
         if claim is None:
             self.ledger.clear_claim(platform.name)
+            self._note_idle(self.client.last_claim_reason)
             return False
+        self._idle_reason = ""
         session = self.ledger.reserve(claim, platform)
         host = HOSTS[platform.adapter]
         workspace: Workspace | None = None
@@ -1682,6 +1688,17 @@ class AgentRunner:
             f"for {claim.target_type} {claim.target_id or claim.experiment_id}"
         )
         return True
+
+    def _note_idle(self, reason: str) -> None:
+        """Explain a silent poll once per change, not on every cycle."""
+        if reason == self._idle_reason:
+            return
+        self._idle_reason = reason
+        if reason == "agent_dispatch_disabled":
+            print(
+                f"{self.project_id}: automatic dispatch is off for this "
+                "project; turn it on in project settings to claim work"
+            )
 
     def _platform(self, name: str) -> Platform:
         for platform in self.platforms:

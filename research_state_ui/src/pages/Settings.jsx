@@ -1,246 +1,79 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useProjectStore } from '../store/useProjectStore';
-import { api } from '../api';
 import { isAuthEnabled } from '../auth';
 import AgentPlatforms from '../components/AgentPlatforms';
+import HuggingFaceToken from '../components/HuggingFaceToken';
+import McpKeys from '../components/McpKeys';
 
-// Compact absolute stamp for the ledger ("Jul 23 · 6:03 PM"). Null-safe.
-function fmtWhen(iso) {
-  if (!iso) return null;
-  try {
-    const d = new Date(iso);
-    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-  } catch { return iso; }
-}
-
-// One key's lifecycle state, derived fresh from its stamps (the same order the
-// backend enforces: revoked wins, then expiry).
-function keyState(k) {
-  if (k.revoked_at) return 'revoked';
-  if (k.expires_at && Date.parse(k.expires_at) <= Date.now()) return 'expired';
-  return 'active';
-}
+// Each tab owns one setup surface. `scope` is the honest reach of the panel:
+// two are per-project, the Hugging Face token is per-account.
+const TABS = [
+  { id: 'keys', label: 'MCP keys', scope: 'This project' },
+  { id: 'auto', label: 'Auto running', scope: 'This project' },
+  { id: 'huggingface', label: 'Hugging Face', scope: 'Your account' },
+];
 
 /**
- * Project settings — local coding-agent setup and MCP keys.
+ * Project settings, one concern per tab.
  *
- * Mint, list, and revoke the `mk_` keys that connect an MCP client (Claude,
- * Codex, …) to Merv. A key is scoped either to this one project or to every
- * project you belong to; an account-scoped key is administered here, under the
- * project it was minted from, but its reach is not limited to it. Every route
- * is owner-only and needs a hosted browser session, so in local/API-key mode
- * the list can't load — we say so plainly rather than surfacing a raw 401.
+ * The active tab lives in the query string so a panel is linkable and survives
+ * a refresh; an unknown value falls back to the first tab rather than rendering
+ * nothing. The tab label is the panel's title — panels do not repeat it.
  */
 export default function Settings() {
   const projectId = useProjectStore((s) => s.projectId);
   const hosted = isAuthEnabled();
+  const [params, setParams] = useSearchParams();
 
-  const [keys, setKeys] = useState([]);
-  const [loading, setLoading] = useState(hosted);
-  const [error, setError] = useState('');
-  const [minting, setMinting] = useState(false);
-  // Reaching every project is the common case, so it is the default here too.
-  const [grantScope, setGrantScope] = useState('account');
-  // The mk_ secret is held here for exactly one view. It lives only in this
-  // component's state — navigating away (or dismissing) drops it for good.
-  const [minted, setMinted] = useState(null);
-  const [copied, setCopied] = useState(false);
-  const [confirming, setConfirming] = useState('');
-  const [revoking, setRevoking] = useState('');
+  const requested = params.get('tab');
+  const active = TABS.some((tab) => tab.id === requested) ? requested : TABS[0].id;
+  const current = TABS.find((tab) => tab.id === active);
 
-  const load = useCallback(async () => {
-    if (!hosted || !projectId) return;
-    setLoading(true);
-    setError('');
-    try {
-      const res = await api.listProjectKeys(projectId);
-      setKeys(res?.keys || []);
-    } catch (err) {
-      setError(err?.message || 'Could not load this project’s keys.');
-    } finally {
-      setLoading(false);
-    }
-  }, [hosted, projectId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  async function mint() {
-    if (minting) return;
-    setMinting(true);
-    setError('');
-    try {
-      const res = await api.createProjectKey(projectId, { grant_scope: grantScope });
-      setMinted(res); // { key, secret }
-      setCopied(false);
-      setKeys((prev) => [res.key, ...prev]);
-    } catch (err) {
-      setError(err?.message || 'Could not mint a key.');
-    } finally {
-      setMinting(false);
-    }
-  }
-
-  async function copySecret() {
-    if (!minted?.secret) return;
-    try {
-      await navigator.clipboard.writeText(minted.secret);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setCopied(false);
-    }
-  }
-
-  async function revoke(keyId) {
-    setRevoking(keyId);
-    setError('');
-    try {
-      const res = await api.revokeProjectKey(projectId, keyId);
-      const updated = res?.key;
-      setKeys((prev) => prev.map((k) => (k.id === keyId ? updated || { ...k, revoked_at: new Date().toISOString() } : k)));
-    } catch (err) {
-      setError(err?.message || 'Could not revoke the key.');
-    } finally {
-      setRevoking('');
-      setConfirming('');
-    }
+  function select(id) {
+    const next = new URLSearchParams(params);
+    next.set('tab', id);
+    setParams(next, { replace: true });
   }
 
   return (
     <div className="page-stage">
       <div className="page-header">
-        <div className="page-head-row">
-          <div>
-            <h1 className="page-title">Settings</h1>
-            <p className="page-summary page-summary--lead">
-              Connect local coding agents to this project and manage the keys
-              that let agent clients reach Merv.
-            </p>
+        <h1 className="page-title">Settings</h1>
+        <p className="page-summary page-summary--lead">
+          Connect clients, run agents automatically, and manage the credentials
+          Merv uses on your behalf.
+        </p>
+        <div className="settings-tabs">
+          <div className="tab-row" role="tablist" aria-label="Settings sections">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                id={`settings-tab-${tab.id}`}
+                role="tab"
+                aria-selected={tab.id === active}
+                aria-controls="settings-panel"
+                className={`tab${tab.id === active ? ' active' : ''}`}
+                onClick={() => select(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
+          <span className="settings-tabs-scope">{current.scope}</span>
         </div>
       </div>
 
-      <AgentPlatforms projectId={projectId} />
-
-      <section className="settings-section" aria-labelledby="mcp-keys-title">
-        <div className="settings-section-head">
-          <div>
-            <div className="eyebrow">Access</div>
-            <h2 id="mcp-keys-title" className="settings-title">MCP keys</h2>
-            <p className="settings-summary">
-              A key connects an MCP client to Merv. Anyone holding it can act
-              within its scope, so treat it like a password.
-            </p>
-          </div>
-          {hosted && (
-            <div className="page-actions">
-              <label className="mcpk-scope-pick">
-                <select
-                  className="auth-input"
-                  aria-label="Key scope"
-                  value={grantScope}
-                  onChange={(e) => setGrantScope(e.target.value)}
-                  disabled={minting}
-                >
-                  <option value="account">All my projects</option>
-                  <option value="project">This project only</option>
-                </select>
-              </label>
-              <button type="button" className="btn btn--primary" onClick={mint} disabled={minting}>
-                {minting ? 'Minting…' : 'Mint MCP key'}
-              </button>
-            </div>
-          )}
-        </div>
-
-      {!hosted && (
-        <div className="empty-state empty-state--compact">
-          <p>Project keys are managed from your hosted RapidReview account. Sign in on the hosted app to mint or revoke keys.</p>
-        </div>
-      )}
-
-      {minted && (
-        <div className="mcpk-reveal" role="region" aria-label="New MCP key">
-          <div className="mcpk-reveal-head">
-            <span className="mcpk-reveal-title">Copy your new key now</span>
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setMinted(null)}>
-              Done
-            </button>
-          </div>
-          <div className="mcpk-secret">
-            <code className="mcpk-secret-value mono">{minted.secret}</code>
-            <button type="button" className="btn btn--sm" onClick={copySecret}>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          <p className="mcpk-reveal-warn">
-            This is the only time the secret is shown. It grants full access to
-            {minted.key?.grant_scope === 'account'
-              ? ' every project you belong to'
-              : ' this project'}
-            {' '}— store it like a password. Once you leave this page it cannot be
-            recovered; mint a new key if you lose it.
-          </p>
-        </div>
-      )}
-
-      {error && <div className="error-message" style={{ marginBottom: 14 }}>{error}</div>}
-
-      {hosted && (
-        <div className="mcpk">
-          {loading ? (
-            <div className="empty-state empty-state--compact"><p>Loading keys…</p></div>
-          ) : keys.length === 0 ? (
-            <div className="empty-state empty-state--compact"><p>No keys yet. Mint one to connect an MCP client.</p></div>
-          ) : (
-            <div className="mcpk-table" role="table" aria-label="Project MCP keys">
-              <div className="mcpk-row mcpk-row--head" role="row">
-                <span className="th" role="columnheader">Key</span>
-                <span className="th" role="columnheader">Scope</span>
-                <span className="th" role="columnheader">Created</span>
-                <span className="th" role="columnheader">Expires</span>
-                <span className="th" role="columnheader">State</span>
-                <span className="th th--r" role="columnheader" aria-label="Actions" />
-              </div>
-              {keys.map((k) => {
-                const state = keyState(k);
-                return (
-                  <div className="mcpk-row" role="row" key={k.id}>
-                    <span className="mcpk-id mono" role="cell" title={k.id}>{k.id}</span>
-                    <span className="mcpk-scope" role="cell">
-                      {k.grant_scope === 'account' ? 'All my projects' : 'This project'}
-                    </span>
-                    <span className="mcpk-when" role="cell">{fmtWhen(k.created_at) || '—'}</span>
-                    <span className="mcpk-when" role="cell">{fmtWhen(k.expires_at) || 'Never'}</span>
-                    <span className="mcpk-cell" role="cell">
-                      <span className={`mcpk-state mcpk-state--${state}`}>{state}</span>
-                    </span>
-                    <span className="mcpk-cell mcpk-cell--action" role="cell">
-                      {state === 'active' && (
-                        confirming === k.id ? (
-                          <span className="mcpk-confirm">
-                            <button type="button" className="btn btn--danger btn--sm" onClick={() => revoke(k.id)} disabled={revoking === k.id}>
-                              {revoking === k.id ? 'Revoking…' : 'Revoke'}
-                            </button>
-                            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setConfirming('')} disabled={revoking === k.id}>
-                              Cancel
-                            </button>
-                          </span>
-                        ) : (
-                          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setConfirming(k.id)}>
-                            Revoke
-                          </button>
-                        )
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-      </section>
+      <div
+        id="settings-panel"
+        role="tabpanel"
+        aria-labelledby={`settings-tab-${active}`}
+        className="settings-panel"
+      >
+        {active === 'keys' && <McpKeys projectId={projectId} hosted={hosted} />}
+        {active === 'auto' && <AgentPlatforms projectId={projectId} />}
+        {active === 'huggingface' && <HuggingFaceToken hosted={hosted} />}
+      </div>
     </div>
   );
 }

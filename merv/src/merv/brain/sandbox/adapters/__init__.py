@@ -23,6 +23,17 @@ from ..models import (
 )
 
 
+from .credential_check import (  # noqa: F401 — composition-facing re-export
+    CREDENTIAL_CHECKS,
+)
+from .provider_catalog import (  # noqa: F401 — composition-facing re-export
+    CONNECTABLE_PROVIDERS,
+    ProviderField,
+    ProviderSpec,
+    connectable_provider,
+)
+
+
 # Lazy adapter registry
 
 ActivityHook = Callable[[str, dict[str, Any]], None]
@@ -455,6 +466,34 @@ def _build_named_backend(
     )
 
 
+def configured_backend_names(
+    *, env: Mapping[str, str] | None = None
+) -> tuple[list[str], str]:
+    """``(fleet, default)`` as the env configures them, canonically named.
+
+    ``fleet`` is the de-duplicated `MERV_EXECUTION_BACKENDS` list (order kept);
+    ``default`` is the effective single/default provider — the same resolution
+    `build_sandbox_backend` applies, shared so config surfaces describe the
+    fleet without constructing it.
+    """
+    configured = list(
+        dict.fromkeys(  # de-dupe, keep configured order
+            _canonical_backend_name(part)
+            for part in (env_value("MERV_EXECUTION_BACKENDS", env=env) or "").split(
+                ","
+            )
+            if part.strip()
+        )
+    )
+    single = _canonical_backend_name(
+        env_value("MERV_EXECUTION_BACKEND", env=env) or ""
+    )
+    if len(configured) <= 1:
+        default = configured[0] if configured else (single or DEFAULT_SANDBOX_DRIVER)
+        return configured, default
+    return configured, (single if single in configured else configured[0])
+
+
 def build_sandbox_backend(
     *,
     repo_root: Path,
@@ -475,19 +514,10 @@ def build_sandbox_backend(
         return _build_named_backend(
             name=_canonical_backend_name(name), repo_root=repo_root, activity=activity
         )
-    configured = list(
-        dict.fromkeys(  # de-dupe, keep configured order
-            _canonical_backend_name(part)
-            for part in (env_value("MERV_EXECUTION_BACKENDS") or "").split(",")
-            if part.strip()
-        )
-    )
-    single = _canonical_backend_name(env_value("MERV_EXECUTION_BACKEND") or "")
+    configured, default = configured_backend_names()
     if len(configured) <= 1:
         return _build_named_backend(
-            name=configured[0] if configured else (single or DEFAULT_SANDBOX_DRIVER),
-            repo_root=repo_root,
-            activity=activity,
+            name=default, repo_root=repo_root, activity=activity
         )
     backends = {
         backend_name: _build_named_backend(
@@ -495,7 +525,6 @@ def build_sandbox_backend(
         )
         for backend_name in configured
     }
-    default = single if single in backends else configured[0]
     return MultiplexingSandboxBackend(
         backends=backends, default=default, aliases=BACKEND_ALIASES
     )

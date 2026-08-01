@@ -16,6 +16,13 @@ There is no campaign object. Reviews dispatch independently; after reflection
 approval, consolidation and its code review finish before the next experiment
 wave is materialized.
 
+## Dispatch switch
+
+Automatic dispatch is per project and off by default: a runner claims nothing
+until the project sets `agent_dispatch`. Turning it off stops new claims only.
+Live sessions continue until the project halts them, which closes their rows so
+each runner stops its own children on the next reconcile.
+
 ## Lifecycle
 
 1. A runner persists a stable claim key before network I/O and derives its

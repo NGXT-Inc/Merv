@@ -98,6 +98,11 @@ bin/merv-client workspace --repository "$PWD" --strategy git_worktree
 bin/merv-agent-runner --project proj_123
 ```
 
+Automatic dispatch is off by default and is a per-project setting, so a running
+runner claims nothing until the project turns it on in Settings. Turning it back
+off stops new claims; sessions already running continue until you stop them from
+the same page, which ends their agent processes and keeps their committed work.
+
 Codex and Claude Code receive only Merv's session-scoped MCP server. Other
 platforms invoke the same scoped tools through
 `merv-client call TOOL --arguments JSON`; the session key remains in the

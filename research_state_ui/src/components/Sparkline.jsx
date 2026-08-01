@@ -1,13 +1,17 @@
 /**
  * Sparkline — a dependency-free SVG polyline for a metric series. The answer to
  * "watch the loss/accuracy curve" as a compact inline visual.
+ *
+ * Scaling is per-series by default (a loss curve has no meaningful absolute
+ * range). Pass `domain` to pin it — utilization is a percentage, and letting a
+ * box that idles between 0 and 3% draw the same dramatic sawtooth as one
+ * swinging 0-100 would make the fleet trend a liar.
  */
-export default function Sparkline({ points, height = 46, stroke = 'var(--active)' }) {
+export default function Sparkline({ points, height = 46, stroke = 'var(--active)', domain = null }) {
   const ys = (points || []).filter(v => Number.isFinite(v));
   if (ys.length < 2) return null;
   const W = 240;
-  const min = Math.min(...ys);
-  const max = Math.max(...ys);
+  const [min, max] = domain || [Math.min(...ys), Math.max(...ys)];
   const span = max - min || 1;
   const dx = W / (ys.length - 1);
   const pad = 4;

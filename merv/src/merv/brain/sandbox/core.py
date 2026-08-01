@@ -44,6 +44,7 @@ from .models import (
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     POLL_AFTER_SECONDS,
+    ProviderAdmission,
     RUNS_WAIT_CAP_SECONDS,
     RUNS_WAIT_POLL_SECONDS,
     SandboxBackend,
@@ -55,7 +56,7 @@ from .models import (
     public_phase,
 )
 from .scheduler import SandboxScheduler
-from .heartbeat import SandboxActivityPolicy, SandboxHeartbeatMonitor
+from .heartbeat import SandboxActivityPolicy, SandboxHeartbeatMonitor, usage_point
 from .sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
 from .storage import SandboxStorage
 
@@ -90,6 +91,9 @@ MAX_TIME_LIMIT_SECONDS = 24 * 60 * 60
 DEFAULT_TIME_LIMIT_SECONDS = 3600
 DEFAULT_CPU = 2.0
 DEFAULT_MEMORY_MB = 8192
+# Command text on the fleet list is a label, not a record — the terminal has
+# the full line. Bounding it keeps a pathological command out of a 3s poll.
+LIVE_COMMAND_MAX_CHARS = 300
 
 
 def _validated_resources(
@@ -248,11 +252,15 @@ class SandboxEngine:
         storage_enabled: bool = False,
         storage_hint: str = "",
         attachment_check: Callable[..., None] | None = None,
+        provider_admission: ProviderAdmission | None = None,
     ) -> None:
         self._quotas = QuotaService(store=store)
         self.storage_enabled = bool(storage_enabled)
         self.storage_hint = str(storage_hint or "")
         self.attachment_check = attachment_check
+        # Composition-injected project gate: raises when the project has
+        # switched the resolved provider off (Sandboxes → Configure).
+        self._provider_admission = provider_admission
         self.activity_policy = SandboxActivityPolicy()
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
@@ -571,6 +579,65 @@ class SandboxEngine:
             "updated_at": hydrated.get("updated_at"),
         }
 
+    def _live_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Canonical row plus the liveness the fleet table reads per row.
+
+        The fleet view has to answer "is this box working, on what, and
+        trending which way" for every box at once. Both answers are already on
+        the row — the command snapshot written by the last transcript read, the
+        usage series written by the control-plane heartbeat sweep — so reading
+        them costs one projection, not one SSH round trip per box. Only the
+        list path enriches: single-sandbox and agent-facing views keep the
+        narrower canonical shape.
+        """
+        snapshot = self._canonical_snapshot(row=row)
+        command = self._storage.command_snapshot(row=row)
+        if command is not None:
+            snapshot["last_command"] = {
+                # Bound the text: this rides a 3s poll, and the row ellipsizes.
+                "command": str(command.get("command") or "")[:LIVE_COMMAND_MAX_CHARS],
+                "status": command.get("status"),
+                "started_at": command.get("started_at"),
+                "finished_at": command.get("finished_at"),
+                "exit_code": command.get("exit_code"),
+            }
+        # A terminated box's last sample is archaeology, not liveness.
+        if snapshot["status"] == "running":
+            snapshot["heartbeat"] = self._heartbeat_view(row=row)
+        return snapshot
+
+    def _heartbeat_view(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
+        """Compact usage projection: current percentages plus the trend ring.
+
+        `latest` is derived from the stored sample rather than the ring's tail
+        so rows written before the ring existed still render their bars — the
+        sparkline simply stays empty until the sweep has filled it.
+        """
+        record = self._storage.heartbeat_snapshot(row=row)
+        if not isinstance(record, dict):
+            return None
+        metrics = record.get("metrics")
+        sampled_at = parse_iso(record.get("sampled_at"))
+        series = record.get("series")
+        return {
+            "sampled_at": record.get("sampled_at"),
+            "idle_since": row.get("idle_since") or None,
+            "latest": (
+                usage_point(
+                    metrics=metrics,
+                    now=sampled_at or datetime.now(tz=UTC),
+                    row=row,
+                )
+                if isinstance(metrics, dict)
+                else None
+            ),
+            "series": (
+                [point for point in series if isinstance(point, dict)]
+                if isinstance(series, list)
+                else []
+            ),
+        }
+
     def _capabilities_for(self, *, provider: str | None) -> BackendCapabilities:
         try:
             return self._backend.capabilities_for(provider=provider)
@@ -762,6 +829,10 @@ class SandboxEngine:
             project_id = self._store.require_project_id(
                 conn=conn, project_id=project_id
             )
+        if self._provider_admission is not None:
+            # caps.name is the RESOLVED provider (the fleet default when the
+            # caller passed none), so a disabled default blocks bare requests.
+            self._provider_admission(project_id=project_id, provider=caps.name)
         if experiment_id and self.attachment_check is not None:
             self.attachment_check(attachment_id=experiment_id, project_id=project_id)
         with self._experiment_request_guard(experiment_id):
@@ -877,6 +948,8 @@ class SandboxEngine:
                 time_limit_seconds=int(time_limit),
                 price_usd_per_hour=price,
                 price_unknown_reason=price_unknown_reason,
+                project_id=project_id,
+                provider=caps.name,
             )
             # The later transactional admission is authoritative.
             if not job_live:
@@ -1712,7 +1785,7 @@ class SandboxEngine:
 
     def for_project(self, *, project_id: str) -> list[dict[str, Any]]:
         rows = self._storage.list_for_project(project_id=project_id)
-        return [self._canonical_snapshot(row=row) for row in rows]
+        return [self._live_snapshot(row=row) for row in rows]
 
     def reap_expired(self, *, now: datetime | None = None) -> int:
         return self._lifecycle.reap_expired(now=now)

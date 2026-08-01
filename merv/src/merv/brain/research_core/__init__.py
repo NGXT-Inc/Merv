@@ -26,16 +26,19 @@ from .reflection_workflow import (
     REFLECTION_WORKFLOW,
 )
 from .policy import (
+    AGENT_DISPATCH_SETTING,
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     GateEvaluation,
     RequirementEvaluation,
     REVIEW_ROLE_VALUES,
     REVIEW_VERDICT_VALUES,
     SYNOPSIS_MAX_LEN,
+    agent_dispatch_enabled,
 )
 from .research import Research
 
 __all__ = [
+    "AGENT_DISPATCH_SETTING",
     "CommittedExperimentUpdate",
     "ExhibitVerdict",
     "ExperimentState",
@@ -56,6 +59,7 @@ __all__ = [
     "RequirementEvaluation",
     "REVIEW_ROLE_VALUES",
     "SYNOPSIS_MAX_LEN",
+    "agent_dispatch_enabled",
     "graph_problems",
     "historical_latest_artifacts",
     "preferred_artifact",

@@ -10,6 +10,7 @@ from typing import Any, cast
 from .experiment_workflow import EXPERIMENT_TERMINAL_STATUSES
 from .reflection_workflow import REFLECTION_WORKFLOW
 from .policy import (
+    AGENT_DISPATCH_SETTING,
     CLAIM_CONFIDENCES,
     CLAIM_STATUSES,
     GateEvaluation,
@@ -151,6 +152,7 @@ class Research:
         summary: str | None = None,
         require_verified_reviews: bool | None = None,
         hidden: bool | None = None,
+        agent_dispatch: bool | None = None,
     ) -> dict[str, Any]:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -168,6 +170,8 @@ class Research:
                 settings["require_verified_reviews"] = bool(require_verified_reviews)
             if hidden is not None:
                 settings["hidden"] = bool(hidden)
+            if agent_dispatch is not None:
+                settings[AGENT_DISPATCH_SETTING] = bool(agent_dispatch)
             conn.execute(
                 """
                 UPDATE projects

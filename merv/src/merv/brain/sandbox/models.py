@@ -171,6 +171,13 @@ class BackendCapabilities:
     configurable_resources: bool = True
 
 
+class ProviderAdmission(Protocol):
+    """Request-time project gate: raise to block procurement on a provider
+    (the Sandboxes → Configure disable switch); return to admit."""
+
+    def __call__(self, *, project_id: str, provider: str) -> None: ...
+
+
 @runtime_checkable
 class SandboxDriver(Protocol):
     """Small provider contract: catalog and lifecycle."""

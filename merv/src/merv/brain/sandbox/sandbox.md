@@ -23,7 +23,11 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
 4. Reads use one row-derived `SandboxTarget` for provider, SSH, work directory,
    and key coordinates. Observation caches and reconciles remote runs, metrics,
    and transcript bytes.
-5. Release, provisioning failure, expiry, idleness, and crash recovery converge
+5. The idle sweep already samples every running row, so it also records a
+   bounded usage series. The project list projects that plus the last command
+   per row, which is what makes a whole fleet observable without one SSH read
+   per viewer; single-sandbox and agent views keep the narrower shape.
+6. Release, provisioning failure, expiry, idleness, and crash recovery converge
    on `SandboxLifecycle`. `SandboxScheduler` supplies cadence; it does not own
    lifecycle decisions.
 
@@ -37,7 +41,11 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
 - `provisioning.py`: asynchronous acquire/cancel recovery; `lifecycle.py`:
   destructive and recovery transitions; `scheduler.py`: timer ordering.
 - `observation.py`: run ledger, remote run reads, metrics, and transcript cache;
-  `heartbeat.py`: activity and idle policy; `quotas.py`: admission and spend.
+  `heartbeat.py`: activity/idle policy plus the bounded usage series the fleet
+  view reads; `quotas.py`: admission and spend.
+- `adapters/provider_catalog.py`: connectable-provider specs (fields, wizard
+  help, env detection) and `adapters/credential_check.py`: one cheap
+  authenticated call per provider — both behind Sandboxes → Configure.
 - `keys.py`: management-key adapters; `sandbox_paths.py`: canonical remote
   paths. Lifecycle keeps process-local, write-only pending secrets.
 - `adapters/__init__.py`: lazy registry, factory, aliases, and multi-provider

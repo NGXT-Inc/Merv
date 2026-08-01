@@ -184,4 +184,10 @@ def build_router(
         gateway.authorize_project(request, project_id)
         return application.agent_sessions.list(project_id=project_id)
 
+    @router.post("/api/projects/{project_id}/agent-sessions/halt")
+    def halt_sessions(project_id: str, request: Request) -> dict[str, Any]:
+        """Stop this project's live sessions; disabling dispatch does not."""
+        gateway.authorize_project(request, project_id)
+        return application.halt_agent_sessions(project_id=project_id)
+
     return router

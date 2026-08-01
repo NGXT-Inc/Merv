@@ -5,8 +5,9 @@ from .models import DisabledSandboxBackend, SandboxBackend
 from .core import SandboxEngine
 
 
+# DisabledSandboxBackend stays importable by name for composition, but the
+# star-export surface is exactly the control law: one engine, one port.
 __all__ = [
     "SandboxBackend",
-    "DisabledSandboxBackend",
     "SandboxEngine",
 ]

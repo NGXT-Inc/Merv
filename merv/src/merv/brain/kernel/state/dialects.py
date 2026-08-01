@@ -202,6 +202,26 @@ class PostgresStateStore(BaseStateStore):
         ).fetchone()
         return row is not None
 
+    def _sandboxes_uid_is_pk(self, *, conn: Any) -> bool:
+        # Same trap as _has_table: the base probe's PRAGMA aborts an open
+        # Postgres transaction, poisoning _migration_scope's BEGIN before the
+        # information_schema fallback runs — which broke every FRESH-database
+        # migration-4 replay. Go straight to information_schema here.
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_schema = 'public'
+              AND tc.table_name = 'sandboxes'
+              AND tc.constraint_type = 'PRIMARY KEY'
+              AND kcu.column_name = 'sandbox_uid'
+            """
+        ).fetchone()
+        return row is not None
+
     def _initialize(self) -> None:
         conn = self.connect()
         try:

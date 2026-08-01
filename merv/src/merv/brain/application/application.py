@@ -24,6 +24,7 @@ from ..research_core import (
     EXPERIMENT_WORKFLOW,
     REFLECTION_WORKFLOW,
     Research,
+    agent_dispatch_enabled,
 )
 from ..sandbox import SandboxEngine
 from .experiments.context import ExperimentContextQuery
@@ -134,6 +135,8 @@ class Application:
     ) -> dict[str, Any]:
         """Assign the next experiment, review, or consolidation task."""
         snapshot = self.research.snapshot(project_id=project_id)
+        if not agent_dispatch_enabled(snapshot.project):
+            return {"session": None, "reason": "agent_dispatch_disabled"}
         active = [
             experiment
             for experiment in snapshot.experiments
@@ -367,6 +370,11 @@ class Application:
     def agent_session_authority(self, *, session_id: str) -> dict[str, str]:
         """The immutable parent authority for one runner-owned session."""
         return self.agent_sessions.authority(session_id=session_id)
+
+    def halt_agent_sessions(self, *, project_id: str) -> dict[str, Any]:
+        """Stop every live session now; runners kill their children on reconcile."""
+        halted = self.agent_sessions.halt(project_id=project_id)
+        return {"halted": halted, **self.agent_sessions.list(project_id=project_id)}
 
     def release_agent_session(
         self,

@@ -199,6 +199,16 @@ class ProjectUpdateInput(ProjectScopedInput):
             "attested reviews stop counting. Omit to leave unchanged."
         ),
     )
+    agent_dispatch: bool | None = Field(
+        default=None,
+        description=(
+            "Policy knob (off by default): when true, local coding-agent "
+            "runners may claim this project's experiments, reviews, and "
+            "consolidations automatically. Turning it off stops new claims; "
+            "sessions already running keep going until halted. Omit to leave "
+            "unchanged."
+        ),
+    )
     hidden: bool | None = Field(
         default=None,
         description=(

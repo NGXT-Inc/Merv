@@ -10,6 +10,11 @@ from ..kernel.utils import format_iso, parse_iso
 from .observation import RunsObserver, SandboxMetrics, SandboxRunLedger
 from .storage import SandboxStorage
 
+# Retained usage points per row. The sweep samples every ~30s, so 30 points is
+# roughly a quarter hour — enough shape to tell a finished box from a box
+# between steps, and small enough to keep the snapshot blob cheap.
+HEARTBEAT_SERIES_MAX = 30
+
 
 class RowReaper(Protocol):
     """Terminate one sandbox row; True only once the provider confirms."""
@@ -201,8 +206,14 @@ class SandboxHeartbeatMonitor:
     def reap_idle(
         self, *, now: datetime | None = None, threshold_seconds: float
     ) -> int:
-        if threshold_seconds <= 0:
-            return 0
+        """Sample every running row; reap the ones idle past the threshold.
+
+        Sampling is unconditional: the recorded series is what makes the whole
+        fleet observable without a per-viewer SSH read, so a zero threshold
+        means "watch, don't act", not "don't look". Every destructive step in
+        `_tick_row` sits behind `policy.should_reap`, which is false whenever
+        the threshold is zero — observing idleness never licenses acting on it.
+        """
         now_dt = now or datetime.now(tz=UTC)
         reaped = 0
         for row in self.storage.list_running_rows():
@@ -237,12 +248,20 @@ class SandboxHeartbeatMonitor:
             if isinstance(previous_record, dict)
             else None
         )
+        previous_series = (
+            previous_record.get("series") if isinstance(previous_record, dict) else None
+        )
         idle_since = parse_iso(row.get("idle_since"))
         if not isinstance(previous, dict) or previous_at is None:
             self.storage.record_heartbeat(
                 sandbox_uid=sandbox_uid,
                 idle_since=None,
-                snapshot=self._snapshot(metrics=metrics, now=now),
+                snapshot=self._snapshot(
+                    metrics=metrics,
+                    now=now,
+                    previous_series=previous_series,
+                    row=row,
+                ),
                 expected_project_id=project_id,
             )
             return False
@@ -266,6 +285,8 @@ class SandboxHeartbeatMonitor:
                 now=now,
                 previous_metrics=previous,
                 previous_sampled_at=previous_at,
+                previous_series=previous_series,
+                row=row,
             ),
         ):
             return False
@@ -344,12 +365,81 @@ class SandboxHeartbeatMonitor:
         now: datetime,
         previous_metrics: dict[str, Any] | None = None,
         previous_sampled_at: datetime | None = None,
+        previous_series: Any = None,
+        row: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        snapshot: dict[str, Any] = {"sampled_at": format_iso(now), "metrics": metrics}
+        snapshot: dict[str, Any] = {
+            "sampled_at": format_iso(now),
+            "metrics": metrics,
+            "series": append_usage_point(
+                series=previous_series,
+                point=usage_point(metrics=metrics, now=now, row=row),
+            ),
+        }
         if previous_metrics is not None and previous_sampled_at is not None:
             snapshot["previous_metrics"] = previous_metrics
             snapshot["previous_sampled_at"] = format_iso(previous_sampled_at)
         return snapshot
+
+
+def usage_point(
+    *, metrics: dict[str, Any], now: datetime, row: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """One sample as bounded percentages — the unit the fleet row reads.
+
+    Percentages, not raw gauges: the row renders utilization against the box's
+    own reservation, and a fixed 0-100 domain is what makes one row's trend
+    comparable to the next. Falls back to the reserved cpu/memory on the row
+    when the in-container cgroup limit is unreadable (same rule the live usage
+    bars already use). An unknown ratio stays ``None`` rather than 0 — a blank
+    is honest, a zero would read as an idle box.
+    """
+    reserved = row or {}
+    cpu = metrics.get("cpu") or {}
+    memory = metrics.get("memory") or {}
+    gpus = metrics.get("gpus")
+    gpus = gpus if isinstance(gpus, list) else []
+
+    memory_limit = _float(memory.get("limit_bytes"))
+    if memory_limit is None:
+        reserved_mib = _float(reserved.get("memory"))
+        memory_limit = reserved_mib * 1024 * 1024 if reserved_mib else None
+
+    return {
+        "at": format_iso(now),
+        "cpu": _ratio_pct(
+            _float(cpu.get("used_cores")),
+            _float(cpu.get("limit_cores")) or _float(reserved.get("cpu")),
+        ),
+        "mem": _ratio_pct(_float(memory.get("used_bytes")), memory_limit),
+        "gpu": _peak(
+            _float(gpu.get("util_pct")) for gpu in gpus if isinstance(gpu, dict)
+        ),
+        "vram": _peak(
+            _ratio_pct(
+                _float(gpu.get("mem_used_mib")), _float(gpu.get("mem_total_mib"))
+            )
+            for gpu in gpus
+            if isinstance(gpu, dict)
+        ),
+    }
+
+
+def append_usage_point(*, series: Any, point: dict[str, Any]) -> list[dict[str, Any]]:
+    """Append one point to a bounded ring, tolerating a malformed prior blob."""
+    prior = [item for item in series if isinstance(item, dict)] if isinstance(series, list) else []
+    return [*prior, point][-HEARTBEAT_SERIES_MAX:]
+
+
+def _ratio_pct(used: float | None, limit: float | None) -> float | None:
+    if used is None or not limit or limit <= 0:
+        return None
+    return round(max(used / limit * 100.0, 0.0), 1)
+
+
+def _peak(values: Any) -> float | None:
+    present = [value for value in values if value is not None]
+    return round(max(present), 1) if present else None
 
 
 def _float(value: Any) -> float | None:

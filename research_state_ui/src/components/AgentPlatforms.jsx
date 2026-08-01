@@ -59,6 +59,11 @@ export default function AgentPlatforms({ projectId }) {
   const [runnerMessage, setRunnerMessage] = useState('');
   const [runnerStatus, setRunnerStatus] = useState(null);
   const [machineBaseline, setMachineBaseline] = useState(null);
+  const [dispatch, setDispatch] = useState(null);
+  const [dispatchBusy, setDispatchBusy] = useState(false);
+  const [dispatchError, setDispatchError] = useState('');
+  const [halting, setHalting] = useState(false);
+  const [showHaltPrompt, setShowHaltPrompt] = useState(false);
 
   useEffect(() => {
     try {
@@ -98,6 +103,19 @@ export default function AgentPlatforms({ projectId }) {
     };
   }, [projectId]);
 
+  useEffect(() => {
+    if (!projectId) return undefined;
+    let disposed = false;
+    api.getProject(projectId)
+      .then((project) => {
+        if (!disposed) setDispatch(Boolean(project?.settings?.agent_dispatch));
+      })
+      .catch(() => {
+        if (!disposed) setDispatchError('Dispatch setting is unavailable.');
+      });
+    return () => { disposed = true; };
+  }, [projectId]);
+
   const draftConfig = useMemo(
     () => configFromDraft(platforms, workspace),
     [platforms, workspace],
@@ -110,6 +128,12 @@ export default function AgentPlatforms({ projectId }) {
   );
   const dirty = machineBaseline !== null && signature !== machineBaseline;
   const runCommand = `merv-agent-runner --project ${projectId || 'PROJECT_ID'}`;
+  const liveSessions = useMemo(
+    () => (sessions || []).filter(
+      (session) => session.status === 'offered' || session.status === 'active',
+    ),
+    [sessions],
+  );
 
   function update(id, patch) {
     setPlatforms((current) => current.map((platform) => (
@@ -132,6 +156,36 @@ export default function AgentPlatforms({ projectId }) {
       custom: true,
       commandWasString: false,
     }]);
+  }
+
+  async function toggleDispatch(next) {
+    setDispatchBusy(true);
+    setDispatchError('');
+    try {
+      const project = await api.patchProject(projectId, { agent_dispatch: next });
+      setDispatch(Boolean(project?.settings?.agent_dispatch ?? next));
+      // Turning dispatch off only stops new claims, so offer the separate stop
+      // for whatever is already running.
+      setShowHaltPrompt(!next);
+    } catch (err) {
+      setDispatchError(err?.message || 'Could not change the dispatch setting.');
+    } finally {
+      setDispatchBusy(false);
+    }
+  }
+
+  async function haltSessions() {
+    setHalting(true);
+    setDispatchError('');
+    try {
+      const response = await api.haltAgentSessions(projectId);
+      setSessions(response?.sessions || []);
+      setShowHaltPrompt(false);
+    } catch (err) {
+      setDispatchError(err?.message || 'Could not stop the running sessions.');
+    } finally {
+      setHalting(false);
+    }
   }
 
   function invalidateConnection() {
@@ -228,22 +282,78 @@ export default function AgentPlatforms({ projectId }) {
   }
 
   return (
-    <section className="settings-section" aria-labelledby="agent-platforms-title">
-      <div className="settings-section-head">
-        <div>
-          <div className="page-eyebrow">Local execution</div>
-          <h2 id="agent-platforms-title" className="settings-title">Coding agents</h2>
-          <p className="settings-summary">
-            Choose which local agent platforms Merv may use and how many
-            experiments each may run at once. Enabled agents run unattended
-            with your machine account’s filesystem and network permissions;
-            worktrees isolate Git changes, not operating-system access.
-          </p>
-        </div>
+    <>
+      <div className="settings-panel-head">
+        <p className="settings-summary">
+          Merv can run this project’s experiments, reviews, and consolidations
+          in local coding-agent sessions. Enabled agents run unattended with
+          your machine account’s filesystem and network permissions; worktrees
+          isolate Git changes, not operating-system access.
+        </p>
         <button type="button" className="btn btn--ghost" onClick={addCommandAgent}>
           Add command agent
         </button>
       </div>
+
+      <div className="agent-dispatch">
+        <div>
+          <strong>Automatic dispatch</strong>
+          <p>
+            While this is on, any runner started for this project claims its
+            experiments, reviews, and consolidations as soon as they are
+            available. While it is off, nothing is dispatched and you drive
+            agents yourself.
+          </p>
+        </div>
+        <div className="agent-dispatch-control">
+          <label className="agent-dispatch-toggle">
+            <input
+              type="checkbox"
+              checked={dispatch === true}
+              disabled={dispatch === null || dispatchBusy || !projectId}
+              onChange={(event) => toggleDispatch(event.target.checked)}
+            />
+            <span>
+              {dispatch === null ? 'Loading…' : dispatch ? 'On' : 'Off'}
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {showHaltPrompt && liveSessions.length > 0 && (
+        <div className="agent-dispatch-halt" role="status">
+          <p>
+            {liveSessions.length === 1
+              ? '1 session is still running.'
+              : `${liveSessions.length} sessions are still running.`}
+            {' '}
+            Turning dispatch off stops new work only. Stop these now to end
+            their agent processes; their committed work is kept.
+          </p>
+          <div className="page-actions">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={haltSessions}
+              disabled={halting}
+            >
+              {halting ? 'Stopping…' : 'Stop them now'}
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => setShowHaltPrompt(false)}
+              disabled={halting}
+            >
+              Let them finish
+            </button>
+          </div>
+        </div>
+      )}
+
+      {dispatchError && (
+        <p className="agent-session-note" role="alert">{dispatchError}</p>
+      )}
 
       <div className="agent-workspace">
         <div>
@@ -545,6 +655,16 @@ export default function AgentPlatforms({ projectId }) {
             These sessions come from Merv. Keep one runner machine per project
             so every experiment branch shares the same central repository.
           </p>
+          {liveSessions.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={haltSessions}
+              disabled={halting}
+            >
+              {halting ? 'Stopping…' : `Stop ${liveSessions.length} running`}
+            </button>
+          )}
         </div>
         {sessionError ? (
           <span className="agent-session-note">{sessionError}</span>
@@ -571,6 +691,6 @@ export default function AgentPlatforms({ projectId }) {
           </div>
         )}
       </div>
-    </section>
+    </>
   );
 }

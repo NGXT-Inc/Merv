@@ -159,6 +159,10 @@ FILE_LAYERS = {
     # Write-only per-user HF-token facade over the KERNEL-owned user_hf_tokens
     # store methods (no-dataplane Phase C); the analog of project_keys.py.
     "surface/user_settings.py": APPLICATION_LAYER,
+    # Write-only per-project provider-connection facade over the KERNEL-owned
+    # sandbox_provider_settings store methods; the analog of user_settings.py.
+    # The fleet resolver is composition-injected so it never imports bootstrap.
+    "surface/sandbox_providers.py": APPLICATION_LAYER,
 }
 
 ALLOWED_LAYER_EDGES = (
@@ -192,6 +196,9 @@ TABLE_OWNERS = {
     "projects": KERNEL,
     "project_members": KERNEL,
     "user_hf_tokens": KERNEL,
+    # Same shape as user_hf_tokens: kernel owns the rows, the surface facade
+    # (sandbox_providers.py) is the only writer, provisioning the only reader.
+    "sandbox_provider_settings": KERNEL,
     "project_api_keys": SURFACE,
     "oauth_clients": SURFACE,
     "oauth_authorization_codes": SURFACE,

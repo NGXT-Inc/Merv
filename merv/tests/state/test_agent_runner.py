@@ -926,6 +926,7 @@ class _FakeHost:
 
 class _FakeClient:
     control_url = "https://merv.test"
+    last_claim_reason = ""
 
     def __init__(self, claim: Claim):
         self.claim_result = claim

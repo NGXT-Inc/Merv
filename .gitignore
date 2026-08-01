@@ -33,3 +33,4 @@ logs/
 /outputs/
 /architecture_companion/
 merv/src/*.egg-info/
+cache/

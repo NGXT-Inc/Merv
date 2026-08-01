@@ -26,6 +26,7 @@ from . import (
     reflections,
     reviews,
     runs_wait,
+    sandbox_providers,
     sandboxes,
     storage,
     user_settings,
@@ -125,6 +126,7 @@ def create_fastapi_app(
                 sandboxes=api.sandboxes,
             ),
             runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
+            sandbox_providers.build_router(providers=api.sandbox_providers),
         )
         if api.sandbox_enabled
         else ()

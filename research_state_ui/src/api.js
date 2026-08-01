@@ -175,6 +175,9 @@ export const api = {
     body: { name, summary: summary || '' },
   }),
   patchProject: (pid, patch) => request(`/api/projects/${encodeURIComponent(pid)}`, { method: 'PATCH', body: patch }),
+  // { id, name, summary, status, created_at, settings } — settings holds the
+  // per-project policy knobs (agent_dispatch, require_verified_reviews, hidden).
+  getProject: (pid) => request(`/api/projects/${encodeURIComponent(pid)}`),
   getHome: (pid, signal) => request(`/api/projects/${encodeURIComponent(pid)}/home`, { signal }),
   // Conditional variants of the three snapshot endpoints refreshHome polls.
   getHomeIfChanged: (pid, etag, signal) =>
@@ -203,6 +206,10 @@ export const api = {
   // ~/.merv/client.json; this read shows only agents that have claimed work.
   listAgentSessions: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/agent-sessions`),
+  // Close every live session now. Disabling dispatch only stops new claims;
+  // this is the separate stop for work already running. → { halted, sessions }
+  haltAgentSessions: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/agent-sessions/halt`, { method: 'POST' }),
 
   // Claims
   createClaim: (pid, { statement, scope, confidence }) =>
@@ -305,6 +312,34 @@ export const api = {
   // Sandboxes (cloud-backed; agent drives execution over SSH — see sandboxes.py).
   // The UI observes; it does not procure sandboxes (that is an agent MCP action).
   listSandboxes: (pid) => request(`/api/projects/${encodeURIComponent(pid)}/sandboxes`),
+
+  // Provider connections (Sandboxes → Configure). The overview is secret-free
+  // (which fields are set + non-secret values); saves and toggles need the
+  // browser session — machine keys get a 403.
+  listSandboxProviders: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/sandbox-providers`),
+  // body: { values?: {field: value}, mode?: 'own'|'platform' }
+  saveSandboxProvider: (pid, provider, body) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/sandbox-providers/${encodeURIComponent(provider)}`,
+      { method: 'PUT', body },
+    ),
+  setSandboxProviderEnabled: (pid, provider, enabled) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/sandbox-providers/${encodeURIComponent(provider)}/enabled`,
+      { method: 'POST', body: { enabled } },
+    ),
+  setSandboxProviderDailyLimit: (pid, provider, dailyUsdLimit) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/sandbox-providers/${encodeURIComponent(provider)}/daily-limit`,
+      { method: 'POST', body: { daily_usd_limit: dailyUsdLimit } },
+    ),
+  // Saves nothing; probes the provider with the stored/platform credentials.
+  verifySandboxProvider: (pid, provider) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/sandbox-providers/${encodeURIComponent(provider)}/verify`,
+      { method: 'POST', body: {} },
+    ),
   getSandbox: (pid, eid, { sandboxUid = null } = {}) =>
     request(sandboxPath(pid, eid, sandboxUid)),
   // Terminal transcript. Pass { since: cursor } (from the previous response's

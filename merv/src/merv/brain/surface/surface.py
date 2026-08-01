@@ -59,7 +59,12 @@ from ..kernel.state.tool_call_ledger import ToolCallLedger
 from ..kernel.utils import ValidationError
 from ..object_storage import ObjectStorage
 from ..sandbox import DisabledSandboxBackend, SandboxBackend, SandboxEngine
-from ..sandbox.adapters import build_sandbox_backend
+from ..sandbox.adapters import (
+    CONNECTABLE_PROVIDERS,
+    CREDENTIAL_CHECKS,
+    build_sandbox_backend,
+    configured_backend_names,
+)
 from ..sandbox.keys import LocalMgmtKeyStore, MountedMgmtKeyStore
 from .artifacts import ArtifactTools
 from .auth import SupabaseVerifier
@@ -71,6 +76,7 @@ from .tools.contracts import TOOL_MANIFEST, available_tool_names
 from .tools.dispatcher import ToolDispatcher
 from .transport.api import create_fastapi_app
 from .transport.http_policy import HttpSurfacePolicy
+from .sandbox_providers import SandboxProviderSettings
 from .user_settings import UserHfTokenSettings
 from .web_preview import AllowlistedPaperPreview, NetworkWebPreview
 
@@ -119,6 +125,12 @@ class Surface:
             terminal_experiment_statuses=EXPERIMENT_TERMINAL_STATUSES,
         )
         self.artifact_tools = ArtifactTools(artifacts=self.artifacts)
+        self.sandbox_providers = SandboxProviderSettings(
+            store=store,
+            fleet=configured_backend_names,
+            catalog=CONNECTABLE_PROVIDERS,
+            checks=CREDENTIAL_CHECKS,
+        )
         self.sandboxes = SandboxEngine(
             store=store,
             backend=execution_backend,
@@ -127,6 +139,7 @@ class Surface:
             storage_enabled=storage.enabled,
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=self.research.assert_experiment_in_project,
+            provider_admission=self.sandbox_providers.ensure_provider_allowed,
         )
         if sandbox_enabled:
             self.sandboxes.start()

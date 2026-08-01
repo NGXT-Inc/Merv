@@ -241,7 +241,9 @@ def _schema_without_project_keys() -> str:
     """SCHEMA before the agent-anywhere Phase-A tables: no project_api_keys
     table and no sandbox_generations.key_id column. The Phase-B OAuth tables
     are stripped too — oauth_refresh_tokens FKs project_api_keys, so a schema
-    predating project_api_keys cannot carry them without a dangling reference."""
+    predating project_api_keys cannot carry them without a dangling reference.
+    Newer FK-less attribution columns (agent_sessions.source_key_id) stay: they
+    dangle nothing, and migrations 26/27 must upgrade around them anyway."""
     legacy = re.sub(
         r"\n-- Surface-owned project credentials.*?"
         r"CREATE TABLE IF NOT EXISTS project_api_keys \(.*?\n\);\n",
@@ -256,9 +258,9 @@ def _schema_without_project_keys() -> str:
         flags=re.DOTALL,
     )
     if (
-        legacy == SCHEMA
-        or "CREATE TABLE IF NOT EXISTS project_api_keys" in legacy
-        or "key_id" in legacy
+        "CREATE TABLE IF NOT EXISTS project_api_keys" in legacy
+        or "REFERENCES project_api_keys" in legacy
+        or "\n  key_id TEXT," in legacy
     ):
         raise AssertionError("failed to build the pre-project-keys schema")
     return legacy

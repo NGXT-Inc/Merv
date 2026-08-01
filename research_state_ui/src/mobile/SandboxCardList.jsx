@@ -8,9 +8,11 @@ import SandboxTerminal from '../components/SandboxTerminal';
 import SlideToConfirm from './SlideToConfirm';
 import { SkeletonCards } from './Skeleton';
 import { toast } from './toastStore';
+import Sparkline from '../components/Sparkline';
 import { expName } from '../utils/experiment';
 import { fmtDuration } from '../utils/format';
 import { PARACHUTE_CHIPS, latestParachute } from '../utils/parachute';
+import { fleetActivity, usageBars, usageTrend } from '../utils/fleet';
 
 const sandboxRowId = (s) => s.sandbox_uid || s.sandbox_id || s.experiment_id;
 const primaryExperimentId = (s) => (
@@ -104,6 +106,7 @@ function SandboxCard({ sandbox: s, experiment, experimentId, parachute, open, on
   ].filter(Boolean).join(' · ');
   const endpoint = s.ssh_host && s.ssh_port ? `${s.ssh_user || 'root'}@${s.ssh_host}:${s.ssh_port}` : null;
   const expRunning = experiment && experiment.status === 'running';
+  const activity = fleetActivity(s, now);
 
   async function release() {
     setBusy(true);
@@ -135,6 +138,8 @@ function SandboxCard({ sandbox: s, experiment, experimentId, parachute, open, on
         {s.sandbox_id && <span><ObjId id={s.sandbox_id} /></span>}
       </div>
       {endpoint && <div className="mcard-meta"><span className="mono">{endpoint}</span></div>}
+
+      {activity && <MobileLiveStrip activity={activity} sandbox={s} />}
 
       <div className="mcard-actions">
         <button type="button" className="btn btn--sm" onClick={onToggle} aria-expanded={open}>
@@ -173,6 +178,49 @@ function SandboxCard({ sandbox: s, experiment, experimentId, parachute, open, on
             </button>
           </div>
           {error && <div className="error-message" style={{ marginTop: 8 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The card's liveness block — the same rules the desktop row uses, stacked for
+ * a narrow column: state and command on one line, gauges wrapping below.
+ */
+function MobileLiveStrip({ activity, sandbox }) {
+  const heartbeat = sandbox.heartbeat || null;
+  const command = sandbox.last_command?.command || '';
+  const bars = usageBars(heartbeat?.latest);
+  const lead = bars[0];
+  const trend = usageTrend(heartbeat?.series, lead?.key);
+
+  return (
+    <div className={`msbx-live msbx-live--${activity.tone}`}>
+      <div className="msbx-live-head">
+        <span className="msbx-live-state">{activity.label}</span>
+        {activity.detail && <span className="msbx-live-detail">{activity.detail}</span>}
+      </div>
+      {command && <div className="msbx-live-cmd mono">{command}</div>}
+      {bars.length > 0 && (
+        <div className="msbx-live-gauges">
+          {bars.map(bar => (
+            <div key={bar.key} className="msbx-gauge">
+              <div className="msbx-gauge-head">
+                <span>{bar.label}</span>
+                <span className="mono">{Math.round(bar.pct)}%</span>
+              </div>
+              <div className="msbx-gauge-track">
+                <div
+                  className="msbx-gauge-fill"
+                  style={{ width: `${Math.max(0, Math.min(100, bar.pct))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+          <div className="msbx-live-trend" aria-hidden="true">
+            <Sparkline points={trend} domain={[0, 100]} height={20} stroke="currentColor" />
+          </div>
         </div>
       )}
     </div>

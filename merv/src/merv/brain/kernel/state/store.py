@@ -868,6 +868,33 @@ CREATE TABLE IF NOT EXISTS user_hf_tokens (
   updated_at TEXT NOT NULL
 );
 
+-- Per-project compute-provider connections (August 2026). One row per
+-- (project, provider) the project has touched in Sandboxes → Configure:
+-- saved credentials (JSON keyed by canonical MERV_* field names) and the
+-- agent-facing enable switch. Credentials are WRITE-ONLY by contract — set,
+-- merged, or cleared over the API; reads surface only WHICH keys are set
+-- (plus non-secret values) and the raw JSON is read back only internally at
+-- sandbox provisioning. No row means "no opinion": env-configured providers
+-- stay usable until a row explicitly disables them.
+CREATE TABLE IF NOT EXISTS sandbox_provider_settings (
+  project_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  credentials TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  -- '' = decide from what exists (saved creds, else env); 'own' and
+  -- 'platform' record an explicit wizard choice (platform = the deployment's
+  -- shared credentials, offered for Lambda Labs by default).
+  credential_mode TEXT NOT NULL DEFAULT '',
+  -- NULL = uncapped. Admission stops NEW provisioning on this provider once
+  -- the project's UTC-day spend reaches the cap (quotas.py).
+  daily_usd_limit REAL,
+  -- Set when credential_check last confirmed access; cleared on every
+  -- credential write.
+  verified_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, provider)
+);
+
 -- Durable tool-call ledger (July 2026, logging/observability P0). One row per
 -- dispatched call AND per refusal that never reached the dispatcher, so agent
 -- friction — retry loops, gate bounces, poll churn, per-tool latency, context
@@ -1118,6 +1145,11 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # experiment branch identity, immutable consolidation proposals/coverage,
     # and the intent/CAS/settle receipt.
     (42, "add_consolidation", ""),
+    # Sandbox provider connections (August 2026): per-project saved cloud
+    # credentials + the agent-facing enable switch behind Sandboxes →
+    # Configure. Fresh schemas create the table above; the handler runs the
+    # SCHEMA-extracted DDL on existing stores.
+    (43, "add_sandbox_provider_settings", ""),
 )
 
 # Migration 41 indexes. They cannot live in SCHEMA because an existing store
@@ -1397,6 +1429,9 @@ class BaseStateStore:
         elif name == "add_user_hf_tokens":
             if not self._has_table(conn=conn, table="user_hf_tokens"):
                 conn.execute(_schema_table_ddl(table="user_hf_tokens"))
+        elif name == "add_sandbox_provider_settings":
+            if not self._has_table(conn=conn, table="sandbox_provider_settings"):
+                conn.execute(_schema_table_ddl(table="sandbox_provider_settings"))
         elif name == "add_feed_upload_tokens":
             pass  # Historical marker; Feed installs its owned schema at startup.
         elif name == "add_storage_completion_tokens":
@@ -2392,6 +2427,143 @@ class BaseStateStore:
                 "SELECT token FROM user_hf_tokens WHERE user_id = ?", (user_id,)
             ).fetchone()
         return str(row["token"]) if row and row["token"] else ""
+
+    def upsert_sandbox_provider_settings(
+        self,
+        *,
+        project_id: str,
+        provider: str,
+        credentials_json: str | None = None,
+        enabled: bool | None = None,
+        credential_mode: str | None = None,
+        verified_at: str | None = None,
+    ) -> None:
+        """Upsert one (project, provider) connection row. ``None`` keeps the
+        stored value (for ``verified_at`` pass ``""`` to clear); the insert
+        defaults are ``'{}'``, enabled, mode ``''`` and unverified. Read-
+        modify-write inside one transaction — a naive ON CONFLICT upsert would
+        clobber the field a ``None`` meant to keep. A credential write always
+        resets ``verified_at`` unless the caller stamps it in the same call.
+        Credentials are write-only by contract — ``sandbox_provider_credentials``
+        below is the internal-only read (see ``user_hf_token``)."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT credentials, enabled, credential_mode, verified_at
+                FROM sandbox_provider_settings
+                WHERE project_id = ? AND provider = ?
+                """,
+                (project_id, provider),
+            ).fetchone()
+            stored_credentials = str(row["credentials"]) if row else "{}"
+            stored_enabled = bool(row["enabled"]) if row else True
+            stored_mode = str(row["credential_mode"] or "") if row else ""
+            stored_verified = str(row["verified_at"] or "") if row else ""
+            if verified_at is None:
+                verified_at = "" if credentials_json is not None else stored_verified
+            conn.execute(
+                """
+                INSERT INTO sandbox_provider_settings
+                  (project_id, provider, credentials, enabled, credential_mode,
+                   verified_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (project_id, provider) DO UPDATE SET
+                  credentials = excluded.credentials,
+                  enabled = excluded.enabled,
+                  credential_mode = excluded.credential_mode,
+                  verified_at = excluded.verified_at,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    project_id,
+                    provider,
+                    stored_credentials if credentials_json is None
+                    else credentials_json,
+                    int(stored_enabled if enabled is None else enabled),
+                    stored_mode if credential_mode is None else credential_mode,
+                    verified_at,
+                    now_iso(),
+                ),
+            )
+
+    def set_sandbox_provider_daily_limit(
+        self, *, project_id: str, provider: str, daily_usd_limit: float | None
+    ) -> None:
+        """Set (or clear, with ``None``) the provider's daily USD cap. Its own
+        method because ``None`` is a meaningful value here, not "keep"."""
+        with self.transaction() as conn:
+            existing = conn.execute(
+                """
+                SELECT 1 FROM sandbox_provider_settings
+                WHERE project_id = ? AND provider = ?
+                """,
+                (project_id, provider),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE sandbox_provider_settings
+                    SET daily_usd_limit = ?, updated_at = ?
+                    WHERE project_id = ? AND provider = ?
+                    """,
+                    (daily_usd_limit, now_iso(), project_id, provider),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO sandbox_provider_settings
+                      (project_id, provider, daily_usd_limit, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (project_id, provider, daily_usd_limit, now_iso()),
+                )
+
+    def list_sandbox_provider_settings(
+        self, *, project_id: str
+    ) -> list[dict[str, Any]]:
+        """Every connection row for a project, credentials included — callers
+        (the settings service) redact before anything reaches an API."""
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT provider, credentials, enabled, credential_mode,
+                       daily_usd_limit, verified_at, updated_at
+                FROM sandbox_provider_settings WHERE project_id = ?
+                ORDER BY provider
+                """,
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "provider": str(row["provider"]),
+                "credentials": str(row["credentials"] or "{}"),
+                "enabled": bool(row["enabled"]),
+                "credential_mode": str(row["credential_mode"] or ""),
+                "daily_usd_limit": (
+                    None
+                    if row["daily_usd_limit"] is None
+                    else float(row["daily_usd_limit"])
+                ),
+                "verified_at": str(row["verified_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+            for row in rows
+        ]
+
+    def sandbox_provider_credentials(
+        self, *, project_id: str, provider: str
+    ) -> str:
+        """Raw saved-credentials JSON for provisioning. INTERNAL ONLY — never
+        surface this through an API. ``'{}'`` when no row exists."""
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT credentials FROM sandbox_provider_settings
+                WHERE project_id = ? AND provider = ?
+                """,
+                (project_id, provider),
+            ).fetchone()
+        return str(row["credentials"]) if row and row["credentials"] else "{}"
 
     def is_project_member(self, *, project_id: str, user_id: str) -> bool:
         with closing(self.connect()) as conn:

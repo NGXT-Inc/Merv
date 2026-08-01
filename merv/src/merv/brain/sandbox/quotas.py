@@ -26,6 +26,10 @@ class AdmissionRequest:
     time_limit_seconds: int
     price_usd_per_hour: float | None = None
     price_unknown_reason: str = ""
+    # Per-provider daily-cap coordinates (Sandboxes → Configure). Empty
+    # values skip the provider-day check — legacy callers stay untouched.
+    project_id: str = ""
+    provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -339,6 +343,7 @@ class QuotaService:
         self._check_kill_switch(
             scope=request.tenant_id, label="tenant", conn=conn
         )
+        self._check_provider_daily_limit(request=request, conn=conn)
         quota = self.get_quota(tenant_id=request.tenant_id, conn=conn)
         if quota is None:
             return
@@ -466,6 +471,75 @@ class QuotaService:
                 "tripped_at": tripped.get("tripped_at"),
             },
         )
+
+    def provider_day_spend(
+        self, *, project_id: str, provider: str, conn: Any | None = None
+    ) -> float:
+        """USD the project has spent on one provider since UTC midnight.
+
+        Generation usage is clamped to today's window; open generations bill
+        through now. Legacy rows with an empty provider tag never count
+        toward a named provider's cap. Unpriced generations contribute $0 —
+        the cap bounds *priced* spend, mirroring the ledger everywhere else.
+        """
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.provider_day_spend(
+                    project_id=project_id, provider=provider, conn=owned
+                )
+        now = datetime.now(UTC)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = conn.execute(
+            "SELECT started_at, ended_at, price_usd_per_hour "
+            "FROM sandbox_generations "
+            "WHERE project_id = ? AND provider = ? "
+            "AND (ended_at IS NULL OR ended_at >= ?)",
+            (project_id, provider, day_start.isoformat()),
+        ).fetchall()
+        spend = 0.0
+        for row in rows:
+            usage = _generation_usage(row_to_dict(row=row) or {}, now=now)
+            if usage is None or usage.price_usd_per_hour <= 0:
+                continue
+            started = max(usage.started, day_start)
+            if usage.ended <= started:
+                continue
+            hours = (usage.ended - started).total_seconds() / 3600.0
+            spend += hours * usage.price_usd_per_hour
+        return spend
+
+    def _check_provider_daily_limit(
+        self, *, request: AdmissionRequest, conn: Any
+    ) -> None:
+        """Refuse NEW provisioning once today's provider spend reaches the
+        project's cap (Sandboxes → Configure). Threshold semantics: already-
+        running sandboxes keep billing; only new acquisition stops."""
+        if not request.project_id or not request.provider:
+            return
+        limit = None
+        for row in self.store.list_sandbox_provider_settings(
+            project_id=request.project_id
+        ):
+            if row["provider"] == request.provider:
+                limit = row["daily_usd_limit"]
+                break
+        if limit is None:
+            return
+        spend = self.provider_day_spend(
+            project_id=request.project_id, provider=request.provider, conn=conn
+        )
+        if spend >= float(limit):
+            raise PermissionDeniedError(
+                f"daily spend limit reached for provider {request.provider}: "
+                f"${spend:.2f} of ${float(limit):.2f} today — raise the limit "
+                "under Sandboxes → Configure or wait for the UTC day to roll",
+                details={
+                    "limit": float(limit),
+                    "spent": spend,
+                    "quota": "provider_daily_usd_limit",
+                    "provider": request.provider,
+                },
+            )
 
     def _check_budget(
         self, *, tenant_id: str, quota: "TenantQuota", conn: Any | None = None
