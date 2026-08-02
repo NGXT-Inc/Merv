@@ -41,8 +41,7 @@ Adding another stateful public object requires an architectural reason.
 - `experiment_workflow.py`: the complete experiment lifecycle and guidance.
 - `reflection_workflow.py`: the complete reflection lifecycle and start policy.
 - `workflow_schema.py`: passive workflow values and declaration validation.
-- Persisted workflow states and transition names live only in those declarations;
-  enforcement and presentation derive their choices from them.
+- Persisted workflow states and transitions live only in those declarations.
 - `policy.py`: pure vocabulary, validation, gate evaluation, snapshot identity,
   reflection signal, and limits.
 - `evidence.py`: pure evidence selection and document/graph envelope checks.
