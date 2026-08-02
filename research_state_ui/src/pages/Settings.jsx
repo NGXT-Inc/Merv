@@ -10,7 +10,7 @@ import ProviderConfig from '../components/ProviderConfig';
 // three are per-project, the Hugging Face token is per-account.
 const TABS = [
   { id: 'keys', label: 'MCP keys', scope: 'This project' },
-  { id: 'auto', label: 'Auto running', scope: 'This project' },
+  { id: 'auto', label: 'Auto running', scope: 'This project + a runner machine' },
   { id: 'compute', label: 'Compute', scope: 'This project' },
   { id: 'huggingface', label: 'Hugging Face', scope: 'Your account' },
 ];

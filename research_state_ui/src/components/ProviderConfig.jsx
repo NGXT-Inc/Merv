@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import ProviderIcon from './ProviderIcon';
 import ProviderSetupModal from './ProviderSetupModal';
+import Switch from './Switch';
 
 /**
  * ProviderConfig — the Configure page of the compute fleet.
@@ -23,22 +24,6 @@ function statusOf(p) {
       : { label: 'connected', cls: 'ok' };
   }
   return { label: 'via environment', cls: 'env' };
-}
-
-function Switch({ checked, disabled, onChange, label }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      className={`sbxp-switch${checked ? ' on' : ''}`}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="sbxp-switch-knob" />
-    </button>
-  );
 }
 
 function DailyLimit({ projectId, provider, onUpdated }) {
