@@ -4,12 +4,14 @@ import { isAuthEnabled } from '../auth';
 import AgentPlatforms from '../components/AgentPlatforms';
 import HuggingFaceToken from '../components/HuggingFaceToken';
 import McpKeys from '../components/McpKeys';
+import ProviderConfig from '../components/ProviderConfig';
 
 // Each tab owns one setup surface. `scope` is the honest reach of the panel:
-// two are per-project, the Hugging Face token is per-account.
+// three are per-project, the Hugging Face token is per-account.
 const TABS = [
   { id: 'keys', label: 'MCP keys', scope: 'This project' },
   { id: 'auto', label: 'Auto running', scope: 'This project' },
+  { id: 'compute', label: 'Compute', scope: 'This project' },
   { id: 'huggingface', label: 'Hugging Face', scope: 'Your account' },
 ];
 
@@ -44,7 +46,7 @@ export default function Settings() {
           Merv uses on your behalf.
         </p>
         <div className="settings-tabs">
-          <div className="tab-row" role="tablist" aria-label="Settings sections">
+          <div className="settings-tab-row" role="tablist" aria-label="Settings sections">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
@@ -53,7 +55,7 @@ export default function Settings() {
                 role="tab"
                 aria-selected={tab.id === active}
                 aria-controls="settings-panel"
-                className={`tab${tab.id === active ? ' active' : ''}`}
+                className={`settings-tab${tab.id === active ? ' active' : ''}`}
                 onClick={() => select(tab.id)}
               >
                 {tab.label}
@@ -72,6 +74,7 @@ export default function Settings() {
       >
         {active === 'keys' && <McpKeys projectId={projectId} hosted={hosted} />}
         {active === 'auto' && <AgentPlatforms projectId={projectId} />}
+        {active === 'compute' && <ProviderConfig projectId={projectId} />}
         {active === 'huggingface' && <HuggingFaceToken hosted={hosted} />}
       </div>
     </div>

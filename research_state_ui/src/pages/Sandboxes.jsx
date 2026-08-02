@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { useProjectStore, selectExperiments, selectEventsAll } from '../store/useProjectStore';
+import { Navigate, useSearchParams } from 'react-router-dom';
+import { useProjectStore, selectExperiments, selectEventsAll, projectPath } from '../store/useProjectStore';
 import { api } from '../api';
 import SandboxTable from '../components/SandboxTable';
-import ProviderConfig from '../components/ProviderConfig';
 
 const STATUS_TABS = ['all', 'running', 'provisioning', 'terminated'];
 
 /**
- * Sandboxes — the compute surface, two pages under one header.
+ * Sandboxes — the compute fleet as an infra table.
  *
- * Active is the instance console: status, hardware, lifetime, and endpoint
- * per row, with an expand-to-terminal drawer (rows render in the shared
- * SandboxTable, also used on Home). Configure is the provider directory:
- * connect a cloud once, then the enable switch decides whether agents may
- * procure there. The page is deep-linkable: ?view=configure.
+ * One sandbox per experiment; the agent procures them over MCP and drives them
+ * over SSH. This page is the instance console: status, hardware, lifetime, and
+ * endpoint per row, with an expand-to-terminal drawer. The row UI lives in the
+ * shared SandboxTable (also used on Home); this page owns the live fetch and
+ * the status-filter tabs. Provider setup lives in Settings › Compute.
  */
 export default function Sandboxes() {
   const projectId = useProjectStore(s => s.projectId);
@@ -23,11 +22,7 @@ export default function Sandboxes() {
   const [sandboxes, setSandboxes] = useState(null);
   const [error, setError] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all');
-  const [params, setParams] = useSearchParams();
-  const view = params.get('view') === 'configure' ? 'configure' : 'active';
-  const setView = (next) => {
-    setParams(next === 'configure' ? { view: 'configure' } : {}, { replace: true });
-  };
+  const [params] = useSearchParams();
 
   const fetchSandboxes = useCallback(async () => {
     try {
@@ -42,13 +37,12 @@ export default function Sandboxes() {
   useEffect(() => { fetchSandboxes(); }, [fetchSandboxes]);
 
   useEffect(() => {
-    if (view !== 'active') return undefined;
     const anyActive = (sandboxes || []).some(
       s => s.status === 'running' || s.status === 'provisioning',
     );
     const t = setInterval(fetchSandboxes, anyActive ? 3000 : 10000);
     return () => clearInterval(t);
-  }, [fetchSandboxes, sandboxes, view]);
+  }, [fetchSandboxes, sandboxes]);
 
   const counts = useMemo(() => {
     const map = { all: (sandboxes || []).length };
@@ -61,57 +55,43 @@ export default function Sandboxes() {
     return (sandboxes || []).filter(s => s.status === filterStatus);
   }, [sandboxes, filterStatus]);
 
+  // Provider configuration moved to Settings; honor the old deep link.
+  if (params.get('view') === 'configure') {
+    return <Navigate to={projectPath(projectId, '/settings?tab=compute')} replace />;
+  }
+
   return (
     <div className="page-stage">
       <header className="page-header">
         <h1 className="page-title">Compute fleet</h1>
-        <div className="sbx-view-row">
-          {['active', 'configure'].map(v => (
-            <button
-              key={v}
-              className={`sbx-view${view === v ? ' active' : ''}`}
-              onClick={() => setView(v)}
-            >
-              {v === 'active' && (counts.running || 0) > 0 && <span className="sbxt-tab-dot" />}
-              {v}
+        <div className="tab-row" style={{ marginTop: 12 }}>
+          {STATUS_TABS.map(s => (
+            <button key={s} className={`tab${filterStatus === s ? ' active' : ''}`} onClick={() => setFilterStatus(s)}>
+              {s === 'running' && (counts.running || 0) > 0 && <span className="sbxt-tab-dot" />}
+              {s}
+              <span className="tab-count">{counts[s] || 0}</span>
             </button>
           ))}
         </div>
-        {view === 'active' && (
-          <div className="tab-row" style={{ marginTop: 12 }}>
-            {STATUS_TABS.map(s => (
-              <button key={s} className={`tab${filterStatus === s ? ' active' : ''}`} onClick={() => setFilterStatus(s)}>
-                {s === 'running' && (counts.running || 0) > 0 && <span className="sbxt-tab-dot" />}
-                {s}
-                <span className="tab-count">{counts[s] || 0}</span>
-              </button>
-            ))}
-          </div>
-        )}
       </header>
 
-      {view === 'configure' ? (
-        <ProviderConfig projectId={projectId} />
+      {error && <div className="error-message">{error}</div>}
+
+      {sandboxes == null ? (
+        <div className="empty">Loading…</div>
       ) : (
-        <>
-          {error && <div className="error-message">{error}</div>}
-          {sandboxes == null ? (
-            <div className="empty">Loading…</div>
-          ) : (
-            <SandboxTable
-              sandboxes={filtered}
-              experiments={experiments}
-              events={events}
-              projectId={projectId}
-              empty={(
-                <div className="empty-state">
-                  <h2>No sandboxes</h2>
-                  {sandboxes.length > 0 && <p>{`No ${filterStatus} sandboxes.`}</p>}
-                </div>
-              )}
-            />
+        <SandboxTable
+          sandboxes={filtered}
+          experiments={experiments}
+          events={events}
+          projectId={projectId}
+          empty={(
+            <div className="empty-state">
+              <h2>No sandboxes</h2>
+              {sandboxes.length > 0 && <p>{`No ${filterStatus} sandboxes.`}</p>}
+            </div>
           )}
-        </>
+        />
       )}
     </div>
   );

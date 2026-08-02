@@ -5326,14 +5326,33 @@ a.spend-row-name:hover { color: var(--active); }
 
 /* --- SETTINGS -------------------------------------------------------- */
 /* The tab row is the page's section navigation; the label doubles as each
-   panel's title, so panels carry a summary line and no heading of their own. */
+   panel's title, so panels carry a summary line and no heading of their own.
+   Underline register: the active tab's 2px bar sits on the container rule. */
 .settings-tabs {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: flex-end; justify-content: space-between;
   gap: var(--space-4); margin-top: 22px;
-  padding-bottom: 12px; border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.settings-tab-row { display: flex; gap: var(--space-4); }
+.settings-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 4px 2px 7px;
+  margin-bottom: -1px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active {
+  color: var(--text);
+  font-weight: 560;
+  border-bottom-color: var(--active);
 }
 .settings-tabs-scope {
-  flex: none; color: var(--faint); font-size: 11.5px;
+  flex: none; padding-bottom: 8px; color: var(--faint); font-size: 11.5px;
 }
 .settings-panel { padding-top: 4px; }
 .settings-panel-head {
@@ -5356,7 +5375,9 @@ a.spend-row-name:hover { color: var(--active); }
 }
 .settings-field-status--error { color: var(--refutes); }
 @media (max-width: 720px) {
-  .settings-tabs { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .settings-tabs { flex-direction: column; align-items: stretch; gap: 6px; border-bottom: none; }
+  .settings-tab-row { flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); }
+  .settings-tabs-scope { padding-bottom: 0; }
   .settings-panel-head { flex-direction: column; align-items: flex-start; }
   .settings-field-row { flex-wrap: wrap; }
 }
@@ -5677,37 +5698,7 @@ a.spend-row-name:hover { color: var(--active); }
 .oauth-scope-choice strong { display: block; font-size: var(--text-sm); }
 .oauth-scope-detail { display: block; margin-top: 2px; font-size: var(--text-xs); color: var(--muted); }
 
-/* --- SANDBOXES: VIEW SWITCH + PROVIDER CONFIGURE ---------------------- */
-/* Page-level Active | Configure switch: underline register, one step up
-   from the pill status filters so the two rows read as different organs. */
-.sbx-view-row {
-  display: flex;
-  gap: var(--space-4);
-  margin-top: 10px;
-  border-bottom: 1px solid var(--line-soft);
-}
-.sbx-view {
-  appearance: none;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 4px 2px 7px;
-  margin-bottom: -1px;
-  font-size: 13px;
-  text-transform: capitalize;
-  color: var(--muted);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.sbx-view:hover { color: var(--text); }
-.sbx-view.active {
-  color: var(--text);
-  font-weight: 560;
-  border-bottom-color: var(--active);
-}
-
+/* --- PROVIDER CONFIGURE (Settings > Compute) --------------------------- */
 .sbxp-lede {
   max-width: 62ch;
   font-size: var(--text-sm);
