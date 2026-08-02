@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Request
 
+from ....kernel.utils import ValidationError
 from ...identity import (
     HumanSessionRequiredError,
     is_human_session,
@@ -60,10 +61,14 @@ def build_router(*, providers: SandboxProviderSettings) -> APIRouter:
     ) -> dict[str, object]:
         _require_human(request)
         payload = body or {}
+        enabled = payload.get("enabled")
+        # bool("false") is True — accept only a real JSON boolean.
+        if not isinstance(enabled, bool):
+            raise ValidationError("enabled must be a boolean")
         return providers.set_enabled(
             project_id=project_id,
             provider=provider,
-            enabled=bool(payload.get("enabled")),
+            enabled=enabled,
         )
 
     @router.post(

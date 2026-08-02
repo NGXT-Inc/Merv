@@ -156,6 +156,17 @@ class SandboxProviderSettingsTest(unittest.TestCase):
         self.assertFalse(entry["enabled"])
         self.assertEqual(entry["daily_usd_limit"], 25)
 
+    def test_non_finite_daily_limits_are_rejected(self) -> None:
+        # NaN compares false against any spend (silently uncapping the
+        # provider) and breaks JSON serialization of the stored row.
+        for bad in (float("nan"), float("inf"), float("-inf"), "NaN", "Infinity"):
+            with self.assertRaises(ValidationError):
+                self.settings.set_daily_limit(
+                    project_id=self.project_id,
+                    provider="tensordock",
+                    daily_usd_limit=bad,
+                )
+
     def test_mode_change_resets_verification(self) -> None:
         from merv.brain.sandbox.adapters import (
             CONNECTABLE_PROVIDERS,
@@ -499,6 +510,16 @@ class SandboxProviderHttpBoundaryTest(unittest.TestCase):
             e for e in overview.json()["providers"] if e["provider"] == "aws"
         )
         self.assertFalse(aws["enabled"])
+
+    def test_enabled_requires_a_real_boolean(self) -> None:
+        # bool("false") is True — a string must not flip the switch.
+        for bad in ("false", "true", 1, None):
+            rejected = self.client.post(
+                f"/api/projects/{self.project_id}/sandbox-providers/aws/enabled",
+                json={"enabled": bad},
+                headers=_bearer(self.jwt_a),
+            )
+            self.assertEqual(rejected.status_code, 400, rejected.text)
 
     def test_machine_key_reads_but_cannot_write(self) -> None:
         overview = self.client.get(

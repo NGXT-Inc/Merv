@@ -17,6 +17,7 @@ admission reading the same rows.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -226,6 +227,10 @@ class SandboxProviderSettings:
                 daily_usd_limit = float(daily_usd_limit)
             except (TypeError, ValueError) as exc:
                 raise ValidationError("daily_usd_limit must be a number") from exc
+            # NaN compares false against spend (uncapping the provider) and
+            # breaks JSON serialization of the stored row — refuse non-finite.
+            if not math.isfinite(daily_usd_limit):
+                raise ValidationError("daily_usd_limit must be a finite number")
             if daily_usd_limit < 0:
                 raise ValidationError("daily_usd_limit cannot be negative")
         self._store.set_sandbox_provider_daily_limit(
