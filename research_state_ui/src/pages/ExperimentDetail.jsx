@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useProjectStore, useProjectHref } from '../store/useProjectStore';
@@ -11,6 +11,7 @@ import ExperimentGraphs from '../components/ExperimentGraphs';
 import SandboxTerminal from '../components/SandboxTerminal';
 import ArtifactList from '../components/ArtifactList';
 import IndependentRead from '../components/IndependentRead';
+import TerminalTransitionConfirm from '../components/TerminalTransitionConfirm';
 import { expName } from '../utils/experiment';
 import { pickIndependentRead } from '../utils/independentRead';
 import { gateToSectionId, useScrollToHash } from '../utils/useScrollToHash';
@@ -26,6 +27,10 @@ const SECONDARY_TRANSITIONS = [
   { transition: 'mark_failed', label: 'Mark failed' },
   { transition: 'abandon',     label: 'Abandon' },
 ];
+const TERMINAL_TRANSITIONS = new Set([
+  'complete',
+  ...SECONDARY_TRANSITIONS.map(a => a.transition),
+]);
 
 function deriveActionButtons(workflow) {
   if (!workflow) return { primary: null, secondary: [] };
@@ -51,6 +56,11 @@ export default function ExperimentDetail() {
   const [busy, setBusy] = useState(new Set());
   const [actionError, setActionError] = useState(null);
   const [gateOpen, setGateOpen] = useState(false);
+  const [pendingTerminalTransition, setPendingTerminalTransition] = useState(null);
+
+  useEffect(() => {
+    setPendingTerminalTransition(null);
+  }, [experimentId]);
 
   // Cross-page deep links (e.g. /experiments/:id#execution) — once the
   // experiment has loaded and its sections rendered, scroll the matching id
@@ -88,15 +98,41 @@ export default function ExperimentDetail() {
   const onAction = useCallback(async (transition) => {
     setBusy(prev => { const n = new Set(prev); n.add(transition); return n; });
     setActionError(null);
+    let transitionApplied = false;
     try {
       await api.transitionExperiment(projectId, experimentId, transition);
+      transitionApplied = true;
       await Promise.all([fetchStatus(), refreshHome()]);
+      return true;
     } catch (err) {
       setActionError(`${transition}: ${err.message}`);
+      // If only a follow-up refresh failed, the irreversible transition still
+      // landed. Close the confirmation rather than offering a dangerous retry;
+      // stream/poll reconciliation will refresh the page state.
+      return transitionApplied;
     } finally {
       setBusy(prev => { const n = new Set(prev); n.delete(transition); return n; });
     }
   }, [projectId, experimentId, fetchStatus, refreshHome]);
+
+  const requestAction = useCallback((transition) => {
+    if (TERMINAL_TRANSITIONS.has(transition)) {
+      setActionError(null);
+      setPendingTerminalTransition(transition);
+      return;
+    }
+    onAction(transition);
+  }, [onAction]);
+
+  const confirmTerminalTransition = useCallback(async () => {
+    if (!pendingTerminalTransition) return;
+    const completed = await onAction(pendingTerminalTransition);
+    if (completed) setPendingTerminalTransition(null);
+  }, [onAction, pendingTerminalTransition]);
+
+  const cancelTerminalTransition = useCallback(() => {
+    setPendingTerminalTransition(null);
+  }, []);
 
   if (error) {
     return (
@@ -170,7 +206,7 @@ export default function ExperimentDetail() {
               primaryAction={primary}
               secondaryActions={secondary}
               actionsBusy={busy}
-              onAction={onAction}
+              onAction={requestAction}
               linkTo={(() => {
                 const section = gateToSectionId(workflow?.current_gate);
                 return section ? `#${section}` : null;
@@ -180,6 +216,15 @@ export default function ExperimentDetail() {
         </FSMStrip>
         {actionError && <div className="error-message">{actionError}</div>}
       </section>
+
+      <TerminalTransitionConfirm
+        transition={pendingTerminalTransition}
+        experimentName={expName(experiment)}
+        busy={pendingTerminalTransition ? busy.has(pendingTerminalTransition) : false}
+        error={actionError}
+        onConfirm={confirmTerminalTransition}
+        onCancel={cancelTerminalTransition}
+      />
 
       {/* ─────────────  ORIENTATION  ────────────────────────────────── */}
       <header className="exp-orient">

@@ -1036,6 +1036,61 @@ html[data-theme="dark"] .product-tab--active {
   color: var(--faint);
 }
 
+/* Experiment terminal-state confirmation. It uses the shared modal surface,
+   but gives the irreversible workflow boundary its own compact hierarchy. */
+.terminal-confirm { max-width: 460px; padding: 22px; }
+.terminal-confirm-eyebrow {
+  margin-bottom: 8px;
+  color: var(--refutes);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+.terminal-confirm-title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.terminal-confirm-copy {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+.terminal-confirm-copy strong { color: var(--text); font-weight: 600; }
+.terminal-confirm-warning {
+  margin: 10px 0 0;
+  color: var(--refutes);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.terminal-confirm-error {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(var(--refutes-rgb), 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--refutes-rgb), 0.06);
+  color: var(--refutes);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.terminal-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+@media (max-width: 520px) {
+  .terminal-confirm-overlay { padding: 16px; }
+  .terminal-confirm-actions > .btn { flex: 1; }
+}
+
 /* Directory cards for remote workspace, local checkout target, and durable storage. */
 .retention-modal-dirs { display: flex; flex-direction: column; gap: 6px; }
 .retention-modal-dir {
