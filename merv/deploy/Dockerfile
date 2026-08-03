@@ -26,11 +26,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy the project and install with the control extra. The `control` profile
-# pulls psycopg + boto3 + the provider SDK (pyproject [project.optional-dependencies]).
+# Copy the project and install with the control + gcp extras. The `control`
+# profile pulls psycopg + boto3 + the provider SDK; `gcp` adds google-auth so
+# GCP credential verification and provisioning work in the hosted brain
+# (pyproject [project.optional-dependencies]).
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install ".[control]"
+RUN pip install ".[control,gcp]"
 
 # Run as a non-root user (the control plane never needs root; it holds no user
 # checkout).
