@@ -606,6 +606,17 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   updated_at TEXT NOT NULL,
   -- Insertion-order column replacing rowid ordering (cloud plan Phase 6).
   created_seq INTEGER NOT NULL DEFAULT 0,
+  -- Migration 44 (columns stay LAST so migrated and fresh stores hash the
+  -- same schema): payer of record ('' = unattributed, never capped), the
+  -- credential source that bills it ('platform' | 'own', adapter-reported),
+  -- the tri-state admitted/validated price (NULL = unknown, distinct from
+  -- the NOT NULL 0 floor above), and the budget-enforcement ladder
+  -- ('' | 'warned' | 'over_budget').
+  user_id TEXT NOT NULL DEFAULT '',
+  billing_mode TEXT NOT NULL DEFAULT '',
+  quoted_price_usd_per_hour REAL,
+  budget_state TEXT NOT NULL DEFAULT '',
+  over_budget_at TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
@@ -767,7 +778,30 @@ CREATE TABLE IF NOT EXISTS sandbox_generations (
   key_id TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
-  created_seq INTEGER NOT NULL DEFAULT 0
+  created_seq INTEGER NOT NULL DEFAULT 0,
+  -- Migration 44 (columns stay LAST so migrated and fresh stores hash the
+  -- same schema): payer of record + billing source ('' rows predate
+  -- attribution, never capped), the durable sandbox_uid linkage that new
+  -- close/update paths key on (legacy '' rows keep sandbox_id + provider
+  -- matching), and price_known (1 = real provider quote, genuine $0 allowed;
+  -- 0 = unknown, the stored 0 is only the NOT NULL floor — legacy rows keep
+  -- 0, matching their existing "unpriced hours" treatment).
+  user_id TEXT NOT NULL DEFAULT '',
+  billing_mode TEXT NOT NULL DEFAULT '',
+  sandbox_uid TEXT NOT NULL DEFAULT '',
+  price_known INTEGER NOT NULL DEFAULT 0
+);
+
+-- Per-user per-provider daily USD caps (migration 44). user_id '' is the
+-- platform default for the provider; a user-specific row overrides it; a
+-- NULL daily_usd_limit is an explicit uncapped override. Spend is always
+-- recomputed from sandbox_generations — this table stores policy only.
+CREATE TABLE IF NOT EXISTS provider_user_caps (
+  provider TEXT NOT NULL,
+  user_id TEXT NOT NULL DEFAULT '',
+  daily_usd_limit REAL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, user_id)
 );
 
 -- Spend kill-switch (cloud plan Phase 9, risk 13). An operator-trippable
@@ -1150,7 +1184,38 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # Configure. Fresh schemas create the table above; the handler runs the
     # SCHEMA-extracted DDL on existing stores.
     (43, "add_sandbox_provider_settings", ""),
+    # Per-user per-provider daily spend caps (August 2026). Additive only:
+    # payer/billing attribution columns on both sandbox tables, tri-state
+    # price + budget-state columns on sandboxes, the provider_user_caps
+    # policy table, and its indexes. The handler seeds the platform default
+    # ('lambda_labs', '', 50.0) exactly once — the ladder runs on fresh
+    # databases too, so both paths get the seed and the ladder row records
+    # it. Indexes live in the handler, never SCHEMA: they name ladder-added
+    # columns (the migration-36 crash-loop lesson).
+    (44, "add_user_provider_caps", ""),
 )
+
+# Migration 44's indexes — handler-only, see the migration comment.
+USER_PROVIDER_CAP_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_sandbox_generations_user"
+    "  ON sandbox_generations(user_id, provider, started_at)",
+)
+
+# Mirrors the SCHEMA blocks exactly; extending either means extending these.
+SANDBOX_BUDGET_COLUMNS = {
+    "user_id": "TEXT NOT NULL DEFAULT ''",
+    "billing_mode": "TEXT NOT NULL DEFAULT ''",
+    "quoted_price_usd_per_hour": "REAL",
+    "budget_state": "TEXT NOT NULL DEFAULT ''",
+    "over_budget_at": "TEXT",
+}
+
+GENERATION_ATTRIBUTION_COLUMNS = {
+    "user_id": "TEXT NOT NULL DEFAULT ''",
+    "billing_mode": "TEXT NOT NULL DEFAULT ''",
+    "sandbox_uid": "TEXT NOT NULL DEFAULT ''",
+    "price_known": "INTEGER NOT NULL DEFAULT 0",
+}
 
 # Migration 41 indexes. They cannot live in SCHEMA because an existing store
 # reaches the table only when the migration ladder creates it.
@@ -1455,7 +1520,37 @@ class BaseStateStore:
             self._add_agent_sessions(conn=conn)
         elif name == "add_consolidation":
             self._add_consolidation(conn=conn)
+        elif name == "add_user_provider_caps":
+            self._add_user_provider_caps(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_user_provider_caps(self, *, conn: Connection) -> None:
+        """Migration 44: payer attribution + per-user per-provider daily caps."""
+        for column, ddl in SANDBOX_BUDGET_COLUMNS.items():
+            if not self._has_column(conn=conn, table="sandboxes", column=column):
+                conn.execute(f"ALTER TABLE sandboxes ADD COLUMN {column} {ddl}")
+        for column, ddl in GENERATION_ATTRIBUTION_COLUMNS.items():
+            if not self._has_column(
+                conn=conn, table="sandbox_generations", column=column
+            ):
+                conn.execute(
+                    f"ALTER TABLE sandbox_generations ADD COLUMN {column} {ddl}"
+                )
+        if not self._has_table(conn=conn, table="provider_user_caps"):
+            conn.execute(_schema_table_ddl(table="provider_user_caps"))
+        exists = conn.execute(
+            "SELECT 1 FROM provider_user_caps WHERE provider = ? AND user_id = ''",
+            ("lambda_labs",),
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                "INSERT INTO provider_user_caps "
+                "(provider, user_id, daily_usd_limit, updated_at) "
+                "VALUES (?, '', ?, ?)",
+                ("lambda_labs", 50.0, now_iso()),
+            )
+        for statement in USER_PROVIDER_CAP_INDEXES:
             conn.execute(statement)
 
     def _add_agent_sessions(self, *, conn: Connection) -> None:
@@ -2564,6 +2659,78 @@ class BaseStateStore:
                 (project_id, provider),
             ).fetchone()
         return str(row["credentials"]) if row and row["credentials"] else "{}"
+
+    # ---------- per-user per-provider daily caps (migration 44) ----------
+
+    def resolve_provider_user_cap(
+        self, *, provider: str, user_id: str, conn: Connection | None = None
+    ) -> float | None:
+        """The cap that applies to one user on one provider, or None.
+
+        The user's own row wins over the '' platform default; a row whose
+        limit is NULL is an explicit uncapped override and also returns None.
+        """
+        if not provider or not user_id:
+            return None
+        if conn is None:
+            with closing(self.connect()) as owned:
+                return self.resolve_provider_user_cap(
+                    provider=provider, user_id=user_id, conn=owned
+                )
+        for scope in (user_id, ""):
+            row = conn.execute(
+                "SELECT daily_usd_limit FROM provider_user_caps "
+                "WHERE provider = ? AND user_id = ?",
+                (provider, scope),
+            ).fetchone()
+            if row is not None:
+                limit = row["daily_usd_limit"]
+                return None if limit is None else float(limit)
+        return None
+
+    def serialize_provider_user_cap(
+        self, *, conn: Connection, provider: str, user_id: str
+    ) -> None:
+        """Row-touch the applicable cap row so concurrent capped admissions
+        and extensions for one user serialize on it (the tenant_quotas
+        pattern). Touches the user's own row when it exists, else the ''
+        platform default; no row = uncapped, nothing to serialize."""
+        for scope in (user_id, ""):
+            cursor = conn.execute(
+                "UPDATE provider_user_caps SET provider = provider "
+                "WHERE provider = ? AND user_id = ?",
+                (provider, scope),
+            )
+            if int(getattr(cursor, "rowcount", 0)) == 1:
+                return
+
+    def any_provider_user_caps(self) -> bool:
+        """Whether any user×provider cap is active — the scheduler must run
+        the budget sweep whenever this is true."""
+        try:
+            with closing(self.connect()) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM provider_user_caps "
+                    "WHERE daily_usd_limit IS NOT NULL LIMIT 1"
+                ).fetchone()
+            return row is not None
+        except Exception:  # pragma: no cover - pre-migration store
+            return False
+
+    def api_key_owner(self, *, key_id: str) -> str:
+        """Owner user of a management key, for payer-of-record resolution.
+
+        Resolved at write time — key rows can be revoked or deleted later, so
+        spend attribution must never depend on a read-time join.
+        """
+        if not key_id:
+            return ""
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                "SELECT owner_user_id FROM project_api_keys WHERE id = ?",
+                (key_id,),
+            ).fetchone()
+        return str(row["owner_user_id"]) if row is not None else ""
 
     def is_project_member(self, *, project_id: str, user_id: str) -> bool:
         with closing(self.connect()) as conn:

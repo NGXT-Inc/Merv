@@ -17,7 +17,7 @@ from merv.brain.research_core.association_targets import AssociationTargets
 
 FIXTURE = Path(__file__).parent / "fixtures" / "release_f0439ca_v40.sql"
 EXPECTED_SCHEMA_SHA256 = (
-    "a65a0e4eff2f6c1c67aeb36fa2de1abe0866588b863c24adb10a1b426de23776"
+    "7201feaff5387661866e040eda820d6d20ec1982929d82b98288d4b389a0a8c3"
 )
 
 
@@ -31,7 +31,16 @@ def _normalized_sql(value: str | None) -> str:
     without_conditional = re.sub(
         r"\bIF\s+NOT\s+EXISTS\b", "", value, flags=re.IGNORECASE
     )
-    return " ".join(without_conditional.split())
+    # ALTER TABLE ADD COLUMN splices new columns into sqlite_master's stored
+    # text without the SCHEMA constant's comments or line spacing (first hit:
+    # migration 44's sandboxes/sandbox_generations columns), so comments and
+    # punctuation spacing are presentation, not structure. Structural drift —
+    # names, types, defaults, constraints, order — still changes the hash.
+    without_comments = re.sub(r"--[^\n]*", "", without_conditional)
+    collapsed = " ".join(without_comments.split())
+    collapsed = re.sub(r"\s*,\s*", ", ", collapsed)
+    collapsed = re.sub(r"\(\s+", "(", collapsed)
+    return re.sub(r"\s+\)", ")", collapsed)
 
 
 def _schema_contract(db_path: Path) -> dict[str, Any]:
@@ -278,7 +287,7 @@ class ReleaseDatabaseCompatibilityTest(unittest.TestCase):
                 latest_migration = conn.execute(
                     "SELECT MAX(version) FROM schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(latest_migration, 43)
+                self.assertEqual(latest_migration, 44)
             finally:
                 conn.close()
 
