@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1899,11 +1900,49 @@ def _validate_settings(config_path: Path) -> None:
     load_workspace_settings(config_path)
 
 
+# Default executable per native adapter, for Settings-side detection of which
+# agents this machine can actually launch. The command adapter has no default.
+DEFAULT_PLATFORM_EXECUTABLES: dict[str, str] = {
+    "codex": "codex",
+    "claude": "claude",
+    "gemini": "gemini",
+    "cursor": "cursor-agent",
+    "opencode": "opencode",
+    "aider": "aider",
+    "copilot": "copilot",
+    "qwen": "qwen",
+    "hermes": "hermes",
+}
+
+
+def _detected_commands(config_path: Path) -> dict[str, bool]:
+    """Which agent executables resolve on this machine's PATH.
+
+    Covers every adapter default plus the first argument of each configured
+    platform command, so custom executables are probed too.
+    """
+    names = set(DEFAULT_PLATFORM_EXECUTABLES.values())
+    try:
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        document = {}
+    configured = document.get("agent_platforms") if isinstance(document, dict) else {}
+    if isinstance(configured, dict):
+        for raw in configured.values():
+            command = raw.get("command") if isinstance(raw, dict) else None
+            if isinstance(command, list) and command and isinstance(command[0], str):
+                names.add(command[0])
+    return {
+        name: shutil.which(name) is not None for name in sorted(names) if name.strip()
+    }
+
+
 def _local_status(
     *,
     project_id: str | None,
     runner_active: bool,
     ledger: SessionLedger | None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     sessions = []
     if ledger is not None:
@@ -1922,11 +1961,14 @@ def _local_status(
             }
             for item in ledger.sessions.values()
         ]
-    return {
+    status: dict[str, Any] = {
         "runner_active": runner_active,
         "project_id": project_id,
         "sessions": sessions,
     }
+    if config_path is not None:
+        status["available_commands"] = _detected_commands(config_path)
+    return status
 
 
 def _run_runner(
@@ -2029,6 +2071,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     project_id=None,
                     runner_active=False,
                     ledger=settings_ledger,
+                    config_path=config_path,
                 ),
                 port=args.settings_port,
             )
@@ -2078,6 +2121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         project_id=args.project,
                         runner_active=True,
                         ledger=ledger,
+                        config_path=config_path,
                     ),
                     port=args.settings_port,
                 )

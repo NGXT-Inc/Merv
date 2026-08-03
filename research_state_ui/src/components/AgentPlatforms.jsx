@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
+import AutorunSetupWizard from './AutorunSetupWizard';
 import Switch from './Switch';
+import { connectFailureMessage, runnerRequest } from './runnerClient';
 import {
   ADAPTERS,
   DEFAULT_WORKSPACE,
@@ -17,13 +19,6 @@ import {
 const DRAFT_KEY = 'rsui:agentPlatforms';
 const WORKSPACE_KEY = 'rsui:agentWorkspace';
 const LOCAL_RUNNER_URL = 'http://127.0.0.1:8791';
-
-// The loopback service replies with machine-readable error codes.
-const RUNNER_ERRORS = {
-  pairing_token_required: 'The runner rejected this pairing token.',
-  origin_not_allowed: 'The runner does not allow this site; set MERV_AGENT_UI_ORIGINS on that machine.',
-  forbidden: 'The runner refused the request.',
-};
 
 function readDraft() {
   if (typeof localStorage === 'undefined') return defaultPlatforms();
@@ -93,6 +88,7 @@ export default function AgentPlatforms({ projectId }) {
   const [dispatchError, setDispatchError] = useState('');
   const [halting, setHalting] = useState(false);
   const [showHaltPrompt, setShowHaltPrompt] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -250,46 +246,21 @@ export default function AgentPlatforms({ projectId }) {
     }
   }
 
-  async function localRunnerRequest(method, path = '/settings') {
-    const base = runnerUrl.trim().replace(/\/+$/, '');
-    const target = new URL(base);
-    if (
-      !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)
-      || !['http:', 'https:'].includes(target.protocol)
-      || target.username
-      || target.password
-    ) {
-      throw new Error('Runner URL must be an explicit loopback HTTP address.');
-    }
-    const response = await fetch(`${base}${path}`, {
-      method,
-      credentials: 'omit',
-      headers: {
-        Authorization: `Bearer ${pairingToken.trim()}`,
-        ...(method === 'PUT' ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(method === 'PUT' ? { body: JSON.stringify(draftConfig) } : {}),
-    });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail = body?.error || body?.detail || body?.message;
-      throw new Error(
-        RUNNER_ERRORS[detail] || detail || `Runner returned HTTP ${response.status}`,
-      );
-    }
-    return body;
-  }
-
   async function connectRunner() {
     if (!pairingToken.trim()) {
-      setRunnerMessage('Enter the pairing token printed by the local runner.');
-      return;
+      const error = 'Enter the pairing token printed by the local runner.';
+      setRunnerMessage(error);
+      return { ok: false, error };
     }
     setRunnerConnection('connecting');
     setRunnerMessage('');
     try {
-      const status = await localRunnerRequest('GET', '/status');
-      const settings = await localRunnerRequest('GET', '/settings');
+      const status = await runnerRequest({
+        url: runnerUrl, token: pairingToken, path: '/status',
+      });
+      const settings = await runnerRequest({
+        url: runnerUrl, token: pairingToken, path: '/settings',
+      });
       const hydrated = draftFromSettings(settings);
       const hydratedConfig = configFromDraft(hydrated.platforms, hydrated.workspace);
       setPlatforms(hydrated.platforms);
@@ -299,26 +270,31 @@ export default function AgentPlatforms({ projectId }) {
       setRestartNeeded(false);
       setRunnerConnection('connected');
       setRunnerMessage('');
+      return { ok: true, status };
     } catch (error) {
+      const message = connectFailureMessage(error);
       setRunnerConnection('idle');
       setRunnerStatus(null);
       setMachineBaseline(null);
-      setRunnerMessage(
-        error instanceof TypeError
-          ? 'No settings service answered there. Start merv-agent-runner on that machine first.'
-          : (error?.message || 'Could not connect to the local runner.'),
-      );
+      setRunnerMessage(message);
+      return { ok: false, error: message };
     }
   }
 
   async function applyRunnerSettings() {
-    if (!connected || machineBaseline === null || !dirty || !validation.valid) {
-      return;
+    if (!connected || machineBaseline === null) {
+      return { ok: false, error: 'Pair the runner machine first.' };
     }
+    if (!validation.valid) {
+      return { ok: false, error: 'Fix the highlighted fields first.' };
+    }
+    if (!dirty) return { ok: true, skipped: true };
     setRunnerConnection('applying');
     setRunnerMessage('');
     try {
-      const response = await localRunnerRequest('PUT');
+      const response = await runnerRequest({
+        url: runnerUrl, token: pairingToken, method: 'PUT', body: draftConfig,
+      });
       const hydrated = draftFromSettings(response);
       const hydratedConfig = configFromDraft(hydrated.platforms, hydrated.workspace);
       setPlatforms(hydrated.platforms);
@@ -327,9 +303,12 @@ export default function AgentPlatforms({ projectId }) {
       setRestartNeeded(Boolean(response?.restart_required && runnerStatus?.runner_active));
       setRunnerConnection('connected');
       setRunnerMessage('Saved to the runner machine.');
+      return { ok: true };
     } catch (error) {
+      const message = error?.message || 'Could not save runner settings.';
       setRunnerConnection('connected');
-      setRunnerMessage(error?.message || 'Could not save runner settings.');
+      setRunnerMessage(message);
+      return { ok: false, error: message };
     }
   }
 
@@ -446,6 +425,15 @@ export default function AgentPlatforms({ projectId }) {
 
       <section className="aru-scope" aria-label="Runner machine">
         <ScopeHead title="Runner machine" tag="Applies to one paired machine">
+          {connected && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setWizardOpen(true)}
+            >
+              Setup guide
+            </button>
+          )}
           <span className={`aru-conn aru-conn--${connected ? 'ok' : 'off'}`}>
             {machineState}
           </span>
@@ -497,15 +485,20 @@ export default function AgentPlatforms({ projectId }) {
           <p className="aru-pairing-status" role="status">{runnerMessage}</p>
         )}
         {!connected && (
-          <ol className="aru-steps">
-            <li>
-              On the runner machine, start
-              {' '}<code>merv-agent-runner --settings-only</code> — it prints this
-              pairing token (<code>--show-pairing-token</code> reprints it).
-            </li>
-            <li>Paste the token above and connect to edit that machine directly.</li>
-            <li>Apply your changes, then start the runner shown below.</li>
-          </ol>
+          <div className="aru-setup-cta">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => setWizardOpen(true)}
+            >
+              Set up auto running
+            </button>
+            <span className="aru-note">
+              A guided setup starts the settings service, pairs this machine,
+              picks agents, and brings the runner up. Or pair manually above
+              (<code>merv-agent-runner --settings-only</code> prints the token).
+            </span>
+          </div>
         )}
 
         <div className="aru-subsection">
@@ -794,6 +787,29 @@ export default function AgentPlatforms({ projectId }) {
           </div>
         </div>
       </section>
+
+      {wizardOpen && (
+        <AutorunSetupWizard
+          projectId={projectId}
+          runnerUrl={runnerUrl}
+          pairingToken={pairingToken}
+          onPairingToken={setPairingToken}
+          startConnected={connected}
+          runnerStatus={runnerStatus}
+          platforms={platforms}
+          workspace={workspace}
+          validation={validation}
+          onUpdatePlatform={update}
+          onWorkspace={(patch) => setWorkspace((current) => ({ ...current, ...patch }))}
+          onConnect={connectRunner}
+          onApply={applyRunnerSettings}
+          onRunnerLive={setRunnerStatus}
+          dispatch={dispatch}
+          dispatchBusy={dispatchBusy}
+          onDispatch={toggleDispatch}
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
     </>
   );
 }

@@ -36,6 +36,8 @@ from merv.client.agent_runner import (
     WorkspaceManager,
     WorkspaceSettings,
     _child_environment,
+    _detected_commands,
+    _local_status,
     _run_runner,
     _safe_control_url,
     _session_key,
@@ -203,6 +205,45 @@ class AgentConfigurationTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(RunnerError, "between 1 and 32"):
                 load_platforms(path)
+
+    def test_status_reports_which_agent_executables_this_machine_has(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake = bin_dir / "fake-agent"
+            fake.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake.chmod(0o755)
+            config_path = Path(tmp) / "client.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "agent_platforms": {
+                            "custom": {
+                                "adapter": "command",
+                                "command": ["fake-agent", "--flag"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"PATH": str(bin_dir)}):
+                detected = _detected_commands(config_path)
+                status = _local_status(
+                    project_id=None,
+                    runner_active=False,
+                    ledger=None,
+                    config_path=config_path,
+                )
+            # Configured commands are probed alongside every adapter default.
+            self.assertTrue(detected["fake-agent"])
+            self.assertFalse(detected["codex"])
+            self.assertIn("cursor-agent", detected)
+            self.assertEqual(status["available_commands"], detected)
+            without = _local_status(
+                project_id=None, runner_active=False, ledger=None
+            )
+            self.assertNotIn("available_commands", without)
 
     def test_workspace_settings_require_persistent_git_worktrees(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
