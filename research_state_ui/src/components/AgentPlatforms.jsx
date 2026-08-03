@@ -89,6 +89,9 @@ export default function AgentPlatforms({ projectId }) {
   const [halting, setHalting] = useState(false);
   const [showHaltPrompt, setShowHaltPrompt] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // Unpaired, the guided setup is the page; manual pairing is an explicit
+  // opt-in so a fresh project is not greeted with raw fields and a draft.
+  const [manualOpen, setManualOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -425,13 +428,21 @@ export default function AgentPlatforms({ projectId }) {
 
       <section className="aru-scope" aria-label="Runner machine">
         <ScopeHead title="Runner machine" tag="Applies to one paired machine">
-          {connected && (
+          {connected ? (
             <button
               type="button"
               className="btn btn--ghost btn--sm"
               onClick={() => setWizardOpen(true)}
             >
               Setup guide
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setManualOpen((open) => !open)}
+            >
+              {manualOpen ? 'Hide manual setup' : 'Manual setup'}
             </button>
           )}
           <span className={`aru-conn aru-conn--${connected ? 'ok' : 'off'}`}>
@@ -440,12 +451,29 @@ export default function AgentPlatforms({ projectId }) {
         </ScopeHead>
         <p className="settings-summary">
           Agents, models, and the workspace live in <code>~/.merv/client.json</code>
-          {' '}on the machine that runs them. Pair that machine to edit its settings
-          directly; until then this page holds a draft in your browser. Enabled
-          agents run unattended with your machine account’s filesystem and network
-          permissions; worktrees isolate Git changes, not operating-system access.
+          {' '}on the machine that runs them. Enabled agents run unattended with
+          your machine account’s filesystem and network permissions; worktrees
+          isolate Git changes, not operating-system access.
         </p>
 
+        {!connected && (
+          <div className="aru-setup-cta">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => setWizardOpen(true)}
+            >
+              Set up auto running
+            </button>
+            <span className="aru-note">
+              The guided setup starts the settings service on that machine,
+              pairs it, picks agents, and brings the runner up — each step
+              verified before the next.
+            </span>
+          </div>
+        )}
+
+        {(connected || manualOpen) && (<>
         <div className="aru-card aru-pairing">
           <label>
             <span>Local runner URL</span>
@@ -485,20 +513,11 @@ export default function AgentPlatforms({ projectId }) {
           <p className="aru-pairing-status" role="status">{runnerMessage}</p>
         )}
         {!connected && (
-          <div className="aru-setup-cta">
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => setWizardOpen(true)}
-            >
-              Set up auto running
-            </button>
-            <span className="aru-note">
-              A guided setup starts the settings service, pairs this machine,
-              picks agents, and brings the runner up. Or pair manually above
-              (<code>merv-agent-runner --settings-only</code> prints the token).
-            </span>
-          </div>
+          <p className="aru-note aru-pairing-hint">
+            <code>merv-agent-runner --settings-only</code> on that machine
+            starts the service and prints the pairing token
+            (<code>--show-pairing-token</code> reprints it).
+          </p>
         )}
 
         <div className="aru-subsection">
@@ -786,6 +805,7 @@ export default function AgentPlatforms({ projectId }) {
             </button>
           </div>
         </div>
+        </>)}
       </section>
 
       {wizardOpen && (

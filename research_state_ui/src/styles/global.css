@@ -5483,6 +5483,7 @@ a.spend-row-name:hover { color: var(--active); }
   margin: 8px 0 0; color: var(--muted);
   font-size: var(--text-xs); line-height: 1.5;
 }
+.aru-pairing-hint { display: block; margin: 8px 0 0; }
 .aru-setup-cta {
   display: flex; align-items: center; gap: 14px; margin-top: 12px;
 }

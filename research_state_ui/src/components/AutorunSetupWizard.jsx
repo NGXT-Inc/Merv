@@ -220,8 +220,9 @@ export default function AutorunSetupWizard({
           <div className="sbxpw-body">
             <p className="sbxpw-lead">Pair with the runner machine</p>
             <p className="sbxpw-help">
-              Paste the pairing token the service printed. It stays in this
-              tab; only its digest ever leaves the machine.
+              A settings service is running at {runnerUrl}. Pairing needs the
+              token it printed in its terminal when it started — paste that
+              token here. It stays in this tab.
             </p>
             <input
               className="sbxpw-input"
@@ -235,6 +236,14 @@ export default function AutorunSetupWizard({
               onKeyDown={(e) => { if (e.key === 'Enter' && pairingToken.trim()) pair(); }}
             />
             {pairError && <p className="sbxpw-fail-detail">{pairError}</p>}
+            <p className="aruw-command-note">
+              Don’t have the token? Run this on that machine to print it again:
+            </p>
+            <CommandRow
+              command="merv-agent-runner --show-pairing-token"
+              copied={copied === 'token'}
+              onCopy={() => copy('token', 'merv-agent-runner --show-pairing-token')}
+            />
           </div>
         )}
 
