@@ -37,7 +37,7 @@ class DeployArtifactsTest(unittest.TestCase):
     def test_dockerfile_installs_control_extra_and_runs_control_entrypoint(self) -> None:
         text = (DEPLOY / "Dockerfile").read_text(encoding="utf-8")
         # Installs the `control` extra (Postgres + object store + provider SDK).
-        self.assertIn('.[control]', text)
+        self.assertIn('.[control,gcp]', text)
         # The whole src/ tree (brain + proxy + shared) must be present before
         # the wheel/install step runs in the image.
         self.assertIn("COPY src ./src", text)
