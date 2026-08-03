@@ -1,11 +1,11 @@
 # Client Support
 
-The plugin targets eight agentic clients from one canonical content tree.
+The plugin targets nine agentic clients from one canonical content tree.
 Everything heavy — state, gates, capability-based reviews, sandbox
 provisioning — lives in the client-neutral brain service (localhost
 `merv-http`, or the hosted brain). Every client — local Claude Code, cloud
-Codex, Cursor, Gemini CLI, OpenCode, Hermes Agent, OpenHands, and Replit Agent
-— connects directly to the brain's `POST /mcp` endpoint. Bundled clients
+Codex, Cursor, Gemini CLI, OpenCode, Kilo, Hermes Agent, OpenHands, and
+Replit Agent — connects directly to the brain's `POST /mcp` endpoint. Bundled clients
 authenticate with a project-scoped key sent as `Authorization: Bearer <key>`
 from `MERV_MCP_KEY`; browser-configured clients may instead use the hosted
 OAuth flow or a pasted key. A key is scoped to one project or to the owner's
@@ -22,6 +22,7 @@ never send a checkout root. Each client gets a thin adapter on top of the same
 | Cursor | `.cursor-plugin/plugin.json` + `mcp.json` | http server → `<base>/mcp` (same header) | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
 | Gemini CLI | `gemini-extension.json` + `GEMINI.md` | http server → `<base>/mcp` (same header) | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
 | OpenCode | `clients/opencode/` (installer + agents + config example) | `opencode.json` `mcp` block → `<base>/mcp` (same header) | symlinked into `~/.config/opencode/skills/` | symlinked into `~/.config/opencode/agents/` |
+| Kilo | `clients/kilo/` (installer + config example) | `kilo.jsonc` `mcp` block → `<base>/mcp` (same header) | symlinked into `~/.kilo/skills/`; also reads repo `.agents/skills/` | shared OpenCode wrappers symlinked into `~/.config/kilo/agent/` |
 | Hermes Agent | `clients/hermes/` (installer + guide) | `config.yaml` `mcp_servers` entry → `<base>/mcp` (bearer header or OAuth) | `skills.external_dirs`, or POSIX installer symlinks | `delegate_task` with the handoff prompt |
 | OpenHands | `AGENTS.md` + `clients/openhands/README.md` | local `config.toml` / CLI, or Cloud **Settings → MCP** | root `AGENTS.md`; optional repo skill directories at `.agents/skills/<name>/SKILL.md` | none; second session/agent or inline |
 | Replit Agent | `clients/replit/README.md` | account **MCP Servers** settings → `<base>/mcp` | no Merv skills installed by the connection | none; second session/agent or inline |
@@ -52,7 +53,7 @@ Shared invariants across all clients:
   rely on the machine's `curl`, OpenSSH client, and `rsync`.
 - Skills follow the cross-tool Agent Skills layout (`skills/<name>/SKILL.md`
   with `name` + `description` frontmatter), which Claude Code, Codex, Cursor,
-  Gemini CLI, OpenCode, and Hermes Agent all read natively. OpenHands loads
+  Gemini CLI, OpenCode, Kilo, and Hermes Agent all read natively. OpenHands loads
   repository skill directories at `.agents/skills/<name>/SKILL.md` as on-demand
   AgentSkills (keyword activation needs explicit `triggers` frontmatter, which
   Merv's canonical skills do not carry); copy the relevant skill directories
@@ -62,7 +63,8 @@ Shared invariants across all clients:
   (`name`, `description`) so Claude Code, Cursor, and Gemini CLI can all load
   them. OpenCode needs `mode`/`permission` frontmatter, so it has its own thin
   agent wrappers in `clients/opencode/agents/` that load the matching review
-  skill.
+  skill. Kilo's agent files use the same frontmatter, so its installer links
+  those wrappers unchanged.
 - The committed manifests pin every bundled client to the hosted brain
   `https://experiments.rapidreview.io/mcp`, so out of the box each client dials
   the hosted brain and runs no local brain. Run `merv-client env` to print the
@@ -223,6 +225,8 @@ agent is spawned with that prompt:
   delegates automatically, or the user forces it with `@experiment-design-review`.
 - **OpenCode**: the main agent delegates via the task tool to the installed
   subagent (or the user @-mentions it, e.g. `@experiment-design-review`).
+- **Kilo**: the main agent delegates via the task tool to the installed
+  subagent (the shared OpenCode-format wrappers, `mode: subagent`).
 - **Hermes Agent**: pass `reviewer_handoff.spawn_prompt` unchanged to a fresh
   `delegate_task` child. Reflection lenses use `delegate_task(tasks=[...])`;
   the default concurrency of three runs five lenses in two waves.
@@ -379,6 +383,41 @@ Notes:
   `verified_agent_review` status.
 - OpenCode also reads `.claude/skills/` and `CLAUDE.md` as compatibility
   fallbacks, so repos already set up for Claude Code degrade gracefully.
+
+## Use with Kilo
+
+Kilo (the VS Code extension and the OpenCode-derived CLI) reads the Agent
+Skills standard natively and registers remote MCP servers from `kilo.jsonc`.
+It has no declarative plugin bundle, so the adapter is an installer:
+
+```bash
+/path/to/merv/clients/kilo/install.sh
+```
+
+It symlinks the canonical skills into `~/.kilo/skills/`, the shared
+reviewer-agent wrappers into `~/.config/kilo/agent/`, and prints the
+`kilo.jsonc` `mcp` block to add (see
+[clients/kilo/kilo.jsonc.example](../clients/kilo/kilo.jsonc.example)).
+
+Notes:
+
+- The `mcp` block registers Merv as a remote HTTP MCP server (the brain's
+  `/mcp` endpoint with `Authorization: Bearer {env:MERV_MCP_KEY}`), so there
+  is no local process to spawn. A project-level `.kilo/kilo.jsonc` takes
+  precedence over the global `~/.config/kilo/kilo.jsonc`.
+- Kilo's agent files use the same `description`/`mode: subagent`/`permission`
+  frontmatter as OpenCode's, so the installer links the wrappers from
+  `clients/opencode/agents/` unchanged; they load the matching review skill
+  and submit through `review.start` / `review.submit` with their own child
+  session ids.
+- Kilo also loads project-level `.agents/skills/` (the open agent standard) by
+  default, so a repo that vendors the Merv skills there needs no global
+  install.
+- Older Kilo Code extension builds predate the unified config: they read
+  `~/.kilocode/skills/` and register MCP servers in `.kilocode/mcp.json`
+  (`mcpServers` map, `"type": "streamable-http"`). If skills or the server do
+  not appear after install, check which generation the extension is on and
+  mirror the same content there.
 
 ## Use with Hermes Agent
 

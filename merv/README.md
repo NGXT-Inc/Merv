@@ -1,8 +1,8 @@
 # Merv
 
 Merv gives agentic coding clients (Claude Code, Codex, Cursor, Gemini CLI,
-OpenCode, Hermes Agent, OpenHands, Replit Agent) a shared state machine for
-machine learning research: claims, experiments, submitted artifacts, review
+OpenCode, Kilo, Hermes Agent, OpenHands, Replit Agent) a shared state machine
+for machine learning research: claims, experiments, submitted artifacts, review
 gates, reflection waves, and sandboxed execution. A brain running locally or
 as a hosted service owns durable research state; every agent client connects
 directly to the brain's `POST /mcp` HTTP endpoint, authenticated by a

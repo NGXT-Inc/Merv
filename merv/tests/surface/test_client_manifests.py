@@ -39,6 +39,18 @@ class HttpMcpManifestTest(unittest.TestCase):
         self.assertEqual(server["httpUrl"], HOSTED_MCP_URL)
         self.assertEqual(server["headers"]["Authorization"], AUTHORIZATION)
 
+    def test_kilo_example_uses_environment_key_indirection(self) -> None:
+        config = json.loads(
+            (PLUGIN_ROOT / "clients" / "kilo" / "kilo.jsonc.example").read_text()
+        )
+        server = config["mcp"]["merv"]
+        self.assertEqual(server["type"], "remote")
+        self.assertEqual(server["url"], HOSTED_MCP_URL)
+        self.assertEqual(
+            server["headers"]["Authorization"],
+            "Bearer {env:MERV_MCP_KEY}",
+        )
+
     def test_opencode_example_uses_environment_key_indirection(self) -> None:
         config = json.loads(
             (PLUGIN_ROOT / "clients" / "opencode" / "opencode.json.example").read_text()
