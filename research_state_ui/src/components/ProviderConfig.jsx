@@ -126,6 +126,12 @@ function ProviderCard({ projectId, provider, onUpdated, onSetup }) {
       {p.setup_complete && !p.enabled && (
         <p className="sbxp-state sbxp-state--off">Agents will not procure compute here.</p>
       )}
+      {p.user_budget && (
+        <p className="sbxp-state">
+          Your budget today: ${p.user_budget.spent_today_usd.toFixed(2)} of $
+          {p.user_budget.daily_cap_usd.toFixed(2)} · resets 00:00 UTC
+        </p>
+      )}
       {p.setup_complete && p.enabled && p.connected && !p.in_env_fleet && (
         <p className="sbxp-state">
           Add <code>{p.provider}</code> to MERV_EXECUTION_BACKENDS to put it in

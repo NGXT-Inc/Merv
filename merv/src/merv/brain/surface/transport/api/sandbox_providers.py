@@ -9,6 +9,8 @@ an ``mk_``/``rr_sk_`` machine key must not rewire a project's clouds.
 
 from __future__ import annotations
 
+from typing import Any, Protocol
+
 from fastapi import APIRouter, Body, Request
 
 from ....kernel.utils import ValidationError
@@ -21,12 +23,42 @@ from ...sandbox_providers import SandboxProviderSettings
 from .shared import JsonBody
 
 
-def build_router(*, providers: SandboxProviderSettings) -> APIRouter:
+class UserBudgetView(Protocol):
+    """Engine read: the signed-in payer's remaining daily budget on one
+    provider, or None when no user cap applies."""
+
+    def __call__(
+        self, *, user_id: str = "", key_id: str = "", provider: str = ""
+    ) -> dict[str, Any] | None: ...
+
+
+def build_router(
+    *,
+    providers: SandboxProviderSettings,
+    budget_view: UserBudgetView | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/projects/{project_id}/sandbox-providers")
-    def provider_overview(project_id: str) -> dict[str, object]:
-        return providers.overview(project_id=project_id)
+    def provider_overview(project_id: str, request: Request) -> dict[str, object]:
+        view = providers.overview(project_id=project_id)
+        if budget_view is None:
+            return view
+        # Per-user daily budgets ride the overview so the Configure cards can
+        # show "today: $X of $Y" for the signed-in user without a second call.
+        user_id = str(
+            getattr(getattr(request.state, "principal", None), "user_id", "") or ""
+        )
+        if user_id and isinstance(view.get("providers"), list):
+            for entry in view["providers"]:
+                if not isinstance(entry, dict):
+                    continue
+                budget = budget_view(
+                    user_id=user_id, provider=str(entry.get("provider") or "")
+                )
+                if budget is not None:
+                    entry["user_budget"] = budget
+        return view
 
     @router.put("/api/projects/{project_id}/sandbox-providers/{provider}")
     def save_credentials(

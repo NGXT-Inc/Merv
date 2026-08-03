@@ -451,6 +451,18 @@ class ToolInvocationGateway:
             internal_kwargs = {"base_url": base_url}
             if name == "sandbox.runs":
                 internal_kwargs["wait_secret"] = self.wait_secret
+        if name == "sandbox.options":
+            # Same payer resolution as sandbox.request, so the options view
+            # can show remaining daily budget when a user cap applies.
+            internal_kwargs = {
+                **(internal_kwargs or {}),
+                "requesting_user_id": user_id,
+                "requesting_key_id": str(
+                    getattr(principal, "key_id", "")
+                    or getattr(principal, "source_key_id", "")
+                    or ""
+                ),
+            }
         if name == "sandbox.request":
             internal_kwargs = {
                 "provisioning_user_id": user_id,
