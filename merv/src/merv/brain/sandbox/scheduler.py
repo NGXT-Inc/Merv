@@ -30,6 +30,13 @@ class ScheduledSweep(Protocol):
     ) -> None: ...
 
 
+class CapsActiveProbe(Protocol):
+    """True when any user×provider daily cap is active — the sweep must run
+    for money safety regardless of reaping/sampling config."""
+
+    def __call__(self) -> bool: ...
+
+
 class SandboxScheduler:
     """Own cadence only; SandboxEngine owns sweep contents and ordering."""
 
@@ -39,10 +46,12 @@ class SandboxScheduler:
         sweep: ScheduledSweep,
         enforce_expiry: bool,
         force_expiry_reaper: bool = False,
+        caps_active: CapsActiveProbe | None = None,
     ) -> None:
         self._sweep = sweep
         self._enforce_expiry = bool(enforce_expiry)
         self.force_expiry_reaper = bool(force_expiry_reaper)
+        self._caps_active = caps_active
         self._stop = threading.Event()
         self.reaper_thread: threading.Thread | None = None
 
@@ -67,11 +76,16 @@ class SandboxScheduler:
     def _daemon_enabled(self) -> bool:
         # The sweep is also the fleet's sampler, so it runs even in a
         # configuration where nothing would ever be reaped.
-        return (
+        if (
             self._reaper_enabled()
             or self._idle_reap_threshold() > 0
             or self._sampling_enabled()
-        )
+        ):
+            return True
+        try:
+            return bool(self._caps_active is not None and self._caps_active())
+        except Exception:  # noqa: BLE001 — a store hiccup must not kill startup
+            return False
 
     def _sampling_enabled(self) -> bool:
         """Whether the control plane samples running boxes for observability.

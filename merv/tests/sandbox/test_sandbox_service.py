@@ -1811,11 +1811,15 @@ class SandboxEngineTest(unittest.TestCase):
         self.assertEqual(result[0]["status"], "terminated")
         with self.app.store.transaction() as conn:
             generations = conn.execute(
-                "SELECT COUNT(*) AS n FROM sandbox_generations "
+                "SELECT ended_at FROM sandbox_generations "
                 "WHERE experiment_id = ?",
                 (exp_id,),
-            ).fetchone()
-        self.assertEqual(int(generations["n"]), 0)
+            ).fetchall()
+        # Migration 44: the ledger opens at instance creation, so the losing
+        # provision leaves exactly one generation — CLOSED, never resurrected.
+        # The boot window is billable at the provider and must stay recorded.
+        self.assertEqual(len(generations), 1)
+        self.assertIsNotNone(generations[0]["ended_at"])
 
     def test_get_reconciles_orphaned_provisioning(self) -> None:
         # A provisioning row with no in-flight job (daemon restart mid-provision)

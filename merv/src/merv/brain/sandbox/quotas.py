@@ -17,6 +17,20 @@ from ..kernel.utils import PermissionDeniedError, now_iso, parse_iso
 # Tenant IDs cannot collide with this reserved global scope.
 GLOBAL_SCOPE = "__global__"
 
+# Sandbox rows that may already bill at the provider (mirrors
+# running_sandbox_count): a provisioning row has launched or is about to,
+# and cleanup_pending is an unconfirmed deletion that must stay accounted.
+BILLABLE_STATUSES = ("provisioning", "running", "cleanup_pending")
+
+
+def _next_utc_midnight(now: datetime) -> datetime:
+    day = now.astimezone(UTC)
+    return datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(days=1)
+
+
+def _hours(start: datetime, end: datetime) -> float:
+    return max(0.0, (end - start).total_seconds() / 3600.0)
+
 
 @dataclass(frozen=True, slots=True)
 class AdmissionRequest:
@@ -30,6 +44,11 @@ class AdmissionRequest:
     # values skip the provider-day check — legacy callers stay untouched.
     project_id: str = ""
     provider: str = ""
+    # Per-user per-provider daily-cap coordinates (migration 44). Empty
+    # user_id or a billing_mode other than 'platform' skips the user check —
+    # legacy/local callers and (phase-2) own-credential spend stay uncapped.
+    user_id: str = ""
+    billing_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,26 @@ class _GenerationUsage:
     price_usd_per_hour: float
     usd: float
     open: bool
+
+
+def _row_effective_price(row: dict[str, Any]) -> float | None:
+    """Best-known real hourly price of a live sandbox row, else None.
+
+    The nullable quoted price (validated pre-launch) wins; the legacy
+    NOT NULL price column is trusted only after provisioning completed AND
+    the open generation marks it known — before that it is the meaningless
+    zero floor, and after an allowed unknown-price completion it still is
+    (finding 12).
+    """
+    quoted = row.get("quoted_price_usd_per_hour")
+    if quoted is not None:
+        return float(quoted)
+    if (
+        str(row.get("status")) == "running"
+        and int(row.get("open_price_known") or 0) == 1
+    ):
+        return float(row.get("price_usd_per_hour") or 0.0)
+    return None
 
 
 def _generation_usage(
@@ -339,11 +378,22 @@ class QuotaService:
                 "UPDATE tenant_quotas SET tenant_id = tenant_id WHERE tenant_id = ?",
                 (request.tenant_id,),
             )
+            if request.project_id and request.provider:
+                # Same trick for the project-provider cap row: two racing
+                # admissions under one project cap must see each other.
+                conn.execute(
+                    "UPDATE sandbox_provider_settings SET provider = provider "
+                    "WHERE project_id = ? AND provider = ?",
+                    (request.project_id, request.provider),
+                )
         self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform", conn=conn)
         self._check_kill_switch(
             scope=request.tenant_id, label="tenant", conn=conn
         )
         self._check_provider_daily_limit(request=request, conn=conn)
+        self._check_user_provider_daily_limit(
+            request=request, conn=conn, serialize=_serialize
+        )
         quota = self.get_quota(tenant_id=request.tenant_id, conn=conn)
         if quota is None:
             return
@@ -396,14 +446,37 @@ class QuotaService:
         tenant_id: str,
         total_time_limit_seconds: int,
         price_usd_per_hour: float | None = None,
+        conn: Any | None = None,
+        row: dict[str, Any] | None = None,
+        added_seconds: int = 0,
     ) -> None:
-        """Check extension policy without recounting an existing sandbox."""
-        self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform")
-        self._check_kill_switch(scope=tenant_id, label="tenant")
-        quota = self.get_quota(tenant_id=tenant_id)
+        """Check extension policy without recounting an existing sandbox.
+
+        When ``conn``/``row`` are given the caller holds the extension
+        transaction: the user×provider cap is serialized and recomputed on
+        that connection, charging the ROW's payer (of record), not the
+        caller, for the added lease seconds priced to next UTC midnight.
+        """
+        if conn is None and row is not None:
+            with closing(self.store.connect()) as owned:
+                return self.check_lifetime_extension(
+                    tenant_id=tenant_id,
+                    total_time_limit_seconds=total_time_limit_seconds,
+                    price_usd_per_hour=price_usd_per_hour,
+                    conn=owned,
+                    row=row,
+                    added_seconds=added_seconds,
+                )
+        self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform", conn=conn)
+        self._check_kill_switch(scope=tenant_id, label="tenant", conn=conn)
+        if row is not None and conn is not None:
+            self._check_user_extension(
+                row=row, added_seconds=added_seconds, conn=conn
+            )
+        quota = self.get_quota(tenant_id=tenant_id, conn=conn)
         if quota is None:
             return
-        self._check_budget(tenant_id=tenant_id, quota=quota)
+        self._check_budget(tenant_id=tenant_id, quota=quota, conn=conn)
         if (
             quota.max_time_limit_seconds is not None
             and total_time_limit_seconds > quota.max_time_limit_seconds
@@ -429,6 +502,154 @@ class QuotaService:
                     "limit": quota.max_price_usd_per_hour,
                     "requested": price_usd_per_hour,
                     "quota": "max_price_usd_per_hour",
+                },
+            )
+
+    def _check_user_extension(
+        self, *, row: dict[str, Any], added_seconds: int, conn: Any
+    ) -> None:
+        """Deny an extension whose added lease would push the payer of record
+        past the user×provider daily cap. The row's CURRENT commitment is
+        already inside committed burn; only the added window is new."""
+        user_id = str(row.get("user_id") or "")
+        provider = str(row.get("provider") or "")
+        if (
+            not user_id
+            or not provider
+            or str(row.get("billing_mode") or "") != "platform"
+        ):
+            return
+        cap = self.store.resolve_provider_user_cap(
+            provider=provider, user_id=user_id, conn=conn
+        )
+        if cap is None:
+            return
+        self.store.serialize_provider_user_cap(
+            conn=conn, provider=provider, user_id=user_id
+        )
+        now = datetime.now(UTC)
+        midnight = _next_utc_midnight(now)
+        spent = self.user_provider_day_spend(
+            user_id=user_id, provider=provider, conn=conn, now=now
+        )
+        committed = self.user_provider_committed_burn(
+            user_id=user_id, provider=provider, conn=conn, now=now
+        )
+        open_known = conn.execute(
+            "SELECT price_known FROM sandbox_generations "
+            "WHERE sandbox_uid = ? AND ended_at IS NULL "
+            "ORDER BY created_seq DESC LIMIT 1",
+            (str(row.get("sandbox_uid") or ""),),
+        ).fetchone()
+        priced_row = {
+            **row,
+            "open_price_known": (
+                open_known["price_known"] if open_known is not None else 0
+            ),
+        }
+        price = _row_effective_price(priced_row)
+        if price is None:
+            # committed is already inf in this case; keep the denial explicit.
+            price = float("inf")
+        expires = parse_iso(row.get("expires_at")) or now
+        added_start = max(now, expires)
+        added_end = min(expires + timedelta(seconds=int(added_seconds)), midnight)
+        added = _hours(added_start, added_end) * price if added_end > added_start else 0.0
+        if spent + committed + added >= cap:
+            raise PermissionDeniedError(
+                f"extension denied: the payer's daily spend cap on {provider} "
+                f"is exhausted (${spent:.2f} spent + ${committed:.2f} committed "
+                f"+ ${added:.2f} added ≥ ${cap:.2f}; resets 00:00 UTC)",
+                details={
+                    "quota": "provider_user_daily_usd_limit",
+                    "provider": provider,
+                    "limit": cap,
+                    "spent": spent,
+                    "committed": committed,
+                    "requested": added,
+                    "resets_at": midnight.isoformat(),
+                },
+            )
+
+    def check_final_quote(
+        self,
+        *,
+        conn: Any,
+        sandbox_uid: str,
+        tenant_id: str,
+        user_id: str,
+        billing_mode: str,
+        provider: str,
+        time_limit_seconds: int,
+        price: float | None,
+    ) -> None:
+        """Pre-launch revalidation of the adapter's final quote (on_quote).
+
+        Replacement, not addition: the reservation row already exists, so the
+        commitment scan excludes it and the final-price lease burn stands in
+        for it — an unchanged quote reproduces the admission result. A None
+        price under ANY dollar policy fails closed before launch.
+        """
+        cap = None
+        if user_id and billing_mode == "platform" and provider:
+            cap = self.store.resolve_provider_user_cap(
+                provider=provider, user_id=user_id, conn=conn
+            )
+        if price is None:
+            quota = self.get_quota(tenant_id=tenant_id, conn=conn)
+            dollar_policy = cap is not None or (
+                quota is not None
+                and (
+                    quota.usd_budget is not None
+                    or quota.max_price_usd_per_hour is not None
+                )
+            )
+            if dollar_policy:
+                raise PermissionDeniedError(
+                    f"provider {provider} no longer quotes a price for this "
+                    "instance type and a spend policy applies — launch "
+                    "aborted before any billable resource was created",
+                    details={
+                        "quota": "price_required_by_cost_policy",
+                        "provider": provider,
+                    },
+                )
+            return
+        if cap is None:
+            return
+        self.store.serialize_provider_user_cap(
+            conn=conn, provider=provider, user_id=user_id
+        )
+        now = datetime.now(UTC)
+        spent = self.user_provider_day_spend(
+            user_id=user_id, provider=provider, conn=conn, now=now
+        )
+        committed = self.user_provider_committed_burn(
+            user_id=user_id,
+            provider=provider,
+            conn=conn,
+            now=now,
+            exclude_sandbox_uid=sandbox_uid,
+        )
+        lease_end = min(
+            now + timedelta(seconds=int(time_limit_seconds)),
+            _next_utc_midnight(now),
+        )
+        lease = _hours(now, lease_end) * float(price)
+        if spent + committed + lease >= cap:
+            raise PermissionDeniedError(
+                f"final {provider} quote ${float(price):.2f}/hr would exceed "
+                f"the payer's daily cap (${spent:.2f} spent + ${committed:.2f} "
+                f"committed + ${lease:.2f} lease ≥ ${cap:.2f}) — launch "
+                "aborted before any billable resource was created",
+                details={
+                    "quota": "provider_user_daily_usd_limit",
+                    "provider": provider,
+                    "limit": cap,
+                    "spent": spent,
+                    "committed": committed,
+                    "requested": lease,
+                    "resets_at": _next_utc_midnight(now).isoformat(),
                 },
             )
 
@@ -507,6 +728,176 @@ class QuotaService:
             hours = (usage.ended - started).total_seconds() / 3600.0
             spend += hours * usage.price_usd_per_hour
         return spend
+
+    def user_provider_day_spend(
+        self,
+        *,
+        user_id: str,
+        provider: str,
+        conn: Any | None = None,
+        now: datetime | None = None,
+    ) -> float:
+        """USD one user has accrued on one provider's platform credentials
+        since UTC midnight, across ALL projects.
+
+        Same clamping as provider_day_spend; open generations bill through
+        now. price_known=0 rows sum $0 here — enforcement treats them as
+        exhausting the cap instead (see committed burn and the sweep).
+        """
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.user_provider_day_spend(
+                    user_id=user_id, provider=provider, conn=owned, now=now
+                )
+        now_dt = now or datetime.now(UTC)
+        day_start = now_dt.astimezone(UTC).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        rows = conn.execute(
+            "SELECT started_at, ended_at, price_usd_per_hour "
+            "FROM sandbox_generations "
+            "WHERE user_id = ? AND provider = ? AND billing_mode = 'platform' "
+            "AND (ended_at IS NULL OR ended_at >= ?)",
+            (user_id, provider, day_start.isoformat()),
+        ).fetchall()
+        spend = 0.0
+        for row in rows:
+            usage = _generation_usage(row_to_dict(row=row) or {}, now=now_dt)
+            if usage is None or usage.price_usd_per_hour <= 0:
+                continue
+            started = max(usage.started, day_start)
+            if usage.ended <= started:
+                continue
+            spend += _hours(started, usage.ended) * usage.price_usd_per_hour
+        return spend
+
+    def user_provider_committed_burn(
+        self,
+        *,
+        user_id: str,
+        provider: str,
+        conn: Any,
+        now: datetime | None = None,
+        exclude_sandbox_uid: str = "",
+    ) -> float:
+        """USD the user's live sandboxes on this provider are still committed
+        to burn before the next UTC midnight.
+
+        Uniform fail-closed horizon: only a running row with a future
+        expires_at gets that finite horizon; every other billable row —
+        provisioning (boot is unbounded and live jobs are exempt from stale
+        reaping), cleanup_pending, or a running row whose expiry passed but
+        which the reaper has not confirmed dead — commits through midnight.
+        A row whose price cannot be established commits infinity: no new
+        spend is admitted while an unpriced box may be billing.
+
+        ``exclude_sandbox_uid`` lets the pre-launch quote recheck replace its
+        own row's commitment instead of double-counting it.
+        """
+        now_dt = now or datetime.now(UTC)
+        midnight = _next_utc_midnight(now_dt)
+        rows = conn.execute(
+            "SELECT s.sandbox_uid, s.status, s.expires_at, "
+            "       s.quoted_price_usd_per_hour, s.price_usd_per_hour, "
+            "       (SELECT g.price_known FROM sandbox_generations g "
+            "        WHERE g.sandbox_uid = s.sandbox_uid AND g.ended_at IS NULL "
+            "        ORDER BY g.created_seq DESC LIMIT 1) AS open_price_known "
+            "FROM sandboxes s "
+            "WHERE s.user_id = ? AND s.provider = ? "
+            "  AND s.billing_mode = 'platform' "
+            f"  AND s.status IN ({', '.join('?' for _ in BILLABLE_STATUSES)})",
+            (user_id, provider, *BILLABLE_STATUSES),
+        ).fetchall()
+        committed = 0.0
+        for raw in rows:
+            row = row_to_dict(row=raw) or {}
+            if str(row.get("sandbox_uid") or "") == exclude_sandbox_uid:
+                continue
+            price = _row_effective_price(row)
+            if price is None:
+                return float("inf")
+            expires = parse_iso(row.get("expires_at"))
+            horizon = midnight
+            if (
+                str(row.get("status")) == "running"
+                and expires is not None
+                and expires > now_dt
+            ):
+                horizon = min(expires, midnight)
+            committed += _hours(now_dt, horizon) * price
+        return committed
+
+    def _check_user_provider_daily_limit(
+        self,
+        *,
+        request: AdmissionRequest,
+        conn: Any,
+        serialize: bool = False,
+    ) -> None:
+        """Commitment-based user×provider admission: deny once accrued spend
+        plus committed burn plus the requested lease reaches the cap."""
+        if (
+            not request.user_id
+            or not request.provider
+            or request.billing_mode != "platform"
+        ):
+            return
+        cap = self.store.resolve_provider_user_cap(
+            provider=request.provider, user_id=request.user_id, conn=conn
+        )
+        if cap is None:
+            return
+        if serialize:
+            self.store.serialize_provider_user_cap(
+                conn=conn, provider=request.provider, user_id=request.user_id
+            )
+        if request.price_usd_per_hour is None:
+            raise PermissionDeniedError(
+                "a daily spend cap applies to this provider, so a sandbox "
+                "whose price cannot be established will not be provisioned: "
+                f"{request.price_unknown_reason or 'no catalog price'}. Pick "
+                "an instance_type the provider catalog prices.",
+                details={
+                    "quota": "price_required_by_cost_policy",
+                    "provider": request.provider,
+                    "limit": cap,
+                },
+            )
+        now = datetime.now(UTC)
+        spent = self.user_provider_day_spend(
+            user_id=request.user_id,
+            provider=request.provider,
+            conn=conn,
+            now=now,
+        )
+        committed = self.user_provider_committed_burn(
+            user_id=request.user_id,
+            provider=request.provider,
+            conn=conn,
+            now=now,
+        )
+        lease_end = min(
+            now + timedelta(seconds=int(request.time_limit_seconds)),
+            _next_utc_midnight(now),
+        )
+        new_lease = _hours(now, lease_end) * float(request.price_usd_per_hour)
+        if spent + committed + new_lease >= cap:
+            raise PermissionDeniedError(
+                f"daily user spend cap reached for provider {request.provider}: "
+                f"${spent:.2f} spent + ${committed:.2f} committed "
+                f"+ ${new_lease:.2f} requested ≥ ${cap:.2f} today (cap is "
+                "enforced with a 1-hour grace on running sandboxes and resets "
+                "at 00:00 UTC)",
+                details={
+                    "quota": "provider_user_daily_usd_limit",
+                    "provider": request.provider,
+                    "limit": cap,
+                    "spent": spent,
+                    "committed": committed,
+                    "requested": new_lease,
+                    "resets_at": _next_utc_midnight(now).isoformat(),
+                },
+            )
 
     def _check_provider_daily_limit(
         self, *, request: AdmissionRequest, conn: Any

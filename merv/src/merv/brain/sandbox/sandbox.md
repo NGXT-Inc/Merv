@@ -17,9 +17,11 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
 2. `SandboxEngine.request` validates the request, applies quota policy, and
    reserves a durable `provisioning` row. The row—not a worker thread—is the
    source of truth.
-3. `SandboxProvisioner` acquires compute asynchronously. It persists the native
-   resource ID immediately, then atomically publishes `running` and opens the
-   spend generation.
+3. `SandboxProvisioner` acquires compute asynchronously. It revalidates the
+   adapter's final pre-launch quote against spend policy (`on_quote`), then at
+   `on_created` atomically persists the native resource ID AND opens the spend
+   generation — accrual starts when the billable resource exists, boot
+   included. Publishing `running` finalizes that generation.
 4. Reads use one row-derived `SandboxTarget` for provider, SSH, work directory,
    and key coordinates. Observation caches and reconciles remote runs, metrics,
    and transcript bytes.
@@ -42,7 +44,9 @@ workflow, authentication, HTTP/MCP rendering, or artifact/blob persistence.
   destructive and recovery transitions; `scheduler.py`: timer ordering.
 - `observation.py`: run ledger, remote run reads, metrics, and transcript cache;
   `heartbeat.py`: activity/idle policy plus the bounded usage series the fleet
-  view reads; `quotas.py`: admission and spend.
+  view reads; `quotas.py`: admission and spend, including per-user per-provider
+  daily caps (commitment-based: accrued + committed lease burn vs the cap);
+  `budget.py`: the sweep's warn → over_budget → grace → terminate ladder.
 - `adapters/provider_catalog.py`: connectable-provider specs (fields, wizard
   help, env detection) and `adapters/credential_check.py`: one cheap
   authenticated call per provider — both behind Sandboxes → Configure.

@@ -11,7 +11,7 @@ from contextlib import suppress
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from .models import (
     BackendPermissionError,
@@ -27,6 +27,24 @@ from .storage import SandboxStorage
 
 class _Canceled(Exception):
     """Raised inside a provisioning callback to abort acquire on release."""
+
+
+class QuoteRevalidator(Protocol):
+    """Pre-launch spend-policy recheck of the adapter's final quote
+    (quotas.check_final_quote wired by the engine); raising aborts the
+    launch before any billable resource exists. Returns False when the
+    reservation could not be stamped — the row went terminal underneath
+    (a release/reaper won) — which must also abort the launch: a lost row
+    cannot account for a billable instance."""
+
+    def __call__(
+        self,
+        *,
+        sandbox_uid: str,
+        project_id: str,
+        req: SandboxRequest,
+        price: float | None,
+    ) -> bool: ...
 
 
 @dataclass
@@ -45,10 +63,12 @@ class SandboxProvisioner:
         storage: SandboxStorage,
         backend: SandboxBackend,
         lifecycle: SandboxLifecycle,
+        revalidate_quote: QuoteRevalidator | None = None,
     ) -> None:
         self.storage = storage
         self.backend = backend
         self.lifecycle = lifecycle
+        self.revalidate_quote = revalidate_quote
         self._jobs: dict[str, _ProvisionJob] = {}
         self._jobs_lock = threading.Lock()
 
@@ -135,19 +155,41 @@ class SandboxProvisioner:
                     detail=detail,
                 )
 
-            def on_created(sandbox_id: str, sandbox_name: str) -> None:
-                # Persist immediately; a crash must not erase the cleanup handle.
-                self.set_provision(
+            def on_quote(price: float | None) -> None:
+                if cancel.is_set():
+                    raise _Canceled()
+                if self.revalidate_quote is not None and not self.revalidate_quote(
                     sandbox_uid=sandbox_uid,
                     project_id=project_id,
+                    req=req,
+                    price=price,
+                ):
+                    # The reservation went terminal (release/reaper won the
+                    # row): launching now would bill outside the ledger.
+                    raise _Canceled()
+
+            def on_created(sandbox_id: str, sandbox_name: str) -> None:
+                # Persist immediately; a crash must not erase the cleanup
+                # handle. One transaction with the generation open, so the
+                # ledger starts billing the moment the resource exists.
+                if not self.storage.record_created(
+                    sandbox_uid=sandbox_uid,
+                    expected_project_id=project_id,
+                    experiment_id=experiment_id,
                     sandbox_id=sandbox_id,
                     sandbox_name=sandbox_name,
-                )
+                    request=req,
+                    provider=self._provider_for(req=req),
+                ):
+                    raise _Canceled()
                 if cancel.is_set():
                     raise _Canceled()
 
             provisioned = self.backend.acquire(
-                request=req, on_phase=on_phase, on_created=on_created
+                request=req,
+                on_phase=on_phase,
+                on_created=on_created,
+                on_quote=on_quote,
             )
             # The final tunnel wait is uninterruptible; recheck before publish.
             if cancel.is_set():

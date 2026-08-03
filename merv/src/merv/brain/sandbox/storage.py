@@ -143,12 +143,27 @@ class SandboxStorage:
         ).fetchall()
         return [str(row["experiment_id"]) for row in rows]
 
-    def tenant_for_project(self, *, project_id: str) -> str:
-        with closing(self.store.connect()) as conn:
-            row = conn.execute(
-                "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
-            ).fetchone()
+    def tenant_for_project(
+        self, *, project_id: str, conn: Any | None = None
+    ) -> str:
+        if conn is None:
+            with closing(self.store.connect()) as owned:
+                return self.tenant_for_project(project_id=project_id, conn=owned)
+        row = conn.execute(
+            "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
         return str(row["tenant_id"]) if row is not None else "local"
+
+    def raw_row_in(
+        self, *, conn: Any, sandbox_uid: str
+    ) -> dict[str, Any] | None:
+        """Unhydrated row read on the caller's transaction — the fresh
+        re-read inside extend's cap-lock window."""
+        row = conn.execute(
+            "SELECT * FROM sandboxes WHERE sandbox_uid = ?",
+            (str(sandbox_uid or ""),),
+        ).fetchone()
+        return row_to_dict(row=row) if row is not None else None
 
     def fetch_scoped(
         self,
@@ -264,6 +279,56 @@ class SandboxStorage:
             return self._hydrate_attachments(
                 conn=conn,
                 rows=[row_to_dict(row=row) or {} for row in rows],
+            )
+
+    def list_payer_attributed_rows(self) -> list[dict[str, Any]]:
+        """Every billable platform-billed row with a payer of record —
+        the budget sweep's working set, cross-project by design."""
+        statuses = tuple(sorted(("provisioning", "running", "cleanup_pending")))
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM sandboxes "
+                "WHERE user_id != '' AND billing_mode = 'platform' "
+                f"AND status IN ({', '.join('?' for _ in statuses)}) "
+                "ORDER BY created_seq DESC",
+                statuses,
+            ).fetchall()
+            return self._hydrate_attachments(
+                conn=conn,
+                rows=[row_to_dict(row=row) or {} for row in rows],
+            )
+
+    def transition_budget_state(
+        self,
+        *,
+        sandbox_uid: str,
+        expected_project_id: str,
+        from_states: tuple[str, ...],
+        to_state: str,
+        over_budget_at: str | None = None,
+    ) -> bool:
+        """CAS a row's budget ladder state; True only when this call moved it.
+
+        Transition-only semantics keep the sweep idempotent — events fire
+        exactly once per state change, never per tick.
+        """
+        clause = (
+            f" AND budget_state IN ({', '.join('?' for _ in from_states)})"
+        )
+        with self.store.transaction() as conn:
+            return (
+                self._guarded_update(
+                    conn=conn,
+                    sandbox_uid=sandbox_uid,
+                    assignments=(
+                        "budget_state = ?, over_budget_at = ?, updated_at = ?"
+                    ),
+                    values=[to_state, over_budget_at, now_iso()],
+                    expected_project_id=expected_project_id,
+                    extra_clause=clause,
+                    extra_values=list(from_states),
+                )
+                == 1
             )
 
     def _preferred_uid(self, *, conn: Any, experiment_id: str) -> str | None:
@@ -504,6 +569,7 @@ class SandboxStorage:
         project_id: str,
         request: SandboxRequest,
         provider: str,
+        quoted_price: float | None = None,
     ) -> None:
         """Write the complete durable reservation shape in the caller's transaction."""
         now = now_iso()
@@ -537,6 +603,14 @@ class SandboxStorage:
             instance_type=request.instance_type or "",
             region=request.region or "",
             time_limit=request.time_limit,
+            # Payer of record + admitted tri-state quote (migration 44): every
+            # reservation is attributable and priceable from birth, so the
+            # commitment scan can see it before any generation exists.
+            user_id=request.user_id,
+            billing_mode=request.billing_mode,
+            quoted_price_usd_per_hour=quoted_price,
+            budget_state="",
+            over_budget_at=None,
             requested_at=now,
             provision_started_at=now,
             expires_at="",
@@ -571,7 +645,10 @@ class SandboxStorage:
             ),
             "instance_type": instance_type,
             "region": provisioned.region or (request.region or ""),
-            "price_usd_per_hour": provisioned.price_usd_per_hour,
+            # The legacy column is a NOT NULL floor; the nullable quoted
+            # column preserves unknown (None) so it never reads as $0.
+            "price_usd_per_hour": float(provisioned.price_usd_per_hour or 0.0),
+            "quoted_price_usd_per_hour": provisioned.price_usd_per_hour,
             "ssh_host": provisioned.ssh_host,
             "ssh_port": provisioned.ssh_port,
             "ssh_user": provisioned.ssh_user,
@@ -613,31 +690,161 @@ class SandboxStorage:
             tenant_id = (
                 str(tenant_row["tenant_id"]) if tenant_row is not None else "local"
             )
+            # price_known = (final price is not None): an allowed unknown-price
+            # completion stores the floor 0 with price_known=0, distinguishable
+            # from genuine $0 and still subject to the exhausted sentinel.
+            price = float(provisioned.price_usd_per_hour or 0.0)
+            price_known = 1 if provisioned.price_usd_per_hour is not None else 0
+            open_gen = conn.execute(
+                "SELECT id FROM sandbox_generations "
+                "WHERE sandbox_uid = ? AND ended_at IS NULL "
+                "ORDER BY created_seq DESC LIMIT 1",
+                (sandbox_uid,),
+            ).fetchone()
+            if open_gen is not None:
+                # record_created already opened the ledger row at instance
+                # creation; completion finalizes specs and price atomically
+                # with publishing running.
+                generation_id = str(open_gen["id"])
+                conn.execute(
+                    "UPDATE sandbox_generations "
+                    "SET sandbox_id = ?, instance_type = ?, gpu = ?, "
+                    "    price_usd_per_hour = ?, price_known = ? "
+                    "WHERE id = ?",
+                    (
+                        provisioned.sandbox_id,
+                        instance_type,
+                        gpu,
+                        price,
+                        price_known,
+                        generation_id,
+                    ),
+                )
+            else:
+                # Adapter without the on_created hook: open at completion, the
+                # pre-migration behavior plus payer attribution.
+                conn.execute(
+                    """
+                    INSERT INTO sandbox_generations (
+                      id, experiment_id, project_id, tenant_id, sandbox_id,
+                      provider, instance_type, gpu, price_usd_per_hour,
+                      price_known, key_id, user_id, billing_mode, sandbox_uid,
+                      started_at, created_seq
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        generation_id,
+                        experiment_id,
+                        project_id,
+                        tenant_id,
+                        provisioned.sandbox_id,
+                        provider,
+                        instance_type,
+                        gpu,
+                        price,
+                        price_known,
+                        request.key_id or None,
+                        request.user_id,
+                        request.billing_mode,
+                        sandbox_uid,
+                        now,
+                        next_created_seq(conn=conn, table="sandbox_generations"),
+                    ),
+                )
+        return generation_id
+
+    def record_created(
+        self,
+        *,
+        sandbox_uid: str,
+        expected_project_id: str,
+        experiment_id: str,
+        sandbox_id: str,
+        sandbox_name: str,
+        request: SandboxRequest,
+        provider: str,
+    ) -> bool:
+        """Atomically persist the provider ID and open the billable generation.
+
+        One transaction, fence first: the provider-ID write is the same
+        status='provisioning' + owner guarded update set_provision uses, and
+        the generation is inserted only after it lands — a release/reaper
+        that already made the row terminal gets False (the worker raises
+        _Canceled and the adapter terminates the fresh resource). Accrual
+        therefore starts when the billable resource starts, boot included.
+        """
+        now = now_iso()
+        with self.store.transaction() as conn:
+            updated = self._guarded_update(
+                conn=conn,
+                sandbox_uid=sandbox_uid,
+                assignments="sandbox_id = ?, sandbox_name = ?, updated_at = ?",
+                values=[sandbox_id, sandbox_name, now],
+                expected_project_id=expected_project_id,
+                extra_clause=" AND status = 'provisioning'",
+            )
+            if updated != 1:
+                return False
+            row = conn.execute(
+                "SELECT project_id, tenant_id, quoted_price_usd_per_hour "
+                "FROM sandboxes WHERE sandbox_uid = ?",
+                (sandbox_uid,),
+            ).fetchone()
+            quoted = row["quoted_price_usd_per_hour"] if row is not None else None
+            tenant_id = str(row["tenant_id"] or "local") if row is not None else "local"
             conn.execute(
                 """
                 INSERT INTO sandbox_generations (
-                  id, experiment_id, project_id, tenant_id, sandbox_id, provider,
-                  instance_type, gpu, price_usd_per_hour, key_id, started_at,
-                  created_seq
+                  id, experiment_id, project_id, tenant_id, sandbox_id,
+                  provider, instance_type, gpu, price_usd_per_hour,
+                  price_known, key_id, user_id, billing_mode, sandbox_uid,
+                  started_at, created_seq
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    generation_id,
+                    new_id(prefix="sbg"),
                     experiment_id,
-                    project_id,
+                    expected_project_id,
                     tenant_id,
-                    provisioned.sandbox_id,
+                    sandbox_id,
                     provider,
-                    instance_type,
-                    gpu,
-                    float(provisioned.price_usd_per_hour or 0.0),
+                    request.instance_type or "",
+                    request.gpu or "",
+                    float(quoted or 0.0),
+                    1 if quoted is not None else 0,
                     request.key_id or None,
+                    request.user_id,
+                    request.billing_mode,
+                    sandbox_uid,
                     now,
                     next_created_seq(conn=conn, table="sandbox_generations"),
                 ),
             )
-        return generation_id
+        return True
+
+    def stamp_quoted_price(
+        self,
+        *,
+        conn: Any,
+        sandbox_uid: str,
+        expected_project_id: str,
+        price: float | None,
+    ) -> bool:
+        """Record the validated pre-launch quote inside the caller's
+        transaction (the on_quote cap-lock), still provisioning-fenced."""
+        return (
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=sandbox_uid,
+                assignments="quoted_price_usd_per_hour = ?, updated_at = ?",
+                values=[price, now_iso()],
+                expected_project_id=expected_project_id,
+                extra_clause=" AND status = 'provisioning'",
+            )
+            == 1
+        )
 
     def update_provisioning(
         self,
@@ -717,33 +924,44 @@ class SandboxStorage:
         expires_at: str,
         time_limit: int,
         expected_project_id: str,
+        conn: Any | None = None,
     ) -> dict[str, Any]:
-        now = now_iso()
-        with self.store.transaction() as conn:
-            target_uid = str(sandbox_uid or "").strip()
-            if not target_uid:
-                raise NotFoundError("sandbox not found")
-            # Status-guarded: extending a row the reaper just terminated would
-            # resurrect a fresh expires_at onto a dead sandbox.
-            self._guarded_update(
-                conn=conn,
-                sandbox_uid=target_uid,
-                assignments="expires_at = ?, time_limit = ?, updated_at = ?",
-                values=[expires_at, int(time_limit), now],
-                expected_project_id=expected_project_id,
-                extra_clause=" AND status = 'running'",
-            )
-            row = conn.execute(
-                "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (target_uid,)
-            ).fetchone()
-            if row is None:
-                raise NotFoundError(f"sandbox not found: {target_uid}")
-            if str(row["status"]) != "running":
-                raise ValidationError(
-                    f"sandbox {target_uid} is {row['status']}; only a running "
-                    "sandbox can be extended"
+        """``conn`` lets the caller hold one transaction across the cap-row
+        lock, the quota recompute, and this guarded update (sandbox.extend)."""
+        if conn is None:
+            with self.store.transaction() as owned:
+                return self.extend_lifetime(
+                    sandbox_uid=sandbox_uid,
+                    expires_at=expires_at,
+                    time_limit=time_limit,
+                    expected_project_id=expected_project_id,
+                    conn=owned,
                 )
-            return self._hydrate_row(row=row, conn=conn)
+        now = now_iso()
+        target_uid = str(sandbox_uid or "").strip()
+        if not target_uid:
+            raise NotFoundError("sandbox not found")
+        # Status-guarded: extending a row the reaper just terminated would
+        # resurrect a fresh expires_at onto a dead sandbox.
+        self._guarded_update(
+            conn=conn,
+            sandbox_uid=target_uid,
+            assignments="expires_at = ?, time_limit = ?, updated_at = ?",
+            values=[expires_at, int(time_limit), now],
+            expected_project_id=expected_project_id,
+            extra_clause=" AND status = 'running'",
+        )
+        row = conn.execute(
+            "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (target_uid,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"sandbox not found: {target_uid}")
+        if str(row["status"]) != "running":
+            raise ValidationError(
+                f"sandbox {target_uid} is {row['status']}; only a running "
+                "sandbox can be extended"
+            )
+        return self._hydrate_row(row=row, conn=conn)
 
     def stamp_runs_observed(
         self,
@@ -1107,6 +1325,15 @@ class SandboxStorage:
                     """,
                     (now, row_uid),
                 )
+                if row_uid:
+                    # Migration-44 rows link durably by sandbox_uid — this
+                    # closes generations opened at instance creation even
+                    # when the terminal path never learned a native ID.
+                    conn.execute(
+                        "UPDATE sandbox_generations SET ended_at = ? "
+                        "WHERE sandbox_uid = ? AND ended_at IS NULL",
+                        (now, row_uid),
+                    )
                 if sandbox_id:
                     # Native IDs can collide across providers.
                     conn.execute(

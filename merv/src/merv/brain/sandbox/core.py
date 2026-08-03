@@ -35,6 +35,7 @@ from .observation import (
     run_records_view,
     run_status,
 )
+from .budget import BudgetEnforcer
 from .provisioning import SandboxProvisioner
 from .models import (
     ACTIVE_SANDBOX_STATUSES,
@@ -299,6 +300,7 @@ class SandboxEngine:
             storage=self._storage,
             backend=backend,
             lifecycle=self._lifecycle,
+            revalidate_quote=self._revalidate_quote,
         )
         self._heartbeat = SandboxHeartbeatMonitor(
             storage=self._storage,
@@ -307,10 +309,18 @@ class SandboxEngine:
             observer=self._observer,
             reap_row=self._lifecycle.reap_row,
         )
+        self._budget = BudgetEnforcer(
+            store=store,
+            storage=self._storage,
+            quotas=self._quotas,
+            lifecycle=self._lifecycle,
+            cancel_provision=self._provisioner.cancel,
+        )
         self._scheduler = SandboxScheduler(
             sweep=self._maintenance_sweep,
             enforce_expiry=backend.capabilities.enforce_expiry,
             force_expiry_reaper=force_expiry_reaper,
+            caps_active=store.any_provider_user_caps,
         )
         self._transcripts = TranscriptCache()
         self.runs_wait_poll_seconds = RUNS_WAIT_POLL_SECONDS
@@ -354,6 +364,10 @@ class SandboxEngine:
                     now=now,
                     deadline_seconds=stale_deadline_seconds,
                 )
+        # Deliberately NOT gated by expiry_enabled: user-cap money safety
+        # must not switch off with the expiry reaper env flags.
+        with suppress(Exception):
+            self._budget.enforce(now=now)
         with suppress(Exception):
             self._lifecycle.retry_cleanup_pending(now=now)
 
@@ -425,6 +439,39 @@ class SandboxEngine:
             row=row,
             provisioning_job_live=job_live,
         )
+
+    def _revalidate_quote(
+        self,
+        *,
+        sandbox_uid: str,
+        project_id: str,
+        req: SandboxRequest,
+        price: float | None,
+    ) -> bool:
+        """Pre-launch on_quote hook: recheck spend policy against the final
+        quote under the cap lock and stamp it on the reservation. A raise
+        aborts acquire before any billable resource exists; False means the
+        reservation is no longer provisioning (a release/reaper won) — the
+        worker must abort rather than launch an unaccountable instance."""
+        with self._store.transaction() as conn:
+            self._quotas.check_final_quote(
+                conn=conn,
+                sandbox_uid=sandbox_uid,
+                tenant_id=self._storage.tenant_for_project(
+                    project_id=project_id, conn=conn
+                ),
+                user_id=req.user_id,
+                billing_mode=req.billing_mode,
+                provider=self._capabilities_for(provider=req.provider).name,
+                time_limit_seconds=int(req.time_limit),
+                price=price,
+            )
+            return self._storage.stamp_quoted_price(
+                conn=conn,
+                sandbox_uid=sandbox_uid,
+                expected_project_id=project_id,
+                price=price,
+            )
 
     def _resolve_hf_token(self, *, user_id: str) -> str:
         """Read the write-only token; lookup failure means public models only."""
@@ -777,6 +824,7 @@ class SandboxEngine:
             project_id=project_id,
             request=request,
             provider=provider_name,
+            quoted_price=admission.price_usd_per_hour,
         )
         return None
 
@@ -943,6 +991,20 @@ class SandboxEngine:
             price, price_unknown_reason = self._quoted_price(
                 instance_type=instance_type, region=region, provider=caps.name
             )
+            # Payer of record: the JWT user, else the mk_ key's owner —
+            # resolved once here so the admission check and the ledger stamp
+            # agree by construction. '' stays uncapped (legacy/local).
+            payer_user_id = provisioning_user_id or self._store.api_key_owner(
+                key_id=provisioning_key_id
+            )
+            billing_mode = ""
+            if payer_user_id:
+                try:
+                    billing_mode = self._backend.credential_source_for(
+                        provider=caps.name
+                    )
+                except Exception:  # noqa: BLE001 — fail toward the capped mode
+                    billing_mode = "platform"
             admission = AdmissionRequest(
                 tenant_id=self._storage.tenant_for_project(project_id=project_id),
                 time_limit_seconds=int(time_limit),
@@ -950,6 +1012,8 @@ class SandboxEngine:
                 price_unknown_reason=price_unknown_reason,
                 project_id=project_id,
                 provider=caps.name,
+                user_id=payer_user_id,
+                billing_mode=billing_mode,
             )
             # The later transactional admission is authoritative.
             if not job_live:
@@ -987,6 +1051,8 @@ class SandboxEngine:
                 public_key_source=public_key_source,
                 hf_token=hf_token,
                 key_id=provisioning_key_id,
+                user_id=payer_user_id,
+                billing_mode=billing_mode,
             )
             if not job_live:
                 try:
@@ -1175,12 +1241,6 @@ class SandboxEngine:
             row.get("tenant_id")
             or self._storage.tenant_for_project(project_id=resolved_project_id)
         )
-        price = row.get("price_usd_per_hour")
-        self._quotas.check_lifetime_extension(
-            tenant_id=tenant,
-            total_time_limit_seconds=new_limit,
-            price_usd_per_hour=float(price) if price is not None else None,
-        )
         if not self.activity_policy.is_active_snapshot(
             snapshot=self._storage.heartbeat_snapshot(row=row),
             command=self._storage.command_snapshot(row=row),
@@ -1188,14 +1248,48 @@ class SandboxEngine:
             raise ValidationError(
                 "sandbox.extend requires a running command or active heartbeat metrics"
             )
-        old_expires_at = str(row.get("expires_at") or "")
-        new_expires_at = format_iso(expires_at + timedelta(seconds=seconds))
-        updated = self._storage.extend_lifetime(
-            sandbox_uid=str(row.get("sandbox_uid") or ""),
-            expires_at=new_expires_at,
-            time_limit=new_limit,
-            expected_project_id=resolved_project_id,
-        )
+        target_uid = str(row.get("sandbox_uid") or "")
+        # One transaction holds the cap-row lock, the fresh row re-read, the
+        # quota recompute, and the guarded expiry update — two extends by one
+        # payer (or an extend racing an admission) can no longer both pass on
+        # a stale commitment snapshot. The preamble checks above are fast-fail
+        # only; everything below re-reads inside the transaction.
+        with self._store.transaction() as conn:
+            fresh = self._storage.raw_row_in(conn=conn, sandbox_uid=target_uid)
+            if fresh is None:
+                raise NotFoundError(f"sandbox not found: {target_uid}")
+            if str(fresh.get("status")) != "running":
+                raise ValidationError("sandbox.extend requires a running sandbox")
+            fresh_expires = parse_iso(fresh.get("expires_at"))
+            if fresh_expires is None:
+                raise ValidationError(
+                    "sandbox.extend requires an existing expires_at deadline"
+                )
+            new_limit = int(fresh.get("time_limit") or 0) + seconds
+            if new_limit > MAX_TIME_LIMIT_SECONDS:
+                raise ValidationError(
+                    f"sandbox.extend would exceed the max lifetime ({MAX_TIME_LIMIT_SECONDS}s)"
+                )
+            old_expires_at = str(fresh.get("expires_at") or "")
+            new_expires_at = format_iso(fresh_expires + timedelta(seconds=seconds))
+            fresh_price = fresh.get("price_usd_per_hour")
+            self._quotas.check_lifetime_extension(
+                tenant_id=tenant,
+                total_time_limit_seconds=new_limit,
+                price_usd_per_hour=(
+                    float(fresh_price) if fresh_price is not None else None
+                ),
+                conn=conn,
+                row=fresh,
+                added_seconds=seconds,
+            )
+            updated = self._storage.extend_lifetime(
+                sandbox_uid=target_uid,
+                expires_at=new_expires_at,
+                time_limit=new_limit,
+                expected_project_id=resolved_project_id,
+                conn=conn,
+            )
         resolved_experiment_id = experiment_id or str(
             updated.get("experiment_id") or ""
         )
@@ -1228,6 +1322,8 @@ class SandboxEngine:
         project_id: str | None = None,
         gpu: str | None = None,
         region: str | None = None,
+        requesting_user_id: str = "",
+        requesting_key_id: str = "",
     ) -> dict[str, Any]:
         _ = project_id
         caps = self._backend.capabilities
@@ -1238,7 +1334,48 @@ class SandboxEngine:
             if selection_required
             else "Call sandbox.request(gpu=?, cpu=?, memory=?). Include experiment_id only when attaching the sandbox to an experiment. Omit gpu for a CPU-only sandbox."
         )
-        return {"backend": caps.name, **catalog, "hint": hint}
+        view = {"backend": caps.name, **catalog, "hint": hint}
+        budget = self.user_budget_view(
+            user_id=requesting_user_id,
+            key_id=requesting_key_id,
+            provider=caps.name,
+        )
+        if budget is not None:
+            view["budget"] = budget
+        return view
+
+    def user_budget_view(
+        self, *, user_id: str = "", key_id: str = "", provider: str = ""
+    ) -> dict[str, Any] | None:
+        """Remaining daily budget for the payer on one provider, or None
+        when no cap applies. Read-only; powers options + settings views."""
+        payer = user_id or self._store.api_key_owner(key_id=key_id)
+        if not payer or not provider:
+            return None
+        cap = self._store.resolve_provider_user_cap(
+            provider=provider, user_id=payer
+        )
+        if cap is None:
+            return None
+        now = datetime.now(tz=UTC)
+        spent = self._quotas.user_provider_day_spend(
+            user_id=payer, provider=provider, now=now
+        )
+        return {
+            "provider": provider,
+            "daily_cap_usd": cap,
+            "spent_today_usd": round(spent, 4),
+            "remaining_today_usd": round(max(0.0, cap - spent), 4),
+            "resets_at": format_iso(
+                datetime(now.year, now.month, now.day, tzinfo=UTC)
+                + timedelta(days=1)
+            ),
+            "note": (
+                "Daily per-user spend cap; enforced with a 1-hour grace on "
+                "running sandboxes. New provisioning is denied once spend "
+                "plus committed lease burn reaches the cap."
+            ),
+        }
 
     def list_sandboxes(self, *, project_id: str | None = None) -> dict[str, Any]:
         rows = self._storage.list_for_project(project_id=project_id)
