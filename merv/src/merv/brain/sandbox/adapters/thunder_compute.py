@@ -21,6 +21,7 @@ from .base import (
     BackendUnavailableError,
     BackendValidationError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxRequest,
@@ -391,6 +392,7 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         instance_type = (request.instance_type or self.config.instance_type_name or "").strip()
         if not instance_type:

@@ -31,6 +31,7 @@ from .base import (
     BackendUnavailableError,
     BackendValidationError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxBackendBase,
@@ -436,6 +437,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         self._ensure_credentials()
         workdir = request.remote_workdir or remote_experiment_dir(

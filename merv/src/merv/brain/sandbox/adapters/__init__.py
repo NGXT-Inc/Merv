@@ -14,6 +14,7 @@ from ..models import (
     BackendValidationError,
     OnCreated,
     OnPhase,
+    OnQuote,
     ProvisionedSandbox,
     SandboxBackend,
     SandboxBackendBase,
@@ -231,6 +232,9 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
         return self.backends[self._resolve_provider(provider)].capabilities
 
+    def credential_source_for(self, *, provider: str | None = None) -> str:
+        return self.backends[self._resolve_provider(provider)].credential_source_for()
+
     # ---------- provisioning ----------
 
     def acquire(
@@ -239,6 +243,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         name = self._resolve_provider(request.provider)
         backend = self.backends[name]
@@ -252,6 +257,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
             request=request,
             on_phase=on_phase,
             on_created=prefixed_on_created if on_created is not None else None,
+            on_quote=on_quote,
         )
         return replace(
             provisioned, sandbox_id=self._encode(name, provisioned.sandbox_id)

@@ -17,6 +17,7 @@ from .base import (
     BackendValidationError,
     CapacityUnavailableError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxRequest,
@@ -400,6 +401,7 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         vm_name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         instance_type = (request.instance_type or "").strip()

@@ -10,6 +10,7 @@ from merv.brain.sandbox.models import (
     BackendCapabilities,
     BackendUnavailableError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxBackendBase,
@@ -42,6 +43,9 @@ def seed_sandbox(
 
 
 # In-memory test adapter
+
+_UNSET = object()
+
 
 class FakeSandboxBackend(SandboxBackendBase):
     """Deterministic stand-in for ModalSandboxBackend.
@@ -113,6 +117,9 @@ class FakeSandboxBackend(SandboxBackendBase):
         # on-box listing command would emit it — read_runs parses it with the
         # real wire parser so tests cover the whole observation path.
         self.run_listings: dict[str, str] = {}
+        # on_quote knob: _UNSET quotes the catalog price; a test may force a
+        # specific final quote (including None = provider stopped pricing it).
+        self.quote_override: object = _UNSET
 
     def acquire(
         self,
@@ -120,6 +127,7 @@ class FakeSandboxBackend(SandboxBackendBase):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         self.acquired.append(request)
         if on_phase is not None:
@@ -127,6 +135,14 @@ class FakeSandboxBackend(SandboxBackendBase):
             self.phases.append(("creating", request.experiment_id))
         if self.fail_immediately:
             raise BackendUnavailableError("fake create failure")
+        # Mirrors Lambda: the final quote surfaces BEFORE any resource
+        # exists, so a policy raise aborts with nothing to clean up.
+        if on_quote is not None:
+            on_quote(
+                self.quote_override
+                if self.quote_override is not _UNSET
+                else self._price_for(request.instance_type)
+            )
         self.counter += 1
         sandbox_id = f"sb-{self.counter}"
         name_key = request.sandbox_uid or request.experiment_id

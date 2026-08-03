@@ -18,6 +18,7 @@ from .base import (
     CapacityUnavailableError,
     OnCreated,
     OnPhase,
+    OnQuote,
     ProvisionedSandbox,
     SandboxRequest,
     SshInputRunner,
@@ -456,6 +457,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         instance_name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         key_name = f"{instance_name}-key"
@@ -474,6 +476,10 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             region=(request.region or default_region or "").strip(),
             requested_gpu=request.gpu,
         )
+        # Final tri-state quote, surfaced before ANY resource (even the SSH
+        # key) exists — the worker revalidates spend policy and a raise here
+        # aborts with nothing to clean up.
+        self._notify(on_quote, _float_or_none(specs.get("price_usd_per_hour")))
 
         self._notify(on_phase, "registering_ssh_key", key_name)
         key_id = ""
@@ -515,7 +521,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
                 memory=int(specs["memory_gib"]) * 1024 if specs.get("memory_gib") else None,
                 instance_type=instance_type,
                 region=region,
-                price_usd_per_hour=float(specs.get("price_usd_per_hour") or 0.0),
+                price_usd_per_hour=_float_or_none(specs.get("price_usd_per_hour")),
             )
         except Exception:
             if instance_id:
@@ -634,7 +640,9 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             "gpus": _int_or_zero(specs_raw.get("gpus")),
             "vcpus": _int_or_zero(specs_raw.get("vcpus")),
             "memory_gib": _int_or_zero(specs_raw.get("memory_gib")),
-            "price_usd_per_hour": float(option.get("price_usd_per_hour") or 0.0),
+            # Tri-state on purpose: a SKU Lambda quotes no price for must stay
+            # unpriced so a spend policy can refuse it, never bill it $0/hr.
+            "price_usd_per_hour": _float_or_none(option.get("price_usd_per_hour")),
         }
         return chosen, specs
 

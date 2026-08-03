@@ -52,6 +52,11 @@ class CapacityUnavailableError(BackendUnavailableError):
 # Persist the native ID before the slow SSH wait.
 OnPhase = Callable[[str, str], None]      # (phase, detail)
 OnCreated = Callable[[str, str], None]    # (sandbox_id, sandbox_name)
+# Final pre-launch price quote (None = provider quotes no price). Invoked
+# after placement, BEFORE any billable resource exists; raising aborts the
+# launch. Adapters without quoting simply never call it — the admitted quote
+# then stands.
+OnQuote = Callable[[float | None], None]
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,14 @@ class SandboxRequest:
     hf_token: str = ""
     # Management-key ID for generation spend attribution.
     key_id: str = ""
+    # Payer of record (migration 44): the admission-resolved user, stamped on
+    # the reservation and the generation so spend attribution and cap checks
+    # agree by construction. '' = unattributed (legacy/local), never capped.
+    user_id: str = ""
+    # 'platform' | 'own' — the credential source that will bill this sandbox,
+    # resolved at admission from the backend's report, never from settings
+    # intent. '' skips every user-cap check.
+    billing_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,7 +121,10 @@ class ProvisionedSandbox:
     memory: int | None = None
     instance_type: str = ""
     region: str = ""
-    price_usd_per_hour: float = 0.0
+    # Tri-state: None = the provider quotes no price for this SKU, which is
+    # NOT $0 — storage records the NOT NULL floor 0 with price_known=0 so a
+    # spend policy can refuse or halt it instead of billing it as free.
+    price_usd_per_hour: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +214,7 @@ class SandboxDriver(Protocol):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox: ...
 
     def is_alive(self, *, sandbox_id: str) -> bool: ...
@@ -273,6 +290,17 @@ class SandboxBackend(SandboxDriver, Protocol):
 
 class SandboxBackendBase:
     capabilities: BackendCapabilities
+
+    # Which credentials bill this backend's sandboxes. Every client today is
+    # built from process-env (deployment/platform) credentials, so 'platform'
+    # is the only truthful value; phase-2 credential-backed provisioning must
+    # resolve this per-request at admission and use that same selection at
+    # launch — never re-decide.
+    credential_source: str = "platform"
+
+    def credential_source_for(self, *, provider: str | None = None) -> str:
+        _ = provider
+        return self.credential_source
 
     @staticmethod
     def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
@@ -383,6 +411,7 @@ class DisabledSandboxBackend(SandboxBackendBase):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         raise self._disabled()
 

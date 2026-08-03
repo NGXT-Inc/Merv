@@ -22,6 +22,7 @@ from .base import (
     BackendValidationError,
     CapacityUnavailableError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxRequest,
@@ -532,6 +533,7 @@ class AzureSandboxBackend(VmSshSandboxBackend):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         vm_name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         vm_size = (request.instance_type or self.config.vm_size or "").strip()

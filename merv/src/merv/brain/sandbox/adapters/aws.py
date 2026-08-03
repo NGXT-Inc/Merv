@@ -21,6 +21,7 @@ from .base import (
     BackendValidationError,
     CapacityUnavailableError,
     OnCreated,
+    OnQuote,
     OnPhase,
     ProvisionedSandbox,
     SandboxRequest,
@@ -489,6 +490,7 @@ class AwsSandboxBackend(VmSshSandboxBackend):
         request: SandboxRequest,
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
+        on_quote: OnQuote | None = None,
     ) -> ProvisionedSandbox:
         instance_name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         key_name = f"{instance_name}-key"
