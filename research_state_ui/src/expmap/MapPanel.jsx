@@ -22,42 +22,40 @@ function referencedBy(cards, type, id) {
   ));
 }
 
-function Eyebrow({ children }) {
-  return <div className="xmap-eyebrow">{children}</div>;
-}
-
 /**
  * One reference row. A div with button semantics rather than <button> so the
- * paper rows can nest a real external link without invalid markup.
+ * paper rows can nest a real external link without invalid markup. The row is
+ * its own affordance — a hover chevron stands in for the old "go →" label, and
+ * a sub line that only repeats the label is dropped rather than shown twice.
  */
-function RefRow({ icon, iconClass, label, sub, action, href, onOpen }) {
+function RefRow({ icon, iconClass, label, sub, href, onOpen }) {
+  const line = sub && sub !== label ? sub : null;
   return (
     <div
-      className="xmap-ref"
-      role="button"
-      tabIndex={0}
+      className={`xmap-ref${onOpen ? '' : ' xmap-ref--static'}`}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
       onClick={onOpen}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen?.(); } }}
     >
       <span className={`xmap-ref-ic ${iconClass}`} aria-hidden="true">{icon}</span>
       <span className="xmap-ref-main">
         <span className="xmap-ref-label">{label}</span>
-        {sub ? <span className="xmap-ref-sub">{sub}</span> : null}
+        {line ? <span className="xmap-ref-sub">{line}</span> : null}
       </span>
-      <span className="xmap-ref-actions">
-        {action ? <span className="xmap-ref-action">{action}</span> : null}
-        {href ? (
-          <a
-            className="xmap-ref-ext"
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-          >
-            open ↗
-          </a>
-        ) : null}
-      </span>
+      {href ? (
+        <a
+          className="xmap-ref-ext"
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`${label} — open source`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          ↗
+        </a>
+      ) : null}
+      {onOpen ? <span className="xmap-ref-go" aria-hidden="true">→</span> : null}
     </div>
   );
 }
@@ -69,19 +67,27 @@ function ExpRow({ card, onTransport }) {
       iconClass="xmap-ic--exp"
       label={card.id}
       sub={card.title}
-      action="go →"
       onOpen={() => onTransport(card.id)}
     />
   );
 }
 
-function PanelShell({ id, idHref, tone, word, pulse, onClose, children }) {
+// label · value rows — one grammar for both metrics and review gates.
+function LeaderRow({ label, value, tone }) {
+  return (
+    <div className="xmap-leader-row">
+      <span className="xmap-leader-label">{label}</span>
+      <span className="xmap-leader-fill" />
+      <span className={tone ? `xmap-tone--${tone}` : 'xmap-leader-value'}>{value}</span>
+    </div>
+  );
+}
+
+function PanelShell({ id, tone, word, pulse, onClose, children }) {
   return (
     <div className="xmap-panel">
       <div className="xmap-panel-head">
-        {idHref
-          ? <Link className="xmap-panel-id" to={idHref}>{id}</Link>
-          : <span className="xmap-panel-id">{id}</span>}
+        {id ? <span className="xmap-panel-id">{id}</span> : null}
         <span className={`xmap-panel-status xmap-tone--${tone}`}>
           <span className={`xmap-dot${pulse ? ' xmap-dot--pulse' : ''}`} />
           {word}
@@ -89,6 +95,15 @@ function PanelShell({ id, idHref, tone, word, pulse, onClose, children }) {
         <button type="button" className="xmap-panel-close" onClick={onClose} aria-label="Close panel">✕</button>
       </div>
       <div className="xmap-panel-body">{children}</div>
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div className="xmap-section">
+      <div className="xmap-eyebrow">{title}</div>
+      {children}
     </div>
   );
 }
@@ -109,7 +124,6 @@ function ExperimentPanel({ card, cards, objects, citedBy, onClose, onTransport, 
   return (
     <PanelShell
       id={card.id}
-      idHref={px(`/experiments/${card.id}`)}
       tone={card.status}
       word={card.status}
       pulse={card.status === 'running'}
@@ -118,37 +132,30 @@ function ExperimentPanel({ card, cards, objects, citedBy, onClose, onTransport, 
       <div>
         <div className="xmap-panel-title">{card.title}</div>
         {card.tldr ? <div className="xmap-panel-text">{card.tldr}</div> : null}
+        <Link className="btn xmap-open" to={px(`/experiments/${card.id}`)}>
+          Open experiment <span aria-hidden="true">→</span>
+        </Link>
       </div>
       {(card.metrics || []).length > 0 && (
-        <div>
-          <Eyebrow>Result</Eyebrow>
-          <div className="xmap-metrics">
+        <Section title="Result">
+          <div className="xmap-leader-rows">
             {card.metrics.map((m, i) => (
-              <div className="xmap-metric" key={`${m.label}:${i}`}>
-                <div className="xmap-metric-value">{m.value}</div>
-                <div className="xmap-metric-label">{m.label}</div>
-              </div>
+              <LeaderRow key={`${m.label}:${i}`} label={m.label} value={m.value} />
             ))}
           </div>
-        </div>
+        </Section>
       )}
       {(card.gates || []).length > 0 && (
-        <div>
-          <Eyebrow>Gates</Eyebrow>
-          <div className="xmap-gates">
+        <Section title="Gates">
+          <div className="xmap-leader-rows">
             {card.gates.map((g, i) => (
-              <div className="xmap-gate" key={`${g.label}:${i}`}>
-                <span className="xmap-gate-label">{g.label}</span>
-                <span className="xmap-gate-leader" />
-                <span className={`xmap-tone--${g.tone}`}>{g.result}</span>
-              </div>
+              <LeaderRow key={`${g.label}:${i}`} label={g.label} value={g.result} tone={g.tone} />
             ))}
           </div>
-        </div>
+        </Section>
       )}
       {(card.refs || []).length > 0 && (
-        <div>
-          <Eyebrow>References</Eyebrow>
+        <Section title="References">
           <div className="xmap-refs">
             {card.refs.map((r, i) => {
               if (r.type === 'exp') {
@@ -160,7 +167,6 @@ function ExperimentPanel({ card, cards, objects, citedBy, onClose, onTransport, 
                     iconClass="xmap-ic--exp"
                     label={r.id}
                     sub={r.label || r.sub}
-                    action="go →"
                     onOpen={() => onTransport(r.id)}
                   />
                 );
@@ -173,22 +179,20 @@ function ExperimentPanel({ card, cards, objects, citedBy, onClose, onTransport, 
                   iconClass={`xmap-ic--${r.type}`}
                   label={r.label || obj?.title || r.id}
                   sub={r.sub || obj?.sub}
-                  action={obj ? 'view →' : null}
                   href={r.type === 'paper' ? obj?.url : null}
                   onOpen={obj ? () => onSelectObject(r.type, r.id) : undefined}
                 />
               );
             })}
           </div>
-        </div>
+        </Section>
       )}
       {cited.length > 0 && (
-        <div>
-          <Eyebrow>Cited by</Eyebrow>
+        <Section title="Cited by">
           <div className="xmap-refs">
             {cited.map((c) => <ExpRow key={c.id} card={c} onTransport={onTransport} />)}
           </div>
-        </div>
+        </Section>
       )}
       {meta.length > 0 && <div className="xmap-panel-meta">{meta.join(' · ')}</div>}
     </PanelShell>
@@ -199,9 +203,12 @@ function ObjectPanel({ sel, cards, objects, onClose, onTransport }) {
   const obj = lookupObject(objects, sel.type, sel.id);
   if (!obj) return null;
   const refBy = referencedBy(cards, sel.type, sel.id);
+  // An untitled citation falls back to its source label, which is already the
+  // head id — drop the head rather than print the same string twice.
+  const headId = sel.type === 'paper' ? obj.sourceLabel || sel.id : sel.id;
   return (
     <PanelShell
-      id={sel.type === 'paper' ? obj.sourceLabel || sel.id : sel.id}
+      id={headId === obj.title ? null : headId}
       tone={OBJ_TONE[sel.type] || 'sbx'}
       word={OBJ_WORD[sel.type] || sel.type}
       onClose={onClose}
@@ -210,18 +217,17 @@ function ObjectPanel({ sel, cards, objects, onClose, onTransport }) {
         <div className="xmap-panel-title">{obj.title}</div>
         <div className="xmap-panel-text">{[obj.detail, obj.sub].filter(Boolean).join(' — ')}</div>
         {obj.url ? (
-          <a className="xmap-ref-ext xmap-panel-ext" href={obj.url} target="_blank" rel="noopener noreferrer">
-            open ↗
+          <a className="btn xmap-open" href={obj.url} target="_blank" rel="noopener noreferrer">
+            Open {OBJ_WORD[sel.type] || sel.type} <span aria-hidden="true">↗</span>
           </a>
         ) : null}
       </div>
       {refBy.length > 0 && (
-        <div>
-          <Eyebrow>Referenced by</Eyebrow>
+        <Section title="Referenced by">
           <div className="xmap-refs">
             {refBy.map((c) => <ExpRow key={c.id} card={c} onTransport={onTransport} />)}
           </div>
-        </div>
+        </Section>
       )}
     </PanelShell>
   );

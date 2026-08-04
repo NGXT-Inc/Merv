@@ -58,8 +58,8 @@ html[data-theme="dark"] { --xmap-leader: rgba(255, 255, 255, 0.14); }
 .xmap-ic--sbx, .xmap-ic--res { color: var(--faint); }
 
 .xmap-card:focus-visible, .xmap-chip:focus-visible, .xmap-sat:focus-visible,
-.xmap-ref:focus-visible,
-.xmap-panel-close:focus-visible, .xmap-panel-id:focus-visible,
+.xmap-ref:focus-visible, .xmap-open:focus-visible,
+.xmap-panel-close:focus-visible,
 .xmap-ref-ext:focus-visible {
   outline: 2px solid var(--active);
   outline-offset: -2px;
@@ -256,21 +256,19 @@ html[data-theme="dark"] { --xmap-leader: rgba(255, 255, 255, 0.14); }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 18px 22px;
+  padding: 14px 22px;
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
   background: var(--bg-elev);
   z-index: 1;
 }
+/* The id is a label, not a link — navigation lives in the Open button below,
+   so the panel spends its one accent on the one action. */
 .xmap-panel-id {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--active);
-  text-decoration: none;
-}
-@media (hover: hover) {
-  a.xmap-panel-id:hover { text-decoration: underline; }
+  color: var(--muted);
 }
 .xmap-panel-status {
   display: flex;
@@ -292,10 +290,10 @@ html[data-theme="dark"] { --xmap-leader: rgba(255, 255, 255, 0.14); }
   .xmap-panel-close:hover { color: var(--text); }
 }
 .xmap-panel-body {
-  padding: 20px 22px;
+  padding: 20px 22px 22px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 24px;
 }
 .xmap-panel-title {
   font-family: var(--font-body);
@@ -306,75 +304,84 @@ html[data-theme="dark"] { --xmap-leader: rgba(255, 255, 255, 0.14); }
   margin-bottom: 8px;
 }
 .xmap-panel-text { font-size: 13px; line-height: 1.6; color: var(--muted); }
+
+/* The panel's one primary action: full-width so it reads as the way out of
+   the map and into the record. */
+.btn.xmap-open {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 7px 10px;
+}
+
+.xmap-section { display: flex; flex-direction: column; gap: 10px; }
 .xmap-eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--active);
-  margin-bottom: 10px;
+  color: var(--faint);
 }
 
-.xmap-metrics { display: flex; gap: 8px; flex-wrap: wrap; }
-.xmap-metric {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 12px;
-}
-.xmap-metric-value {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-.xmap-metric-label { font-size: 10px; color: var(--faint); margin-top: 2px; }
-
-.xmap-gates { display: flex; flex-direction: column; gap: 7px; }
-.xmap-gate {
+/* Metrics and gates share one grammar — label, dotted leader, value. */
+.xmap-leader-rows { display: flex; flex-direction: column; gap: 7px; }
+.xmap-leader-row {
   display: flex;
   align-items: baseline;
   font-family: var(--font-mono);
   font-size: 12px;
 }
-.xmap-gate-label { color: var(--muted); }
-.xmap-gate-leader { flex: 1; border-bottom: 1px dotted var(--xmap-leader); margin: 0 8px; }
+.xmap-leader-label { color: var(--muted); }
+.xmap-leader-fill { flex: 1; border-bottom: 1px dotted var(--xmap-leader); margin: 0 8px; }
+.xmap-leader-value { color: var(--text); font-variant-numeric: tabular-nums; }
 
-.xmap-refs { display: flex; flex-direction: column; gap: 8px; }
+/* Borderless rows: the hover wash is the affordance, and it bleeds into the
+   panel gutter so the list keeps one left edge with the eyebrows above it. */
+.xmap-refs { display: flex; flex-direction: column; }
 .xmap-ref {
   display: flex;
   gap: 10px;
-  align-items: flex-start;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px 12px;
+  align-items: baseline;
+  margin: 0 -8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
+  transition: background var(--motion-fast);
 }
+.xmap-ref--static { cursor: default; }
 @media (hover: hover) {
-  .xmap-ref:hover { border-color: var(--active); }
+  .xmap-ref:not(.xmap-ref--static):hover { background: var(--bg-soft); }
+  .xmap-ref:not(.xmap-ref--static):hover .xmap-ref-go { opacity: 1; }
 }
-.xmap-ref-ic { font-family: var(--font-mono); font-size: 12px; margin-top: 1px; }
+.xmap-ref-ic { font-family: var(--font-mono); font-size: 12px; }
 .xmap-ref-main { flex: 1; min-width: 0; }
 .xmap-ref-label { display: block; font-size: 12px; font-weight: 500; color: var(--text); }
 .xmap-ref-sub { display: block; font-size: 11px; color: var(--faint); margin-top: 2px; }
-.xmap-ref-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.xmap-ref-action { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
-.xmap-ref-ext {
+.xmap-ref-go {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--active);
+  color: var(--faint);
+  transition: opacity var(--motion-fast);
+}
+/* Hover-only on pointer devices; always visible where there is no hover. */
+@media (hover: hover) {
+  .xmap-ref-go { opacity: 0; }
+}
+.xmap-ref-ext {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--faint);
   text-decoration: none;
+  padding: 0 2px;
 }
 @media (hover: hover) {
-  .xmap-ref-ext:hover { text-decoration: underline; }
+  .xmap-ref-ext:hover { color: var(--active); }
 }
-
-.xmap-panel-ext { display: inline-block; margin-top: 8px; }
 
 .xmap-panel-meta {
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1.6;
   color: var(--faint);
-  padding-bottom: 8px;
 }
